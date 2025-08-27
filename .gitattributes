@@ -1,0 +1,9 @@
+# 텍스트 파일 개행을 LF로 통일
+* text=auto eol=lf
+
+# 바이너리(이미지 등)는 개행처리 X
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
