@@ -1,5 +1,7 @@
 // app/api/webhook/route.ts
 
+export const runtime = 'nodejs';
+
 import Stripe from 'stripe'
 import { dbAdmin } from '@/lib/firebase-admin'
 

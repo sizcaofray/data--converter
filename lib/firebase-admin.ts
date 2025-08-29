@@ -1,4 +1,4 @@
 // lib/firebase-admin.ts
-// 호환용 얇은 레이어: 예전 import('@/lib/firebase-admin')를
-// 새 파일로 우회시켜 빌드 에러를 즉시 제거합니다.
+// 과거 import('@/lib/firebase-admin') 경로를 새 구조로 우회하는 호환 파일
 export { getAdmin } from './firebase/admin';
+export { getAdmin as dbAdmin } from './firebase/admin'; // 옛 이름도 지원
