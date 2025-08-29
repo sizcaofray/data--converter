@@ -1,5 +1,7 @@
 // app/api/checkout/route.ts
 
+export const runtime = 'nodejs'; // ← 추가
+
 import { NextResponse } from 'next/server'
 import Stripe from 'stripe'
 
