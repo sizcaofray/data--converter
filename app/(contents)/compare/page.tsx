@@ -1,253 +1,177 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import * as XLSX from 'xlsx';
+import React, { useCallback, useMemo, useState } from 'react';
 
-const ACCEPTED_EXTENSIONS = ['.xlsx', '.csv', '.txt', '.json'];
+type FileSetter = React.Dispatch<React.SetStateAction<File | null>>;
+type BoolSetter = React.Dispatch<React.SetStateAction<boolean>>;
+
+/** 공통 드롭 처리: 이벤트 타입을 HTMLElement로 넓혀 어떤 엘리먼트에서도 작동 */
+function handleDrop(
+  e: React.DragEvent<HTMLElement>,
+  setFile: FileSetter,
+  setDragging: BoolSetter
+) {
+  e.preventDefault();
+  e.stopPropagation();
+  setDragging(false);
+
+  const dt = e.dataTransfer;
+  const files = dt?.files;
+  if (files && files.length > 0) {
+    setFile(files[0]);
+  }
+}
+
+function handleDragOver(e: React.DragEvent<HTMLElement>, setDragging: BoolSetter) {
+  e.preventDefault();
+  e.stopPropagation();
+  setDragging(true);
+}
+
+function handleDragLeave(_e: React.DragEvent<HTMLElement>, setDragging: BoolSetter) {
+  setDragging(false);
+}
+
+function handleInputChange(
+  e: React.ChangeEvent<HTMLInputElement>,
+  setFile: FileSetter
+) {
+  const file = e.target.files?.[0];
+  if (file) setFile(file);
+}
+
+function humanSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+type DropZoneProps = {
+  label: string;
+  file: File | null;
+  setFile: FileSetter;
+};
+
+function DropZone({ label, file, setFile }: DropZoneProps) {
+  const [dragging, setDragging] = useState(false);
+
+  const borderClass = useMemo(
+    () =>
+      dragging
+        ? 'border-indigo-500 bg-indigo-50/60 dark:bg-indigo-500/10'
+        : 'border-dashed border-gray-300 dark:border-gray-700',
+    [dragging]
+  );
+
+  return (
+    <div className="w-full">
+      <div
+        className={`rounded-2xl p-6 transition-colors border-2 ${borderClass}`}
+        onDragOver={(e) => handleDragOver(e, setDragging)}
+        onDragLeave={(e) => handleDragLeave(e, setDragging)}
+        onDrop={(e) => handleDrop(e, setFile, setDragging)}
+      >
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-2">
+          {label}
+        </h2>
+
+        <label className="block">
+          <input
+            type="file"
+            className="hidden"
+            onChange={(e) => handleInputChange(e, setFile)}
+          />
+          <div className="flex flex-col items-center justify-center gap-2 py-10 cursor-pointer">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className="h-10 w-10 opacity-70"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              <path d="M12 16a1 1 0 0 1-1-1V8.414L8.707 10.707a1 1 0 1 1-1.414-1.414l4-4a1 1 0 0 1 1.414 0l4 4a1 1 0 1 1-1.414 1.414L13 8.414V15a1 1 0 0 1-1 1Z" />
+              <path d="M5 19a2 2 0 0 1-2-2V13a1 1 0 1 1 2 0v4h14v-4a1 1 0 1 1 2 0v4a2 2 0 0 1-2 2H5Z" />
+            </svg>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              파일을 드롭하거나 클릭해서 선택하세요
+            </p>
+          </div>
+        </label>
+
+        {file && (
+          <div className="mt-4 flex items-center justify-between rounded-xl bg-gray-50 dark:bg-gray-800 px-4 py-3">
+            <div className="min-w-0">
+              <p className="truncate font-medium text-gray-800 dark:text-gray-100">
+                {file.name}
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                {file.type || 'unknown'} · {humanSize(file.size)}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="ml-3 rounded-lg border px-3 py-1.5 text-sm hover:bg-gray-100 dark:hover:bg-gray-700"
+              onClick={() => setFile(null)}
+            >
+              제거
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function ComparePage() {
-  const [originalFile, setOriginalFile] = useState<File | null>(null);
-  const [convertedFile, setConvertedFile] = useState<File | null>(null);
-  const [diffResult, setDiffResult] = useState<{
-    added: any[];
-    removed: any[];
-    modified: any[];
-    unchanged: any[];
-  } | null>(null);
-  const [pageSize, setPageSize] = useState(10);
-  const [isDraggingOriginal, setIsDraggingOriginal] = useState(false);
-  const [isDraggingConverted, setIsDraggingConverted] = useState(false);
+  const [fileA, setFileA] = useState<File | null>(null);
+  const [fileB, setFileB] = useState<File | null>(null);
 
-  const isValidFile = (file: File) => {
-    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-    return ACCEPTED_EXTENSIONS.includes(ext);
-  };
+  const canCompare = !!(fileA && fileB);
 
-  const parseFileToJson = async (file: File): Promise<any[]> => {
-    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-    const text = await file.text();
-
-    if (ext === '.json' || ext === '.txt') {
-      const parsed = JSON.parse(text);
-      return Array.isArray(parsed) ? parsed : [parsed];
-    }
-
-    if (ext === '.csv') {
-      const [headerLine, ...lines] = text.trim().split('\n');
-      const headers = headerLine.split(',');
-      return lines.map((line) => {
-        const values = line.split(',');
-        return Object.fromEntries(headers.map((key, i) => [key.trim(), values[i]?.trim() || '']));
-      });
-    }
-
-    if (ext === '.xlsx') {
-      const data = await file.arrayBuffer();
-      const workbook = XLSX.read(data, { type: 'array' });
-      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-      return XLSX.utils.sheet_to_json(firstSheet);
-    }
-
-    throw new Error('지원되지 않는 파일 형식입니다.');
-  };
-
-  const compareJsonArrays = (original: any[], converted: any[]) => {
-    const key = Object.keys(original[0] || converted[0])[0];
-    const originalMap = new Map(original.map((row) => [row[key], row]));
-    const convertedMap = new Map(converted.map((row) => [row[key], row]));
-
-    const added = converted.filter((row) => !originalMap.has(row[key]));
-    const removed = original.filter((row) => !convertedMap.has(row[key]));
-    const modified = converted.filter((row) => {
-      const orig = originalMap.get(row[key]);
-      return orig && JSON.stringify(orig) !== JSON.stringify(row);
-    });
-    const unchanged = converted.filter((row) => {
-      const orig = originalMap.get(row[key]);
-      return orig && JSON.stringify(orig) === JSON.stringify(row);
-    });
-
-    return { added, removed, modified, unchanged };
-  };
-
-  const handleCompare = async () => {
-    if (!originalFile || !convertedFile) return;
-
-    try {
-      const [originalData, convertedData] = await Promise.all([
-        parseFileToJson(originalFile),
-        parseFileToJson(convertedFile),
-      ]);
-      const result = compareJsonArrays(originalData, convertedData);
-      setDiffResult(result);
-    } catch (err: any) {
-      console.error(err);
-      alert('❌ 비교 중 오류 발생: ' + err.message);
-    }
-  };
-
-  const handleDownload = () => {
-    if (!diffResult) return;
-    const wb = XLSX.utils.book_new();
-
-    const sections = [
-      { data: diffResult.added, label: '추가됨' },
-      { data: diffResult.removed, label: '삭제됨' },
-      { data: diffResult.modified, label: '수정됨' },
-      { data: diffResult.unchanged, label: '동일함' },
-    ];
-
-    sections.forEach(({ data, label }) => {
-      if (data.length > 0) {
-        const sheet = XLSX.utils.json_to_sheet(data);
-        XLSX.utils.book_append_sheet(wb, sheet, label);
-      }
-    });
-
-    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-    const blob = new Blob([wbout], {
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = '비교결과_통합파일.xlsx';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleDrop = (
-    e: React.DragEvent<HTMLDivElement>,
-    setFile: (file: File) => void,
-    setDragging: (dragging: boolean) => void
-  ) => {
-    e.preventDefault();
-    setDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file && isValidFile(file)) setFile(file);
-    else alert('지원되지 않는 형식입니다.');
-  };
-
-  const renderTable = (rows: any[], label: string, color: string) => {
-    if (rows.length === 0) return null;
-    const keys = Object.keys(rows[0]);
-    const maxHeight = pageSize * 40;
-
-    return (
-      <div className="mt-10">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className={`text-lg font-semibold text-${color}-700 dark:text-${color}-400`}>
-            {label} ({rows.length}개)
-          </h3>
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-gray-600 dark:text-gray-300">표시 높이:</span>
-            <select
-              value={pageSize}
-              onChange={(e) => setPageSize(Number(e.target.value))}
-              className="border border-gray-300 rounded px-2 py-1 text-sm bg-white dark:bg-gray-800 dark:text-white"
-            >
-              <option value={10}>10개</option>
-              <option value={30}>30개</option>
-              <option value={50}>50개</option>
-            </select>
-          </div>
-        </div>
-        <div className="overflow-x-auto border rounded overflow-y-scroll" style={{ maxHeight }}>
-          <table className="min-w-full text-sm">
-            <thead className={`bg-${color}-100 dark:bg-${color}-800`}>
-              <tr>
-                {keys.map((key) => (
-                  <th key={key} className="px-3 py-2 text-left font-semibold text-gray-800 dark:text-white">
-                    {key}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={i} className="border-t bg-white dark:bg-gray-900">
-                  {keys.map((key) => (
-                    <td key={key} className="px-3 py-2 text-gray-700 dark:text-gray-300">
-                      {row[key]}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+  const onCompare = useCallback(() => {
+    // TODO: 실제 비교 로직을 여기에 구현
+    // 예: 서버 업로드 후 diff API 호출, 혹은 클라이언트에서 파싱/비교
+    alert(
+      `비교 시작:\n- A: ${fileA?.name ?? '-'}\n- B: ${fileB?.name ?? '-'}`
     );
+  }, [fileA, fileB]);
+
+  const onReset = () => {
+    setFileA(null);
+    setFileB(null);
   };
 
   return (
-    <div className="max-w-5xl mx-auto p-8 space-y-6">
-      <h1 className="text-2xl font-bold text-gray-800 dark:text-white mb-4">📊 데이터 비교</h1>
+    <main className="mx-auto max-w-5xl px-4 py-10">
+      <header className="mb-8">
+        <h1 className="text-2xl font-bold">파일 비교</h1>
+        <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+          두 파일을 업로드하거나 드래그&드롭하여 비교를 시작하세요.
+        </p>
+      </header>
 
-      {/* 업로드 섹션 */}
-      {[{
-        label: '📝 원본 파일', file: originalFile, setFile: setOriginalFile,
-        isDragging: isDraggingOriginal, setDragging: setIsDraggingOriginal,
-        color: 'blue'
-      }, {
-        label: '🔁 변환된 파일', file: convertedFile, setFile: setConvertedFile,
-        isDragging: isDraggingConverted, setDragging: setIsDraggingConverted,
-        color: 'green'
-      }].map(({ label, file, setFile, isDragging, setDragging, color }, idx) => (
-        <section
-          key={idx}
-          className={`border-2 rounded p-6 transition-colors ${
-            isDragging ? `border-${color}-500 bg-${color}-50 dark:bg-${color}-900` : 'border-gray-300 bg-gray-50 dark:bg-gray-800'
-          }`}
-          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(e) => handleDrop(e, setFile, setDragging)}
-        >
-          <h2 className="text-lg font-semibold text-gray-700 dark:text-white mb-2">{label}</h2>
-          <input
-            type="file"
-            accept={ACCEPTED_EXTENSIONS.join(',')}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f && isValidFile(f)) setFile(f);
-              else alert('지원되지 않는 형식입니다.');
-            }}
-          />
-          <p className="text-sm mt-2 text-gray-600 dark:text-gray-300">또는 드래그해서 여기에 놓기</p>
-          {file && (
-            <p className={`mt-2 text-sm text-${color}-700 dark:text-${color}-300`}>
-              업로드된 파일: <strong>{file.name}</strong>
-            </p>
-          )}
-        </section>
-      ))}
+      <section className="grid gap-6 md:grid-cols-2">
+        <DropZone label="파일 A" file={fileA} setFile={setFileA} />
+        <DropZone label="파일 B" file={fileB} setFile={setFileB} />
+      </section>
 
-      <div className="pt-4">
+      <section className="mt-8 flex items-center gap-3">
         <button
-          onClick={handleCompare}
-          disabled={!originalFile || !convertedFile}
-          className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+          type="button"
+          className="rounded-xl bg-black px-5 py-2.5 text-white disabled:opacity-40 dark:bg-white dark:text-black"
+          disabled={!canCompare}
+          onClick={onCompare}
         >
-          🔍 비교 시작
+          비교 실행
         </button>
-      </div>
-
-      {diffResult && (
-        <>
-          <div className="text-right">
-            <button
-              onClick={handleDownload}
-              className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
-            >
-              ⬇ 통합 결과 다운로드
-            </button>
-          </div>
-          {renderTable(diffResult.added, '➕ 추가된 데이터', 'green')}
-          {renderTable(diffResult.removed, '➖ 삭제된 데이터', 'red')}
-          {renderTable(diffResult.modified, '✏️ 수정된 데이터', 'yellow')}
-          {renderTable(diffResult.unchanged, '✅ 동일한 데이터', 'gray')}
-        </>
-      )}
-    </div>
+        <button
+          type="button"
+          className="rounded-xl border px-5 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800"
+          onClick={onReset}
+        >
+          초기화
+        </button>
+      </section>
+    </main>
   );
 }
