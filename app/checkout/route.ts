@@ -1,48 +1,33 @@
-// app/api/checkout/route.ts
+// app/checkout/route.ts
+export const runtime = 'nodejs'; // Stripe/Admin은 Edge에서 작동 X
 
-export const runtime = 'nodejs'; // ← 추가
+import Stripe from 'stripe';
+import { NextResponse } from 'next/server';
 
-import { NextResponse } from 'next/server'
-import Stripe from 'stripe'
+function getStripe() {
+  const secret = process.env.STRIPE_SECRET_KEY;
+  if (!secret) {
+    throw new Error(
+      'Missing STRIPE_SECRET_KEY (Vercel → Project → Settings → Environment Variables)'
+    );
+  }
+  // ✅ apiVersion 옵션 제거: 설치된 SDK 타입과 자동 정합
+  return new Stripe(secret);
+}
 
-// Stripe 비밀 키를 사용해 인스턴스 초기화
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2024-04-10',
-})
-
-// ✅ [GET] 결제용 Stripe Checkout 세션 생성
-export async function GET(request: Request) {
+// 예시: Checkout 세션 생성 (GET/POST 중 프로젝트 규칙에 맞게 사용)
+export async function GET() {
   try {
-    // TODO: 로그인된 사용자의 UID를 세션 또는 쿠키에서 추출해야 안전
-    const uid = 'temporary-uid' // 지금은 테스트용 하드코딩
-
-    // Stripe Checkout 세션 생성
+    const stripe = getStripe();
+    // TODO: 실제 상품/가격/성공/취소 URL은 프로젝트에 맞게 채우세요.
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
       mode: 'payment',
-      success_url: `${process.env.BASE_URL}/success`,
-      cancel_url: `${process.env.BASE_URL}/cancel`,
-      metadata: {
-        uid, // Webhook에서 사용자 식별용
-      },
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: 'Data Converter 유료 플랜',
-            },
-            unit_amount: 5000, // $50.00
-          },
-          quantity: 1,
-        },
-      ],
-    })
-
-    // 성공 시 결제 URL 반환
-    return NextResponse.json({ url: session.url })
-  } catch (error) {
-    console.error('❌ Stripe Checkout 세션 생성 오류:', error)
-    return NextResponse.json({ error: '결제 생성 실패' }, { status: 500 })
+      line_items: [{ price: 'price_xxx', quantity: 1 }],
+      success_url: 'https://data--converter.vercel.app/success',
+      cancel_url: 'https://data--converter.vercel.app/cancel',
+    });
+    return NextResponse.json({ id: session.id, url: session.url });
+  } catch (err: any) {
+    return NextResponse.json({ error: String(err?.message ?? err) }, { status: 500 });
   }
 }
