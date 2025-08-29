@@ -69,8 +69,8 @@ export default function SubscribePage() {
                 <div
                   key={plan.key}
                   className={`border rounded-lg p-4 cursor-pointer transition h-full flex flex-col justify-between ${
-    plan.key === role ? 'border-blue-500' : 'border-gray-300'
-  }`}
+                    plan.key === role ? 'border-blue-500' : 'border-gray-300'
+                  }`}
                   onClick={() => requestPayment(plan)}
                 >
                   <div>

@@ -1,64 +1,50 @@
-// 📁 contexts/UserContext.tsx
 'use client';
 
-import {
-  onAuthStateChanged,
-  User as FirebaseUser,
-} from 'firebase/auth';
-import {
-  getDoc,
-  doc,
-} from 'firebase/firestore';
-import { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
+import { onAuthStateChanged, type User } from 'firebase/auth';
+import { auth } from '@/lib/firebase/client';
 
-// 🔧 경로 수정: auth, db는 firebase.ts에 있음
-import { auth, db } from '@/lib/firebase/firebase';
+export type UserRole = 'free' | 'pro' | 'admin';
 
-// 🔹 Context에서 사용할 사용자 정보 타입
-interface UserContextType {
-  firebaseUser: FirebaseUser | null;
-  role: 'admin' | 'basic' | 'premium' | 'free' | null;
+export type UserContextType = {
+  user: User | null;
+  role: UserRole;
   loading: boolean;
-}
+};
 
-// 🔹 Context 초기값
 const UserContext = createContext<UserContextType>({
-  firebaseUser: null,
-  role: null,
+  user: null,
+  role: 'free',
   loading: true,
 });
 
-// 🔹 Provider 정의
-export const UserProvider = ({ children }: { children: React.ReactNode }) => {
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [role, setRole] = useState<'admin' | 'basic' | 'premium' | 'free' | null>(null);
+export function UserProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [role, setRole] = useState<UserRole>('free');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setFirebaseUser(user);
+    // 로그인 상태 변화 감지
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u);
 
-      if (user) {
-        // 🔎 Firestore에서 사용자 역할 정보 가져오기
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        const data = userDoc.data();
-        setRole((data?.role as any) || 'free'); // 역할 없으면 기본값은 free
-      } else {
-        setRole(null);
-      }
+      // TODO: 서버/DB에서 사용자 role을 가져오세요.
+      // (임시) 로그인만 하면 'free'로 둡니다.
+      setRole('free');
 
       setLoading(false);
     });
-
-    return () => unsubscribe();
+    return () => unsub();
   }, []);
 
   return (
-    <UserContext.Provider value={{ firebaseUser, role, loading }}>
+    <UserContext.Provider value={{ user, role, loading }}>
       {children}
     </UserContext.Provider>
   );
-};
+}
 
-// 🔹 Context를 사용하는 훅
-export const useUser = () => useContext(UserContext);
+export function useUser(): UserContextType {
+  return useContext(UserContext);
+}
