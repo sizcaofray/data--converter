@@ -1,48 +1,38 @@
 // app/api/bootpay-webhook/route.ts
+// ✅ 빌드 중에는 절대 ENV를 건드리지 않도록 "핸들러 내부"에서만 Admin 접근
+// ✅ Node 런타임 + 캐시 방지로 오해 소지 감소
 
-import { NextRequest } from 'next/server'
-import { getFirestore } from 'firebase-admin/firestore'
-import { initializeApp, cert, getApps } from 'firebase-admin/app'
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-// 🔐 Firebase Admin 초기화
-if (getApps().length === 0) {
-  initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    }),
-  })
+import { NextResponse } from "next/server";
+import { getAdmin } from "@/lib/firebase/admin";
+
+export async function POST(req: Request) {
+  try {
+    // 1) 요청 바디 파싱
+    const payload = await req.json().catch(() => ({}));
+
+    // 2) 여기에서만 Admin 초기화 (지연)
+    const { db } = getAdmin();
+
+    // 3) 저장 (원하시면 서명검증/비즈니스 로직 추가)
+    await db.collection("bootpay_webhooks").add({
+      payload,
+      receivedAt: Date.now(),
+    });
+
+    return NextResponse.json({ ok: true });
+  } catch (err: any) {
+    console.error("[bootpay-webhook] error:", err?.message || err);
+    return NextResponse.json(
+      { ok: false, error: String(err?.message || err) },
+      { status: 500 }
+    );
+  }
 }
 
-const db = getFirestore()
-
-// ✅ Bootpay Webhook 엔드포인트
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json()
-    const receipt_id = body?.receipt_id
-    const user_id = body?.user_id
-
-    if (!receipt_id || !user_id) {
-      return new Response('Missing receipt_id or user_id', { status: 400 })
-    }
-
-    console.log('✅ Webhook 수신:', { user_id, receipt_id })
-
-    // Firestore에서 해당 사용자 문서 업데이트
-    await db.collection('users').doc(user_id).set(
-      {
-        isPaid: true,
-        paidAt: new Date(),
-        receiptId: receipt_id,
-      },
-      { merge: true }
-    )
-
-    return new Response('Webhook success', { status: 200 })
-  } catch (err) {
-    console.error('❌ Webhook 처리 실패:', err)
-    return new Response('Webhook error', { status: 500 })
-  }
+// GET 막기(헬스체크 필요하면 별도 라우트에서)
+export async function GET() {
+  return NextResponse.json({ error: "Method Not Allowed" }, { status: 405 });
 }
