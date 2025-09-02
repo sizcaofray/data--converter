@@ -2,11 +2,14 @@
 
 /**
  * lib/firebase/index.ts
+ *
  * - 클라이언트 전용 Firebase 초기화(지연 초기화)
- * - 영구 세션(browserLocalPersistence)
- * - 팝업 대신 "리다이렉트 전용" 로그인 (브라우저 정책에 안전)
- * - 리다이렉트 결과 처리 completeRedirectSignIn() export
- * - onAuthStateChanged 오버로드: (auth, listener) / (listener) 모두 지원
+ * - 세션 퍼시스턴스: browserLocalPersistence (로그인 유지)
+ * - Google 로그인: 팝업 대신 "리다이렉트 전용" (브라우저 정책에 가장 안전)
+ * - 리다이렉트 결과 처리: completeRedirectSignIn()
+ * - onAuthStateChanged 오버로드: (listener) / (auth, listener) 모두 지원
+ * - Firestore 클라이언트 내보내기(db/getDbClient)
+ * - 디버그 핸들: window.__FIREBASE__ 에 app/auth/db & debugGetUserDoc() 노출
  * - 기존 import { auth } from '@/lib/firebase' 호환 alias export 포함
  */
 
@@ -19,27 +22,71 @@ import {
   signInWithRedirect,
   signOut,
   onAuthStateChanged as _onAuthStateChanged,
-  getRedirectResult,            // ✅ 리다이렉트 결과 확인
+  getRedirectResult,
   type Auth,
   type NextOrObserver,
   type Unsubscribe,
   type User,
 } from 'firebase/auth';
+import {
+  getFirestore,
+  type Firestore,
+  doc,
+  onSnapshot,
+  getDoc,
+} from 'firebase/firestore';
 
-// ── 내부 보관 인스턴스(중복 초기화 방지)
+// ──────────────────────────────────────────────────────────────
+// 내부 인스턴스(중복 초기화 방지)
 let appInstance: FirebaseApp | null = null;
 let authInstance: Auth | null = null;
+let dbInstance: Firestore | null = null;
 
-// ── 환경변수 누락 시 콘솔 경고(런타임 중단 X)
+// ──────────────────────────────────────────────────────────────
+// ENV 헬퍼(없을 때 빌드/런타임 죽이지 않고 경고만)
 function env(name: string): string {
   const v = (process.env as any)[name];
-  if (!v) console.warn(`[firebase] Missing ${name} (Vercel > Project > Environment Variables)`);
+  if (!v) console.warn(`[firebase] Missing ${name} (check Vercel Environment Variables)`);
   return v || '';
 }
 
-// ── 지연 초기화: 최초 접근 시에만 실행
+// ──────────────────────────────────────────────────────────────
+// 디버그 핸들(window.__FIREBASE__) 노출
+declare global {
+  interface Window {
+    __FIREBASE__?: {
+      app: FirebaseApp | null;
+      auth: Auth | null;
+      db: Firestore | null;
+      debugGetUserDoc?: () => Promise<any>;
+    };
+  }
+}
+function publishDebugHandles() {
+  if (typeof window === 'undefined') return;
+  window.__FIREBASE__ = {
+    app: appInstance,
+    auth: authInstance,
+    db: dbInstance,
+    async debugGetUserDoc() {
+      try {
+        if (!authInstance || !dbInstance) return null;
+        const u = authInstance.currentUser;
+        if (!u) return null;
+        const snap = await getDoc(doc(dbInstance, 'users', u.uid));
+        return snap.exists() ? snap.data() : null;
+      } catch (e) {
+        console.warn('[__FIREBASE__.debugGetUserDoc] error:', e);
+        return null;
+      }
+    },
+  };
+}
+
+// ──────────────────────────────────────────────────────────────
+// 지연 초기화
 function ensureInit() {
-  if (appInstance && authInstance) return;
+  if (appInstance && authInstance && dbInstance) return;
 
   appInstance = getApps().length
     ? getApps()[0]!
@@ -54,14 +101,18 @@ function ensureInit() {
       });
 
   authInstance = getAuth(appInstance);
+  dbInstance = getFirestore(appInstance);
 
-  // 영구 세션: 새로고침/재방문 시 로그인 유지
+  // 로그인 유지
   setPersistence(authInstance, browserLocalPersistence).catch((e) => {
     console.error('[firebase] setPersistence error:', e);
   });
+
+  publishDebugHandles();
 }
 
-// ── 외부 공개 API (기존 코드 호환)
+// ──────────────────────────────────────────────────────────────
+// 공개 진입점들
 export function getAuthClient(): Auth {
   ensureInit();
   if (!authInstance) {
@@ -70,9 +121,17 @@ export function getAuthClient(): Auth {
   return authInstance;
 }
 
-// ── onAuthStateChanged 오버로드
-// 1) onAuthStateChanged(listener, error?, completed?)
-// 2) onAuthStateChanged(auth, listener, error?, completed?)
+export function getDbClient(): Firestore {
+  ensureInit();
+  if (!dbInstance) {
+    throw new Error('[firebase] db not initialized.');
+  }
+  return dbInstance;
+}
+
+export const db = (() => getDbClient())();
+
+// onAuthStateChanged 오버로드: (listener) / (auth, listener)
 export function onAuthStateChanged(
   listener: NextOrObserver<User>,
   error?: (error: Error) => void,
@@ -84,16 +143,10 @@ export function onAuthStateChanged(
   error?: (error: Error) => void,
   completed?: () => void
 ): Unsubscribe;
-export function onAuthStateChanged(
-  a: any,
-  b?: any,
-  c?: any,
-  d?: any
-): Unsubscribe {
+// 구현: 런타임에서 첫 인자가 Auth처럼 보이면 (auth, listener), 아니면 (listener)
+export function onAuthStateChanged(a: any, b?: any, c?: any, d?: any): Unsubscribe {
   ensureInit();
-  if (!authInstance) {
-    throw new Error('[firebase] auth not initialized. onAuthStateChanged called too early.');
-  }
+  if (!authInstance) throw new Error('[firebase] onAuthStateChanged called before init');
   const looksLikeAuth = a && typeof a === 'object' && 'app' in a && 'name' in a;
   if (looksLikeAuth) {
     return _onAuthStateChanged(authInstance, b, c, d);
@@ -101,7 +154,7 @@ export function onAuthStateChanged(
   return _onAuthStateChanged(authInstance, a, b, c);
 }
 
-/** ✅ Google 로그인: 팝업 없이 "리다이렉트 전용" */
+// Google 로그인: 팝업 스킵하고 "리다이렉트 전용"
 export async function signInWithGoogle() {
   const auth = getAuthClient();
   const provider = new GoogleAuthProvider();
@@ -118,9 +171,7 @@ export async function signInWithGoogle() {
   }
 }
 
-/** ✅ 리다이렉트 로그인 완료 처리 (초기 진입 시 한 번 호출)
- *  반환: true = 이번 진입에서 방금 로그인 완료됨, false = 결과 없음
- */
+// 리다이렉트 결과 처리(초기 진입 시 한 번 호출 권장)
 export async function completeRedirectSignIn(): Promise<boolean> {
   const auth = getAuthClient();
   try {
@@ -130,22 +181,21 @@ export async function completeRedirectSignIn(): Promise<boolean> {
       return true;
     }
     return false;
-  } catch (e: any) {
+  } catch (e) {
     console.error('[firebase] getRedirectResult error:', e);
     return false;
   }
 }
 
-/** 로그아웃 */
+// 로그아웃
 export async function signOutUser() {
   const auth = getAuthClient();
   await signOut(auth);
 }
 
-/** ✅ 기존 import { auth } from '@/lib/firebase' 호환용 alias */
+// 기존 호환 alias (import { auth } from '@/lib/firebase')
 export const authClient: Auth = (() => {
   const a = getAuthClient();
   return a;
 })();
-
 export { authClient as auth };
