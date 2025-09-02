@@ -4,10 +4,10 @@
  * lib/firebase/index.ts
  * - 클라이언트 전용 Firebase 초기화(지연 초기화)
  * - 영구 세션(browserLocalPersistence)
- * - 팝업 차단 시 redirect 폴백
- * - 내부 인스턴스 변수명: authInstance (충돌 방지)
+ * - 팝업 대신 "리다이렉트 전용" 로그인 (브라우저 정책에 안전)
+ * - 리다이렉트 결과 처리 completeRedirectSignIn() export
  * - onAuthStateChanged 오버로드: (auth, listener) / (listener) 모두 지원
- * - 기존 import { auth } from '@/lib/firebase' 호환을 위해 alias export 제공
+ * - 기존 import { auth } from '@/lib/firebase' 호환 alias export 포함
  */
 
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
@@ -16,10 +16,10 @@ import {
   setPersistence,
   browserLocalPersistence,
   GoogleAuthProvider,
-  signInWithPopup,
   signInWithRedirect,
   signOut,
   onAuthStateChanged as _onAuthStateChanged,
+  getRedirectResult,            // ✅ 리다이렉트 결과 확인
   type Auth,
   type NextOrObserver,
   type Unsubscribe,
@@ -65,10 +65,9 @@ function ensureInit() {
 export function getAuthClient(): Auth {
   ensureInit();
   if (!authInstance) {
-    // 이 지점에 오면 환경변수나 초기화 문제가 있는 것 → 명확한 메시지
     throw new Error('[firebase] auth not initialized. Check NEXT_PUBLIC_FIREBASE_* envs and client-side usage.');
   }
-  return authInstance; // non-null 보장
+  return authInstance;
 }
 
 // ── onAuthStateChanged 오버로드
@@ -97,37 +96,55 @@ export function onAuthStateChanged(
   }
   const looksLikeAuth = a && typeof a === 'object' && 'app' in a && 'name' in a;
   if (looksLikeAuth) {
-    // 호출 형태: (auth, listener, error?, completed?)
     return _onAuthStateChanged(authInstance, b, c, d);
   }
-  // 호출 형태: (listener, error?, completed?)
   return _onAuthStateChanged(authInstance, a, b, c);
 }
 
-// ── Google 로그인 (팝업 → 차단 시 redirect 폴백)
+/** ✅ Google 로그인: 팝업 없이 "리다이렉트 전용" */
 export async function signInWithGoogle() {
   const auth = getAuthClient();
   const provider = new GoogleAuthProvider();
   try {
-    return await signInWithPopup(auth, provider);
+    await signInWithRedirect(auth, provider);
   } catch (e: any) {
-    if (e?.code === 'auth/popup-blocked' || e?.code === 'auth/popup-closed-by-user') {
-      console.warn('[firebase] popup blocked; fallback to redirect');
-      return await signInWithRedirect(auth, provider);
+    console.error('[firebase] signInWithRedirect error:', e);
+    if (e?.code === 'auth/unauthorized-domain') {
+      alert('로그인이 차단되었습니다. Firebase Authentication > Authorized domains에 현재 도메인을 추가하세요.');
+    } else {
+      alert('로그인에 실패했습니다. 잠시 후 다시 시도해 주세요.');
     }
     throw e;
   }
 }
 
-// ── 로그아웃
+/** ✅ 리다이렉트 로그인 완료 처리 (초기 진입 시 한 번 호출)
+ *  반환: true = 이번 진입에서 방금 로그인 완료됨, false = 결과 없음
+ */
+export async function completeRedirectSignIn(): Promise<boolean> {
+  const auth = getAuthClient();
+  try {
+    const result = await getRedirectResult(auth);
+    if (result?.user) {
+      console.log('[firebase] redirect sign-in completed for:', result.user.email);
+      return true;
+    }
+    return false;
+  } catch (e: any) {
+    console.error('[firebase] getRedirectResult error:', e);
+    return false;
+  }
+}
+
+/** 로그아웃 */
 export async function signOutUser() {
   const auth = getAuthClient();
   await signOut(auth);
 }
 
-// ── 기존 import { auth } from '@/lib/firebase' 호환용 alias
+/** ✅ 기존 import { auth } from '@/lib/firebase' 호환용 alias */
 export const authClient: Auth = (() => {
-  const a = getAuthClient(); // 내부적으로 ensureInit + null 가드
+  const a = getAuthClient();
   return a;
 })();
 
