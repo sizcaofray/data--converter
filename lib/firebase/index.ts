@@ -5,8 +5,10 @@
  * - 클라이언트 전용 Firebase 초기화(지연 초기화)
  * - 영구 세션(browserLocalPersistence)
  * - 팝업 차단 시 redirect 폴백
- * - ✅ 내부 인스턴스 변수명 충돌 해결: authInstance 로 변경
- * - ✅ 외부 호환: export { authClient as auth } 로 기존 import { auth } 유지
+ * - ✅ 내부 인스턴스 변수명 충돌 방지(authInstance)
+ * - ✅ onAuthStateChanged 오버로드로 호환성 유지
+ *    (기존처럼 onAuthStateChanged(auth, listener)로 호출해도 되고,
+ *     onAuthStateChanged(listener)로 호출해도 동작)
  */
 
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
@@ -20,6 +22,9 @@ import {
   signOut,
   onAuthStateChanged as _onAuthStateChanged,
   type Auth,
+  type NextOrObserver,
+  type Unsubscribe,
+  type User,
 } from 'firebase/auth';
 
 // ── 내부 보관 인스턴스(중복 초기화 방지)
@@ -44,7 +49,7 @@ function ensureInit() {
         authDomain: env('NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN'),
         projectId: env('NEXT_PUBLIC_FIREBASE_PROJECT_ID'),
         appId: env('NEXT_PUBLIC_FIREBASE_APP_ID'),
-        // 선택 필드(없어도 동작)
+        // 선택(없어도 됨)
         storageBucket: (process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET as string) || undefined,
         messagingSenderId: (process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID as string) || undefined,
       });
@@ -63,14 +68,37 @@ export function getAuthClient(): Auth {
   return authInstance!;
 }
 
-// onAuthStateChanged 헬퍼
-export const onAuthStateChanged = (...args: Parameters<typeof _onAuthStateChanged>) => {
+// ── onAuthStateChanged 오버로드(양쪽 호출 방식 모두 지원)
+//    1) onAuthStateChanged(listener, error?, completed?)
+//    2) onAuthStateChanged(auth, listener, error?, completed?)
+export function onAuthStateChanged(
+  listener: NextOrObserver<User>,
+  error?: (error: Error) => void,
+  completed?: () => void
+): Unsubscribe;
+export function onAuthStateChanged(
+  _auth: Auth,
+  listener: NextOrObserver<User>,
+  error?: (error: Error) => void,
+  completed?: () => void
+): Unsubscribe;
+export function onAuthStateChanged(
+  a: any,
+  b?: any,
+  c?: any,
+  d?: any
+): Unsubscribe {
   ensureInit();
-  // TS 가변 인자 처리
-  return _onAuthStateChanged(authInstance!, ...(args as any));
-};
+  // 첫 인자가 Auth처럼 보이면(호환 모드): 전달된 Auth는 무시하고 우리 인스턴스를 사용
+  const looksLikeAuth = a && typeof a === 'object' && 'app' in a && 'name' in a;
+  if (looksLikeAuth) {
+    return _onAuthStateChanged(authInstance!, b, c, d);
+  }
+  // 첫 인자가 listener인 모드
+  return _onAuthStateChanged(authInstance!, a, b, c);
+}
 
-// Google 로그인 (팝업 → 차단시 redirect 폴백)
+// ── Google 로그인 (팝업 → 차단 시 redirect 폴백)
 export async function signInWithGoogle() {
   ensureInit();
   const provider = new GoogleAuthProvider();
@@ -85,7 +113,7 @@ export async function signInWithGoogle() {
   }
 }
 
-// 로그아웃
+// ── 로그아웃
 export async function signOutUser() {
   ensureInit();
   await signOut(authInstance!);
@@ -97,5 +125,4 @@ export const authClient: Auth = (() => {
   return authInstance as Auth;
 })();
 
-// ✅ 여기서 이름을 바꿔 내보내 충돌 방지
 export { authClient as auth };
