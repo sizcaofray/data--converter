@@ -1,13 +1,11 @@
-// 📄 app/admin/page.tsx
+// 📄 app/(contents)/admin/page.tsx
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useUser } from '@/contexts/UserContext';
-import { db } from '@/lib/firebase/firebase'; 
+import { db } from '@/lib/firebase'; // ✅ 경로 정리: 프로젝트 내보내기와 일치
 import { collection, getDocs, updateDoc, doc } from 'firebase/firestore';
 
-// 🔹 사용자 데이터 구조 정의
 interface UserItem {
   uid: string;
   email: string;
@@ -15,69 +13,62 @@ interface UserItem {
 }
 
 export default function AdminPage() {
-  const { role, loading } = useUser(); // 🔑 현재 로그인한 사용자의 역할 정보
-  const router = useRouter();
+  const { role, loading } = useUser();
+
+  // ✅ role 정규화
+  const isAdmin = ((role ?? '') as string).trim().toLowerCase() === 'admin';
+
   const [users, setUsers] = useState<UserItem[]>([]);
   const [fetching, setFetching] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // 🔁 Firestore에서 사용자 목록 불러오기
+  // 🔁 Firestore에서 사용자 목록 불러오기 (관리자일 때만)
   useEffect(() => {
     const fetchUsers = async () => {
-      if (role === 'admin') {
+      if (!isAdmin) return;
+      try {
         const snapshot = await getDocs(collection(db, 'users'));
-        const userList = snapshot.docs.map((doc) => {
-          const data = doc.data();
+        const userList = snapshot.docs.map((d) => {
+          const data = d.data() as any;
           const isPaid = data.isPaid ?? false;
-
           return {
-            uid: doc.id,
+            uid: d.id,
             email: data.email || '',
-            // 🔸 role이 없으면 isPaid 값 기준으로 default role 추론
-            role: data.role || (isPaid ? 'basic' : 'free'),
+            role: (data.role || (isPaid ? 'basic' : 'free')) as UserItem['role'],
           };
         });
-
         setUsers(userList);
+      } catch (err) {
+        console.error('[AdminPage] users fetch error:', err);
+      } finally {
         setFetching(false);
       }
     };
-
     fetchUsers();
-  }, [role]);
+  }, [isAdmin]);
 
-  // 🔁 역할 선택 시 로컬 state 갱신
   const handleRoleChange = (uid: string, newRole: UserItem['role']) => {
-    setUsers((prev) =>
-      prev.map((u) => (u.uid === uid ? { ...u, role: newRole } : u))
-    );
+    setUsers((prev) => prev.map((u) => (u.uid === uid ? { ...u, role: newRole } : u)));
   };
 
-  // 🔁 Firestore에 role 업데이트 저장
   const handleSave = async (uid: string, role: string) => {
     setSaving(true);
     try {
-      const userRef = doc(db, 'users', uid);
-      await updateDoc(userRef, { role }); // 🔹 Firestore 업데이트
+      await updateDoc(doc(db, 'users', uid), { role });
       alert('✅ 역할이 저장되었습니다.');
-    } catch (error) {
-      console.error('❌ 역할 저장 실패:', error);
+    } catch (e) {
+      console.error('❌ 역할 저장 실패:', e);
       alert('저장 실패. 콘솔을 확인하세요.');
     } finally {
       setSaving(false);
     }
   };
 
-  // 🛑 로딩 또는 권한 처리
-  if (loading) {
-    return <p className="p-8 text-gray-500">로딩 중...</p>;
-  }
+  // 🛑 가드
+  if (loading) return <p className="p-8 text-gray-500">로딩 중...</p>;
+  if (!isAdmin) return <p className="p-8 text-red-500">⛔ 관리자 권한이 없습니다.</p>;
 
-  if (role !== 'admin') {
-    return <p className="p-8 text-red-500">⛔ 관리자 권한이 없습니다.</p>;
-  }
-
-  // ✅ 관리자 페이지 UI 렌더링
+  // ✅ 관리자 UI
   return (
     <main className="p-10">
       <h1 className="text-3xl font-bold mb-6">🔐 관리자 페이지</h1>

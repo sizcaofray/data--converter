@@ -3,14 +3,16 @@
 
 import Link from 'next/link';
 import { useUser } from '@/contexts/UserContext';
-import { usePathname } from 'next/navigation'; // 현재 경로 확인용
-import clsx from 'clsx'; // 조건부 클래스 적용
+import { usePathname } from 'next/navigation';
+import clsx from 'clsx';
 
 export default function Sidebar() {
   const { role, loading } = useUser();
-  const pathname = usePathname(); // 현재 경로 가져오기
+  const pathname = usePathname();
 
-  // 메뉴 구성
+  // ✅ role 정규화: 공백/대소문자 변형을 모두 admin으로 인식
+  const isAdmin = ((role ?? '') as string).trim().toLowerCase() === 'admin';
+
   const menuItems = [
     { href: '/convert', label: 'Data Convert' },
     { href: '/compare', label: 'Data Compare' },
@@ -22,11 +24,11 @@ export default function Sidebar() {
       <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">🛠️ Data Tools</h2>
 
       <ul className="space-y-2">
-        {/* 관리자 메뉴 (role이 admin일 때만 표시) */}
-        {!loading && role === 'admin' && (
+        {/* ✅ 관리자 메뉴: 로딩 끝 + admin일 때만 */}
+        {!loading && isAdmin && (
           <li>
             <Link
-              href="/admin"
+              href="/admin"  // 경로 그룹(app/(contents)/admin)은 URL에 영향 없음 → /admin이 맞습니다
               className={clsx(
                 'block px-3 py-2 rounded font-semibold',
                 pathname === '/admin'
@@ -39,7 +41,7 @@ export default function Sidebar() {
           </li>
         )}
 
-        {/* 일반 메뉴들 (현재 경로와 비교하여 강조 처리) */}
+        {/* 일반 메뉴 */}
         {menuItems.map((item) => (
           <li key={item.href}>
             <Link
