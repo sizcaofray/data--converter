@@ -7,9 +7,9 @@ import { useUser } from '@/contexts/UserContext';
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const { role, ready } = useUser();
+  const { role, loading } = useUser();
 
-  // ✅ 역할 정규화
+  // 역할 정규화
   const isAdmin = ((role ?? '') as string).trim().toLowerCase() === 'admin';
 
   const menuItems = [
@@ -23,11 +23,11 @@ export default function Sidebar() {
       <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">🛠️ Data Tools</h2>
 
       <ul className="space-y-2">
-        {/* ✅ 관리자 메뉴: ready && isAdmin 기준 (경로가 /admin이면 가시화 유지) */}
-        {(isAdmin || pathname === '/admin') && ready && (
+        {/* 관리자 메뉴: 로딩 종료 + admin 일 때만 */}
+        {!loading && isAdmin && (
           <li>
             <Link
-              href="/admin"  // app/(contents)/admin → URL은 /admin 이 맞습니다
+              href="/admin"  // app/(contents)/admin → URL은 /admin
               className={clsx(
                 'block px-3 py-2 rounded font-semibold',
                 pathname === '/admin'

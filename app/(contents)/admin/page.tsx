@@ -1,29 +1,27 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useUser } from '@/contexts/UserContext';
-import { db } from '@/lib/firebase'; // ✅ 내보내기 경로 일치
+import { db } from '@/lib/firebase'; // 프로젝트 내보내기 경로에 맞춤
 import { collection, getDocs, updateDoc, doc } from 'firebase/firestore';
 
 type Role = 'free' | 'basic' | 'premium' | 'admin';
 type UserItem = { uid: string; email: string; role: Role };
 
 export default function AdminPage() {
-  const { role, ready } = useUser();
+  const { role, loading } = useUser();
 
-  // ✅ 역할 정규화 (페이지 가드/데이터 로딩 모두 동일 기준)
-  const isAdmin = useMemo(
-    () => ((role ?? '') as string).trim().toLowerCase() === 'admin',
-    [role]
-  );
+  // 역할 정규화
+  const isAdmin = ((role ?? '') as string).trim().toLowerCase() === 'admin';
 
   const [users, setUsers] = useState<UserItem[]>([]);
   const [fetching, setFetching] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
 
+  // 관리자일 때만 users 컬렉션 로드
   useEffect(() => {
-    const fetchUsers = async () => {
-      if (!isAdmin) return; // 관리자 아니면 조회 안 함
+    const run = async () => {
+      if (loading || !isAdmin) return;
       try {
         const snap = await getDocs(collection(db, 'users'));
         const list = snap.docs.map((d) => {
@@ -46,9 +44,8 @@ export default function AdminPage() {
         setFetching(false);
       }
     };
-    // ready 되면 한번만 실행(관리자일 때)
-    if (ready) fetchUsers();
-  }, [ready, isAdmin]);
+    run();
+  }, [loading, isAdmin]);
 
   const handleRoleChange = (uid: string, next: Role) =>
     setUsers((prev) => prev.map((u) => (u.uid === uid ? { ...u, role: next } : u)));
@@ -60,17 +57,17 @@ export default function AdminPage() {
       alert('✅ 역할이 저장되었습니다.');
     } catch (e) {
       console.error('[Admin] update role error:', e);
-      alert('❌ 저장 실패. 콘솔을 확인하세요.');
+      alert('❌ 저장 실패. 콘솔 확인');
     } finally {
       setSaving(null);
     }
   };
 
-  // 🛡️ 페이지 가드
-  if (!ready) return <p className="p-8 text-gray-500">로딩 중...</p>;
+  // 페이지 가드
+  if (loading) return <p className="p-8 text-gray-500">로딩 중...</p>;
   if (!isAdmin) return <p className="p-8 text-red-500">⛔ 관리자 권한이 없습니다.</p>;
 
-  // ✅ 관리자 UI
+  // 관리자 UI
   return (
     <main className="p-8">
       <h1 className="text-2xl font-bold mb-6">🔐 Administrator</h1>
