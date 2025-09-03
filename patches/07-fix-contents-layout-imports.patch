@@ -1,0 +1,14 @@
+diff --git a/app/(contents)/layout.tsx b/app/(contents)/layout.tsx
+index 1111111..2222222 100644
+--- a/app/(contents)/layout.tsx
++++ b/app/(contents)/layout.tsx
+@@ -1,7 +1,7 @@
+ 'use client';
+ import React from "react";
+- import { Sidebar } from "@/components/Sidebar";
+- import { LogoutHeader } from "@/components/LogoutHeader";
++ import Sidebar from "@/components/Sidebar";
++ import LogoutHeader from "@/components/LogoutHeader";
+
+ export default function ContentsLayout({ children }: { children: React.ReactNode; }) {
+   return (
