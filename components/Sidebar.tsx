@@ -25,7 +25,8 @@ export default function Sidebar() {
 
       <ul className="space-y-2">
         {/* ✅ 관리자 메뉴: 오직 role=admin 만 확인 (loading에 의존 X) */}
-        {isAdmin && (
+        {/*{isAdmin && (*/}
+        {isAdmin || (
           <li>
             <Link
               href="/admin"  // app/(contents)/admin → URL은 /admin
