@@ -1,7 +1,7 @@
 ﻿'use client';
 import React from "react";
-import { Sidebar } from "@/components/Sidebar";
-import { LogoutHeader } from "@/components/LogoutHeader";
+import Sidebar from "@/components/Sidebar";
+import LogoutHeader from "@/components/LogoutHeader";
 
 export default function ContentsLayout({ children }: { children: React.ReactNode; }) {
   return (
