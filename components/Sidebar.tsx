@@ -7,10 +7,11 @@ import { useUser } from '@/contexts/UserContext';
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const { role, loading } = useUser();
 
-  // 역할 정규화
-  const isAdmin = ((role ?? '') as string).trim().toLowerCase() === 'admin';
+  // 컨텍스트에서 role만 받아서 스스로 정규화
+  const { role } = useUser();
+  const roleStr = (role ?? '').toString();
+  const isAdmin = roleStr.trim().toLowerCase() === 'admin';
 
   const menuItems = [
     { href: '/convert', label: 'Data Convert' },
@@ -23,8 +24,8 @@ export default function Sidebar() {
       <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">🛠️ Data Tools</h2>
 
       <ul className="space-y-2">
-        {/* 관리자 메뉴: 로딩 종료 + admin 일 때만 */}
-        {!loading && isAdmin && (
+        {/* ✅ 관리자 메뉴: 오직 role=admin 만 확인 (loading에 의존 X) */}
+        {isAdmin && (
           <li>
             <Link
               href="/admin"  // app/(contents)/admin → URL은 /admin
