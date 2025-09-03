@@ -1,0 +1,41 @@
+diff --git a/app/(contents)/layout.tsx b/app/(contents)/layout.tsx
+index 1111111..2222222 100644
+--- a/app/(contents)/layout.tsx
++++ b/app/(contents)/layout.tsx
+@@ -1,22 +1,18 @@
+ 'use client';
+ import React from 'react';
+ 
+-// ⛳️ 실제 경로에 맞게 조정하세요.
+ import { Sidebar } from '@/components/Sidebar';
+ import { LogoutHeader } from '@/components/LogoutHeader';
+-import { SubscribePopupProvider } from '@/components/subscribe/SubscribePopupProvider';
+ 
+ export default function ContentsLayout({
+   children,
+ }: {
+   children: React.ReactNode;
+ }) {
+   return (
+-    <SubscribePopupProvider>
+-      <div className="min-h-dvh flex">
+-        <Sidebar />
+-        <div className="flex-1 flex flex-col">
+-          <LogoutHeader />
+-          <main className="flex-1 p-4">
+-            {children}
+-          </main>
+-        </div>
+-      </div>
+-    </SubscribePopupProvider>
++    <div className="min-h-dvh flex">
++      <Sidebar />
++      <div className="flex-1 flex flex-col">
++        <LogoutHeader />
++        <main className="flex-1 p-4">
++          {children}
++        </main>
++      </div>
++    </div>
+   );
+ }

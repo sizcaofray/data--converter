@@ -1,0 +1,30 @@
+diff --git a/app/layout.tsx b/app/layout.tsx
+index 0000001..0000002 100644
+--- a/app/layout.tsx
++++ b/app/layout.tsx
+@@ -1,16 +1,19 @@
+ // layout.tsx
+ import './globals.css'
+ import { ReactNode } from 'react'
++import ClientProviders from './ClientProviders' // 👈 전역 클라이언트 Provider 래퍼 추가
+ 
+ export const metadata = {
+   title: '로그인 페이지',
+   description: '구글 계정 로그인 예제',
+ }
+ 
+ export default function RootLayout({ children }: { children: ReactNode }) {
+   return (
+     <html lang="ko" suppressHydrationWarning>
+       {/* body에 bg-white 또는 text-black 강제 설정 제거 */}
+-      <body className="min-h-screen transition-colors">
+-        {children}
++      <body className="min-h-screen transition-colors">
++        {/* 👇 모든 페이지를 전역 SubscribePopupProvider로 감쌉니다. */}
++        <ClientProviders>
++          {children}
++        </ClientProviders>
+       </body>
+     </html>
+   )
+}

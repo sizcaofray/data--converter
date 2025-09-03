@@ -1,0 +1,26 @@
+diff --git a/app/ClientProviders.tsx b/app/ClientProviders.tsx
+new file mode 100644
+index 0000000..abcdef1
+--- /dev/null
++++ b/app/ClientProviders.tsx
+@@ -0,0 +1,35 @@
++'use client';
++/**
++ * ClientProviders
++ * - 전역 클라이언트 Provider 래퍼
++ * - 여기서 SubscribePopupProvider로 전체 앱을 감싸
++ *   SSG/SSR/CSR 어느 경로에서도 useSubscribePopup 훅이 안전하게 동작하도록 합니다.
++ */
++import { ReactNode } from 'react';
++// ⛳ 실제 경로에 맞게 수정하세요.
++import { SubscribePopupProvider } from '@/components/subscribe/SubscribePopupProvider';
++
++type Props = { children: ReactNode };
++
++export default function ClientProviders({ children }: Props) {
++  return (
++    <SubscribePopupProvider>
++      {children}
++    </SubscribePopupProvider>
++  );
++}
