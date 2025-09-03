@@ -1,31 +1,37 @@
-// 📄 contexts/SubscribePopupContext.tsx
+// contexts/SubscribePopupContext.tsx
 'use client';
 
-import { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
 
-type ContextType = {
+export type PopupAPI = {
   show: boolean;
   open: () => void;
   close: () => void;
+  toggle: () => void;
 };
 
-const SubscribePopupContext = createContext<ContextType>({
+// 기본값을 안전한 no-op으로 두면 Provider가 누락돼도 빌드/렌더가 멈추지 않습니다.
+const defaultValue: PopupAPI = {
   show: false,
   open: () => {},
   close: () => {},
-});
-
-export const SubscribePopupProvider = ({ children }: { children: React.ReactNode }) => {
-  const [show, setShow] = useState(false);
-
-  const open = () => setShow(true);
-  const close = () => setShow(false);
-
-  return (
-    <SubscribePopupContext.Provider value={{ show, open, close }}>
-      {children}
-    </SubscribePopupContext.Provider>
-  );
+  toggle: () => {},
 };
 
-export const useSubscribePopup = () => useContext(SubscribePopupContext);
+const Ctx = createContext<PopupAPI>(defaultValue);
+
+export function SubscribePopupProvider({ children }: { children: React.ReactNode }) {
+  const [show, setShow] = useState(false);
+
+  const open = useCallback(() => setShow(true), []);
+  const close = useCallback(() => setShow(false), []);
+  const toggle = useCallback(() => setShow(s => !s), []);
+
+  const value = useMemo<PopupAPI>(() => ({ show, open, close, toggle }), [show, open, close, toggle]);
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+export function useSubscribePopup(): PopupAPI {
+  return useContext(Ctx);
+}
