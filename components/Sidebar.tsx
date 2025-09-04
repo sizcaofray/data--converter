@@ -4,52 +4,52 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
 
+/**
+ * 좌측 사이드바
+ * - 라우트 그룹 (contents) 하의 페이지들: /convert, /compare, /random, /admin
+ * - active(현재 경로)일 때 강조
+ */
 export default function Sidebar() {
   const pathname = usePathname();
 
+  // ✅ 필요 메뉴만 구성 (구독/권한은 나중에 붙임)
   const menuItems = [
     { href: '/convert', label: 'Data Convert' },
     { href: '/compare', label: 'Data Compare' },
     { href: '/random', label: 'Data Randomizer' },
+    { href: '/admin', label: 'Admin' }, // 권한 적용 전까지 모두 노출
   ];
 
   return (
-    <aside className="w-64 bg-gray-100 dark:bg-gray-800 p-6">
-      <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">🛠️ Data Tools</h2>
+    <aside className="w-64 shrink-0 border-r bg-gray-50 dark:bg-gray-900 min-h-screen">
+      <div className="px-4 py-4">
+        <h2 className="text-lg font-bold text-gray-900 dark:text-white">Menu</h2>
+      </div>
 
-      <ul className="space-y-2">
-        {/* ✅ Role 상관없이 항상 표시 */}
-        <li>
-          <Link
-            href="/admin"  // app/(contents)/admin → URL은 /admin
-            className={clsx(
-              'block px-3 py-2 rounded font-semibold',
-              pathname === '/admin'
-                ? 'bg-yellow-500 text-white dark:bg-yellow-600'
-                : 'bg-yellow-100 dark:bg-yellow-700 text-yellow-900 dark:text-yellow-100 hover:bg-yellow-200 dark:hover:bg-yellow-600'
-            )}
-          >
-            Administrator
-          </Link>
-        </li>
-
-        {/* 공용 메뉴 */}
-        {menuItems.map((m) => (
-          <li key={m.href}>
-            <Link
-              href={m.href}
-              className={clsx(
-                'block px-3 py-2 rounded',
-                pathname === m.href
-                  ? 'bg-blue-600 text-white font-semibold'
-                  : 'hover:bg-blue-200 dark:hover:bg-blue-700 text-gray-900 dark:text-white'
-              )}
-            >
-              {m.label}
-            </Link>
-          </li>
-        ))}
-      </ul>
+      <nav className="px-2 pb-6">
+        <ul className="space-y-1">
+          {menuItems.map((m) => {
+            const isActive = pathname === m.href;
+            return (
+              <li key={m.href}>
+                <Link
+                  href={m.href}
+                  prefetch
+                  aria-current={isActive ? 'page' : undefined}
+                  className={clsx(
+                    'block px-3 py-2 rounded transition-colors',
+                    isActive
+                      ? 'bg-blue-600 text-white font-semibold'
+                      : 'text-gray-900 dark:text-white hover:bg-blue-100/70 dark:hover:bg-blue-800/50'
+                  )}
+                >
+                  {m.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
     </aside>
   );
 }
