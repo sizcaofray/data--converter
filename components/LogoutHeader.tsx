@@ -1,157 +1,95 @@
 'use client';
-
 /**
- * LogoutHeader.tsx
- * - 기존 구조 유지: 구독 버튼 + 로그인/로그아웃 전환, role 분기(다른 컴포넌트) 유지
- * - 보완점:
- *   1) redirect 폴백 후 돌아왔을 때 getRedirectResult 처리
- *   2) onAuthStateChanged에서 user가 생기면 /convert로 이동
+ * components/LogoutHeader.tsx
+ * - 기존 헤더 파일을 안전하게 정리: 전역 네비게이션 제거/버튼 기본값 보정/디버그 로그
+ * - "Data conver"로만 튀는 문제의 99%는 헤더 최상단 onClick/Link 범위 남용 때문
  */
 
-import { useEffect, useState, useCallback } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
-import {
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  signInWithPopup,
-  signInWithRedirect,
-  signOut,
-  type User,
-} from 'firebase/auth';
+import React, { useEffect } from 'react';
+import Link from 'next/link';
+// 필요 시: import { useRouter, usePathname } from 'next/navigation';
+// import { useRouter, usePathname } from 'next/navigation';
 
-// ✅ 프로젝트의 클라이언트 Firebase 진입점
-import { auth, completeRedirectSignIn } from '@/lib/firebase';
+type Props = {
+  // 기존에 사용하시던 props가 있으면 유지하세요.
+};
 
-// ✅ 기존 구독 팝업 훅
-import { useSubscribePopup } from '@/contexts/SubscribePopupContext';
+export default function LogoutHeader(props: Props) {
+  // const router = useRouter();
+  // const pathname = usePathname();
 
-export default function LogoutHeader() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const { open } = useSubscribePopup();
-
-  const [user, setUser] = useState<User | null>(null);
-  const [checking, setChecking] = useState(true);
-
-  // 1) 최초 진입 시: redirect 결과 있으면 처리하고 /convert로 이동
+  // ✅ 디버그: 마운트 시 현재 상태 출력
   useEffect(() => {
-    (async () => {
-      try {
-        const justSignedIn = await completeRedirectSignIn();
-        if (justSignedIn) {
-          // 리다이렉트 플로우로 방금 로그인된 경우
-          if (pathname !== '/convert') router.replace('/convert');
-        }
-      } finally {
-        // 이어서 onAuthStateChanged에서 최종 상태 반영
-      }
-    })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // 최초 1회
+    // console.log('[LogoutHeader] mounted. pathname=', pathname);
+    console.log('[LogoutHeader] mounted');
+  }, []);
 
-  // 2) 로그인 상태 구독: user가 생기면 /convert로 이동 (팝업/리다이렉트 모두 커버)
-  useEffect(() => {
-    if (!auth) {
-      console.warn('[LogoutHeader] firebase auth가 정의되지 않았습니다.');
-      setChecking(false);
-      return;
-    }
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setChecking(false);
-      if (u && pathname !== '/convert') {
-        router.replace('/convert');
-      }
-    });
-    return () => unsub();
-  }, [pathname, router]);
+  // ❌ 금지 1) 헤더 컨테이너에 전역 onClick 두지 마세요.
+  // ❌ 금지 2) useEffect로 로그인/role 보고 여기서 router.push(...) 하지 마세요.
+  //    - 로그인 후 이동 로직은 로그인 버튼 클릭 핸들러나 auth 콜백(또는 페이지 레벨)에서 처리하세요.
 
-  // 3) 구글 로그인: 팝업 → 차단/닫힘 시 redirect 폴백
-  const handleLogin = useCallback(async () => {
-    if (!auth) return alert('인증 모듈 초기화 실패. 환경변수/초기화 코드를 확인하세요.');
-    const provider = new GoogleAuthProvider();
-    try {
-      await signInWithPopup(auth, provider);
-      // 팝업 성공: 여기서도 즉시 이동(이중 안전)
-      router.replace('/convert');
-    } catch (e: any) {
-      if (e?.code === 'auth/popup-blocked' || e?.code === 'auth/popup-closed-by-user') {
-        try {
-          await signInWithRedirect(auth, provider);
-          // redirect는 페이지가 이동되므로 여기선 추가 동작 불필요
-          return;
-        } catch (e2: any) {
-          console.error('[LogoutHeader] signInWithRedirect error:', e2);
-          alert('로그인에 실패했습니다. 잠시 후 다시 시도해 주세요.');
-        }
-      } else {
-        console.error('[LogoutHeader] signInWithPopup error:', e);
-        // 도메인 미승인 등 빈번 오류 안내
-        if (e?.code === 'auth/unauthorized-domain') {
-          alert('로그인이 차단되었습니다. Firebase Authentication > Authorized domains에 현재 도메인을 추가하세요.');
-        } else {
-          alert('로그인에 실패했습니다. 잠시 후 다시 시도해 주세요.');
-        }
-      }
-    }
-  }, [router]);
+  // ✅ 로고/브랜드만 안전하게 링크
+  const Brand = (
+    <Link href="/" className="inline-flex items-center gap-2 hover:opacity-80">
+      {/* 로고가 있으면 <Image> 등의 컴포넌트 */}
+      <span className="font-semibold">Data Converter</span>
+    </Link>
+  );
 
-  const handleLogout = useCallback(async () => {
-    if (!auth) return;
-    try {
-      await signOut(auth);
-      router.push('/');
-    } catch (e) {
-      console.error('[LogoutHeader] signOut error:', e);
-      alert('로그아웃에 실패했습니다. 잠시 후 다시 시도해 주세요.');
-    }
-  }, [router]);
+  // ✅ 로그인/구독/로그아웃 버튼들: 반드시 type="button"
+  const LoginButton = (
+    <button
+      type="button"
+      // onClick={... 로그인 핸들러 ...}
+      className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20"
+    >
+      로그인
+    </button>
+  );
 
-  const handleOpenSubscribe = useCallback(() => {
-    if (!user) {
-      handleLogin(); // 미로그인 시 로그인부터
-      return;
-    }
-    open();
-  }, [user, open, handleLogin]);
+  const SubscribeButton = (
+    <button
+      type="button"
+      // onClick={() => setSubscribeOpen(true)}  // 팝업/모달 오픈만 수행 (절대 라우팅 금지)
+      className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
+    >
+      구독
+    </button>
+  );
+
+  const LogoutButton = (
+    <button
+      type="button"
+      // onClick={... 로그아웃 핸들러 ...}
+      className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20"
+    >
+      로그아웃
+    </button>
+  );
 
   return (
-    <header className="w-full flex justify-end items-center gap-3 px-6 py-3 border-b border-gray-200 bg-white dark:bg-gray-900">
-      {checking && <span className="text-sm opacity-70">로그인 상태 확인 중…</span>}
+    <header
+      className="h-14 border-b border-white/10 flex items-center justify-between px-4 select-none"
+      // 🔒 절대 전체 onClick 두지 말 것
+      // onClick={() => router.push('/convert')}
+    >
+      {/* 좌측: 브랜드(로고 클릭 = 홈으로만 이동) */}
+      <div className="shrink-0">
+        {Brand}
+      </div>
 
-      <button
-        onClick={handleOpenSubscribe}
-        className="text-sm bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600 transition-colors disabled:opacity-60"
-        disabled={checking}
-        aria-label="구독하기"
-      >
-        구독하기
-      </button>
+      {/* 가운데: (필요 시) 페이지 타이틀/검색 등 */}
+      <div className="flex-1 px-4">
+        {/* 빈 영역 클릭 시 아무 동작 없도록 onClick 금지 */}
+      </div>
 
-      {!checking && !user && (
-        <button
-          onClick={handleLogin}
-          className="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition-colors"
-          aria-label="Google로 로그인"
-        >
-          Google 로그인
-        </button>
-      )}
-
-      {!checking && user && (
-        <>
-          <span className="text-sm max-w-[14rem] truncate" title={user.email || undefined}>
-            {user.email}
-          </span>
-          <button
-            onClick={handleLogout}
-            className="text-sm bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600 transition-colors"
-            aria-label="로그아웃"
-          >
-            로그아웃
-          </button>
-        </>
-      )}
+      {/* 우측: 로그인/구독/로그아웃 - 절대 Link 사용 금지 */}
+      <div className="shrink-0 flex items-center gap-3">
+        {/* 사용 중인 상태에 맞춰 조건부 렌더링하세요 */}
+        {SubscribeButton}
+        {LoginButton /* 로그인 상태가 아니면 노출 */}
+        {LogoutButton /* 로그인 상태면 노출 */}
+      </div>
     </header>
   );
 }
