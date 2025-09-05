@@ -1,25 +1,15 @@
 /* app/globals.css */
-/* Tailwind 레이어 */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* 브라우저가 라이트/다크 양쪽을 지원하도록 힌트 */
-:root {
-  color-scheme: light dark;
-}
+/* 브라우저 라이트/다크 양쪽 지원 힌트 */
+:root { color-scheme: light dark; }
 
-/* 기본(라이트) 테마: 흰 배경 + 진한 글자 */
-html, body {
-  @apply min-h-screen bg-white text-slate-900;
-}
+/* 라이트(기본) */
+html { @apply bg-white text-slate-900; }
+/* 다크(.dark 클래스가 붙으면) */
+html.dark { @apply bg-gray-900 text-white; }
 
-/* 다크 테마: OS가 다크일 때 자동 적용 */
-@media (prefers-color-scheme: dark) {
-  html, body {
-    @apply bg-gray-900 text-white;
-  }
-}
-
-/* 선택: 이미지가 다크에서도 원본처럼 보이길 원하면(필요 시만)
-   img, video { filter: none !important; } */
+/* 페이지 높이/전환 */
+body { @apply min-h-screen transition-colors; }

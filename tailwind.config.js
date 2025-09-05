@@ -1,7 +1,7 @@
 // tailwind.config.js
-// 목적: OS 다크모드 자동 반영을 위해 darkMode='media' 명시
+// darkMode를 'class'로: HTML의 .dark 클래스로 테마 전환(우리는 아래 스크립트로 OS에 맞춰 자동 토글)
 module.exports = {
-  darkMode: 'media', // ✅ OS의 prefers-color-scheme을 그대로 따름
+  darkMode: 'class', // ✅ OS 따라 자동 토글(아래 app/layout.tsx의 Script가 담당)
   content: [
     './app/**/*.{js,ts,jsx,tsx}',
     './components/**/*.{js,ts,jsx,tsx}',
