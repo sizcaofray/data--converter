@@ -1,7 +1,7 @@
 // tailwind.config.js
-// 목적: 다크 모드 자동 적용을 위해 darkMode 전략을 'media'로 명시
+// 목적: OS 다크모드 자동 반영을 위해 darkMode='media' 명시
 module.exports = {
-  darkMode: 'media', // ✅ OS 테마 자동 감지(강제 'dark' 클래스 불필요)
+  darkMode: 'media', // ✅ OS의 prefers-color-scheme을 그대로 따름
   content: [
     './app/**/*.{js,ts,jsx,tsx}',
     './components/**/*.{js,ts,jsx,tsx}',
