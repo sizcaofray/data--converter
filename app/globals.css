@@ -1,7 +1,25 @@
+/* globals.css */
+/* 목적: OS 테마(라이트/다크)에 맞춰 자연스럽게 배경/텍스트 색 자동 전환 */
+
+/* Tailwind 레이어 */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* 브라우저 기본 UI(폼/스크롤바 등)도 라이트/다크 모두 지원 */
+:root {
+  color-scheme: light dark; /* ✅ 시스템 테마 힌트 */
+}
+
+/* 기본(라이트) 테마 */
 html, body {
-  @apply bg-white text-black dark:bg-gray-900 dark:text-white;
+  /* ✅ 강제 'dark:' 클래스 없이 라이트 기본을 선언 */
+  @apply min-h-screen bg-white text-slate-900;
+}
+
+/* 다크 테마: OS 설정이 다크일 때 자동 적용 */
+@media (prefers-color-scheme: dark) {
+  html, body {
+    @apply bg-gray-900 text-white;
+  }
 }

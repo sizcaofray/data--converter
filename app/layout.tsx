@@ -19,7 +19,8 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ko" suppressHydrationWarning>
-      <body>
+      {/* ✅ 색상은 globals.css의 미디어쿼리가 담당합니다. 강제 색상 클래스 없음 */}
+      <body className="min-h-screen transition-colors">
         {/* 전역 스크립트/가드 */}
         <BootpayScript />
         <ServerKeyGuard />
