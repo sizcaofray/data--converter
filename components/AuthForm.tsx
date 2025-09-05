@@ -21,76 +21,98 @@ export default function AuthForm() {
   const [loading, setLoading] = useState(true)
   const router = useRouter()
 
-  // 🔹 Firestore에 사용자 문서가 없을 경우 기본 role로 생성
+  /**
+   * 🔧 사용자 문서 보장/보정:
+   * - 최초 로그인 시 문서가 없으면 기본 필드(role, isSubscribed) 포함해 생성
+   * - 문서가 있어도 누락된 필드가 있으면 merge 로 보정
+   */
   const ensureUserDocument = async (uid: string, email: string) => {
-    const userRef = doc(db, "users", uid)
+    const userRef = doc(db, 'users', uid)
     const snap = await getDoc(userRef)
 
     if (!snap.exists()) {
-      await setDoc(userRef, {
-        uid,
-        email,
-        role: "free",
-        createdAt: new Date().toISOString(),
-      })
-      console.log("✅ 사용자 문서 생성됨 (role: free)")
-    } else {
-      console.log("ℹ️ 사용자 문서 존재 (role:", snap.data().role, ")")
+      await setDoc(
+        userRef,
+        {
+          uid,
+          email,
+          role: 'user',          // ✅ 기본 롤
+          isSubscribed: false,   // ✅ 기본 구독 상태
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        { merge: true }
+      )
+      return
+    }
+
+    const data = snap.data() as any
+    const patch: Record<string, any> = {}
+    let needsUpdate = false
+
+    if (typeof data.role === 'undefined') {
+      patch.role = 'user'
+      needsUpdate = true
+    }
+    if (typeof data.isSubscribed === 'undefined') {
+      patch.isSubscribed = false
+      needsUpdate = true
+    }
+    if (needsUpdate) {
+      patch.updatedAt = Date.now()
+      await setDoc(userRef, patch, { merge: true })
     }
   }
 
-  // 🔹 로그인 상태 변화 감지 및 사용자 문서 확인
+  // ✅ 로그인 유지: 로컬(브라우저 재시작 후에도 유지되길 원하면 browserLocalPersistence)
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    setPersistence(auth, browserLocalPersistence)
+
+    const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
-        setUserEmail(user.email)
-        await ensureUserDocument(user.uid, user.email!)
+        setUserEmail(user.email ?? null)
+        // 🔑 사용자 문서 보장/보정
+        await ensureUserDocument(user.uid, user.email ?? '')
       } else {
         setUserEmail(null)
       }
       setLoading(false)
     })
-    return () => unsubscribe()
+    return () => unsub()
   }, [])
 
-  // 🔹 Google 로그인 처리
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider()
-
-    try {
-      await setPersistence(auth, browserLocalPersistence)
-      const result = await signInWithPopup(auth, provider)
-      setUserEmail(result.user.email)
-      await ensureUserDocument(result.user.uid, result.user.email!)
-      console.log('✅ 로그인 성공:', result.user.uid)
-      router.push('/convert')
-    } catch (error) {
-      console.error('❌ 로그인 실패:', error)
-    }
+    const cred = await signInWithPopup(auth, provider)
+    const u = cred.user
+    setUserEmail(u.email ?? null)
+    // 🔑 로그인 직후에도 보장/보정
+    await ensureUserDocument(u.uid, u.email ?? '')
+    // 필요 시 라우팅
+    // router.push('/convert')
   }
 
-  // 🔹 로그아웃 처리
   const handleLogout = async () => {
     await signOut(auth)
     setUserEmail(null)
-    console.log('🔓 로그아웃 완료')
-    router.push('/')
+    // router.push('/')
   }
 
-  // 🔹 UI 렌더링
   return (
-    <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg border dark:border-gray-700 max-w-xs">
+    <div className="w-full max-w-sm mx-auto border rounded-lg p-4 space-y-3">
+      {/* 단순한 상태 출력 */}
       {loading ? (
-        <p className="text-center text-gray-500">로딩 중...</p>
+        <div className="text-sm text-gray-500">인증 상태 확인 중…</div>
       ) : (
         <>
-          <h2 className="text-lg font-semibold mb-4 text-gray-800 dark:text-gray-100 text-center">
-            {userEmail ? `환영합니다, ${userEmail}` : '로그인'}
-          </h2>
+          <div className="text-sm">
+            {userEmail ? `로그인됨: ${userEmail}` : '로그인 필요'}
+          </div>
+
           {userEmail ? (
             <button
               onClick={handleLogout}
-              className="w-full bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700"
+              className="w-full border px-4 py-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition"
             >
               로그아웃
             </button>
