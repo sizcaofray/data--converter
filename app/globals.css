@@ -3,14 +3,17 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 브라우저 라이트/다크 양쪽 지원 힌트 */
+/* 브라우저 라이트/다크 모두 지원 힌트 */
 :root { color-scheme: light dark; }
 
-/* 라이트(기본) - 루트에서 기본 가독성 보장 */
-html { @apply bg-white text-slate-900; }
+@layer base {
+  /* 기본 페이지 크기 */
+  html { @apply min-h-screen; }
+  body { @apply min-h-screen transition-colors; }
 
-/* 다크 - html에 .dark 가 붙으면 즉시 반전 */
-html.dark { @apply bg-gray-900 text-white; }
+  /* 라이트(기본) */
+  html:not(.dark) body { @apply bg-white text-slate-900; }
 
-/* 페이지 높이/전환(디자인 변경 없음) */
-body { @apply min-h-screen transition-colors; }
+  /* 다크(.dark가 html에 붙으면) */
+  html.dark body { @apply bg-gray-900 text-white; }
+}

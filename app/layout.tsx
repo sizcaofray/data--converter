@@ -18,9 +18,11 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ko" suppressHydrationWarning>
-      {/* ✅ OS 테마 자동 감지: 초기 렌더 전에 html.dark 클래스를 토글 */}
-      <Script id="theme-watcher" strategy="beforeInteractive">
-        {`
+      <head>
+        {/* OS 테마 자동 감지: 초기 렌더 전에 html.dark 클래스를 토글 */}
+        <meta name="color-scheme" content="light dark" />
+        <Script id="theme-watcher" strategy="beforeInteractive">
+          {`
 (function () {
   try {
     var mql = window.matchMedia('(prefers-color-scheme: dark)');
@@ -31,11 +33,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     };
     apply();
     if (mql.addEventListener) mql.addEventListener('change', apply);
-    else if (mql.addListener) mql.addListener(apply); // Safari 구버전 대응
+    else if (mql.addListener) mql.addListener(apply);
   } catch (e) {}
 })();
-        `}
-      </Script>
+          `}
+        </Script>
+      </head>
 
       {/* 색상은 globals.css가 처리. 여기선 높이/전환만 */}
       <body className="min-h-screen transition-colors">
