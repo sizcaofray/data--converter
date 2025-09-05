@@ -18,7 +18,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ko" suppressHydrationWarning>
-      {/* ✅ OS 테마를 자동으로 감지하여 .dark 클래스를 토글 */}
+      {/* ✅ OS 테마 자동 감지: 초기 렌더 전에 html.dark 클래스를 토글 */}
       <Script id="theme-watcher" strategy="beforeInteractive">
         {`
 (function () {
