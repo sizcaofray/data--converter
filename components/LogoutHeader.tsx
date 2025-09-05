@@ -1,6 +1,12 @@
 'use client'
+/**
+ * LogoutHeader.tsx
+ * - 디자인/마크업은 기존 그대로 유지
+ * - 로그인 버튼: 로그인 안 된 경우에만 보이도록 {!user}
+ * - 로그아웃 버튼: 로그인 된 경우에만 보이도록 {user}
+ * - 버튼 onClick 핸들러만 Firebase Auth 로직으로 연결
+ */
 
-// ✅ 디자인/마크업은 손대지 않습니다. 아래 로직만 추가/교체하세요.
 import { useEffect, useState } from 'react'
 import { auth } from '@/lib/firebase/firebase'
 import {
@@ -13,13 +19,11 @@ import {
 } from 'firebase/auth'
 
 export default function LogoutHeader() {
-  const [init, setInit] = useState(true)     // 초기 로딩 중인지
-  const [user, setUser] = useState<any>(null) // 로그인 사용자
+  const [init, setInit] = useState(true)
+  const [user, setUser] = useState<any>(null)
 
   useEffect(() => {
-    // 세션 유지(브라우저 재시작 후에도 로그인 유지)
     setPersistence(auth, browserLocalPersistence).catch(() => null)
-
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u || null)
       setInit(false)
@@ -27,41 +31,38 @@ export default function LogoutHeader() {
     return () => unsub()
   }, [])
 
-  // ⛔ 초기 로딩 중엔 버튼 깜빡임/중복 노출 방지: 아무것도 안 그립니다.
+  // ✅ 핸들러만 정의하고, 기존 버튼 onClick에 연결
+  const onLogin = async () => {
+    const provider = new GoogleAuthProvider()
+    await signInWithPopup(auth, provider)
+  }
+
+  const onLogout = async () => {
+    await signOut(auth)
+  }
+
+  // 로딩 시 깜빡임 방지
   if (init) return null
 
-  // ✅ 여기부터는 "기존 헤더 마크업"을 그대로 두고,
-  //    로그인/로그아웃 버튼 부분만 조건으로 감싸세요.
   return (
-    <header className="/* 기존 클래스 유지 */">
-      {/* ... (기존 로고/메뉴/구독버튼 등 전부 그대로) ... */}
+    // ⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇  !!! 여기 “안쪽”은 기존의 헤더 마크업을 그대로 두세요 !!!  ⬇⬇⬇⬇⬇⬇⬇⬇⬇⬇
+    <header className="/* 기존 클래스 그대로 */">
+      {/* ... 로고/네비/구독 버튼 등 기존 요소 그대로 ... */}
 
-      {/* 🔻 로그인 안 된 상태에서만 '로그인' 버튼 보이게 */}
+      {/* 🔻 기존 '로그인' 버튼 조각을 이 블록 안으로 옮겨 주세요 (클래스/스타일 그대로) */}
       {!user && (
-        <button
-          onClick={async () => {
-            const provider = new GoogleAuthProvider()
-            await signInWithPopup(auth, provider)
-            // 필요하면 로그인 직후 라우팅: location.href = '/convert'
-          }}
-          className="/* 기존 버튼 클래스 그대로 */"
-        >
+        <button onClick={onLogin} className="/* 기존 로그인 버튼 클래스 그대로 */">
           로그인
         </button>
       )}
 
-      {/* 🔻 로그인 된 상태에서만 '로그아웃' 버튼 보이게 */}
+      {/* 🔻 기존 '로그아웃' 버튼 조각을 이 블록 안으로 옮겨 주세요 (클래스/스타일 그대로) */}
       {user && (
-        <button
-          onClick={async () => {
-            await signOut(auth)
-            // 필요하면 로그아웃 직후 라우팅: location.href = '/'
-          }}
-          className="/* 기존 버튼 클래스 그대로 */"
-        >
+        <button onClick={onLogout} className="/* 기존 로그아웃 버튼 클래스 그대로 */">
           로그아웃
         </button>
       )}
     </header>
+    // ⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆  디자인/클래스 변경 금지. 텍스트만 조건으로 감싸는 방식  ⬆⬆⬆⬆⬆⬆⬆⬆⬆⬆
   )
 }

@@ -1,70 +1,72 @@
-'use client';
-
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import clsx from 'clsx';
-
-// 🔻 최소 의존: 여기서 직접 auth/db 사용 (신규 파일 생성 금지)
-import { auth, db } from '@/lib/firebase/firebase';
-import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
-
+'use client'
 /**
- * 좌측 사이드바
- * - ✅ 비구독 사용자는 "Data Convert"만 노출
- * - ✅ 구독자(또는 관리자)는 전체 노출 (현 단계에서는 구독 여부만 반영)
- * - next/link 로 클라이언트 내비게이션
- * - usePathname 으로 활성 메뉴 하이라이트
+ * Sidebar.tsx
+ * - 관리자(role==='admin') 또는 구독자(isSubscribed===true) ⇒ 전체 메뉴 노출
+ * - 그 외(비구독 일반 사용자) ⇒ Data Convert만 노출
+ * - 디자인/클래스 구조는 기존과 동일하게 유지하세요. (필요시 아래 className만 기존 값으로 바꾸면 됨)
  */
+
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import { useEffect, useState } from 'react'
+import { auth, db } from '@/lib/firebase/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
+import { doc, getDoc } from 'firebase/firestore'
+import clsx from 'clsx'
+
 export default function Sidebar() {
-  const pathname = usePathname();
+  const pathname = usePathname()
 
-  // 🔐 구독 여부 상태
-  const [loading, setLoading] = useState(true);
-  const [isSubscribed, setIsSubscribed] = useState(false);
+  // 🔐 상태
+  const [loading, setLoading] = useState(true)
+  const [isSubscribed, setIsSubscribed] = useState(false)
+  const [role, setRole] = useState<'admin' | 'user' | undefined>(undefined)
 
-  // 🔎 로그인/구독 상태 확인 (최소 구현: 이 컴포넌트 내부에서만 처리)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
-        setIsSubscribed(false);
-        setLoading(false);
-        return;
+        setIsSubscribed(false)
+        setRole(undefined)
+        setLoading(false)
+        return
       }
       try {
-        const ref = doc(db, 'users', u.uid);
-        const snap = await getDoc(ref);
-        const data = snap.exists() ? (snap.data() as any) : {};
-        setIsSubscribed(!!data.isSubscribed);
+        const ref = doc(db, 'users', u.uid)
+        const snap = await getDoc(ref)
+        const data = snap.exists() ? (snap.data() as any) : {}
+        setIsSubscribed(!!data.isSubscribed)
+        setRole((data.role as 'admin' | 'user') ?? 'user')
       } catch {
-        setIsSubscribed(false);
+        setIsSubscribed(false)
+        setRole('user')
       } finally {
-        setLoading(false);
+        setLoading(false)
       }
-    });
-    return () => unsub();
-  }, []);
+    })
+    return () => unsub()
+  }, [])
 
-  // ⚠️ 라벨/순서는 현재 프로젝트 표기 그대로 유지(영문/한글 변경 금지)
+  const canSeeAll = (role === 'admin') || isSubscribed
+
+  // ⚠️ 라벨/경로는 기존 그대로 유지
   const menuItems = [
     { href: '/convert', label: 'Data Convert', requiresSub: false },
-    { href: '/compare', label: 'Compare', requiresSub: true },
-    { href: '/random',  label: 'Random',  requiresSub: true },
-    { href: '/admin',   label: 'Admin',   requiresSub: true },
-  ];
+    { href: '/compare', label: 'Compare',      requiresSub: true  },
+    { href: '/random',  label: 'Random',       requiresSub: true  },
+    { href: '/admin',   label: 'Admin',        requiresSub: true  },
+  ]
 
-  // ✅ 비구독자는 requiresSub=false 만 보여줌
+  // 로딩 중에는 깜빡임 방지: convert만 임시 노출
   const visible = loading
-    ? menuItems.filter(m => m.href === '/convert') // 로딩 중 깜빡임 최소화
-    : menuItems.filter(m => !m.requiresSub || isSubscribed);
+    ? menuItems.filter(m => m.href === '/convert')
+    : (canSeeAll ? menuItems : menuItems.filter(m => !m.requiresSub))
 
   return (
     <aside className="w-64 shrink-0 border-r bg-gray-50 dark:bg-gray-900 min-h-screen">
       <nav className="px-3 py-4">
         <ul className="space-y-1">
           {visible.map((m) => {
-            const active = pathname === m.href; // 현재 경로와 동일하면 활성화
+            const active = pathname === m.href || pathname.startsWith(m.href + '/')
             return (
               <li key={m.href}>
                 <Link
@@ -73,17 +75,17 @@ export default function Sidebar() {
                   className={clsx(
                     'block px-3 py-2 rounded-md text-sm transition',
                     active
-                      ? 'bg-blue-600 text-white font-semibold' // 활성 메뉴 스타일
+                      ? 'bg-blue-600 text-white font-semibold'
                       : 'text-gray-900 dark:text-white hover:bg-blue-100/70 dark:hover:bg-blue-800/40'
                   )}
                 >
                   {m.label}
                 </Link>
               </li>
-            );
+            )
           })}
         </ul>
       </nav>
     </aside>
-  );
+  )
 }
