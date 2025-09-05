@@ -1,8 +1,9 @@
 ﻿'use client'
 /**
  * app/(contents)/layout.tsx
- * - 관리자(role==='admin') 또는 구독자 ⇒ 접근 제한 없음
- * - 그 외 ⇒ /convert만 허용
+ * - ✅ 비로그인 → 항상 메인('/')으로 이동
+ * - ✅ 로그인 & (admin 또는 isSubscribed) → 전체 접근
+ * - ✅ 로그인 & (비구독 일반사용자) → '/convert'만 허용
  * - 헤더/사이드바 디자인은 건드리지 않고 로직만 추가
  */
 
@@ -19,11 +20,13 @@ export default function ContentsLayout({ children }: { children: React.ReactNode
   const pathname = usePathname()
 
   const [loading, setLoading] = useState(true)
+  const [signedIn, setSignedIn] = useState(false)                // ✅ 추가: 로그인 여부
   const [isSubscribed, setIsSubscribed] = useState(false)
   const [role, setRole] = useState<'admin' | 'user' | undefined>(undefined)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
+      setSignedIn(!!u)                                           // ✅ 추가
       if (!u) {
         setIsSubscribed(false)
         setRole(undefined)
@@ -51,11 +54,20 @@ export default function ContentsLayout({ children }: { children: React.ReactNode
 
   useEffect(() => {
     if (loading) return
+
+    // ✅ 1) 비로그인 사용자는 항상 메인('/')으로 이동
+    if (!signedIn) {
+      if (pathname !== '/') router.replace('/')
+      return
+    }
+
+    // ✅ 2) 로그인했지만 비구독 일반사용자면 '/convert'만 허용
     if (!canSeeAll) {
       const allowed = FREE_ALLOW.some((p) => pathname.startsWith(p))
       if (!allowed) router.replace('/convert')
     }
-  }, [loading, canSeeAll, pathname, router])
+    // ✅ 3) 관리자/구독자는 제한 없음
+  }, [loading, signedIn, canSeeAll, pathname, router])          // ✅ 의존성에 signedIn 추가
 
   return (
     <div className="min-h-screen w-full flex">

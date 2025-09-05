@@ -9,6 +9,7 @@
 
 import React, { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'   // ✅ 추가: 로그아웃 후 '/' 이동
 
 // ✅ Firebase Auth만 사용 (NextAuth 연동 금지)
 import { auth } from '@/lib/firebase/firebase'
@@ -24,6 +25,7 @@ import {
 type Props = {}
 
 export default function LogoutHeader(props: Props) {
+  const router = useRouter()                  // ✅ 추가
   // 초기 로딩 중에도 헤더 자체는 보여주고, 버튼/이메일만 조건부로 바꿈
   const [init, setInit] = useState(true)
   const [user, setUser] = useState<any>(null)
@@ -44,12 +46,13 @@ export default function LogoutHeader(props: Props) {
   const onLogin = async () => {
     const provider = new GoogleAuthProvider()
     await signInWithPopup(auth, provider)
-    // 필요 시: 로그인 직후 이동 → location.href = '/convert'
+    // (선택) 로그인 직후 이동이 필요하면 아래 주석 해제
+    // router.replace('/convert')
   }
 
   const onLogout = async () => {
     await signOut(auth)
-    // 필요 시: 로그아웃 직후 이동 → location.href = '/'
+    router.replace('/')                       // ✅ 로그아웃 후 메인('/')으로 이동
   }
 
   return (
