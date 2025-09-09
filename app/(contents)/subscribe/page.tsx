@@ -15,13 +15,8 @@ export default function SubscribePage() {
     { name: 'Premium', price: 100000, key: 'premium', description: 'Validation, Report 제공' },
   ];
 
-  const openPopup = () => {
-    setShowPopup(true);
-  };
-
-  const closePopup = () => {
-    setShowPopup(false);
-  };
+  const openPopup = () => setShowPopup(true);
+  const closePopup = () => setShowPopup(false);
 
   const requestPayment = (plan: any) => {
     alert(`${plan.name} 결제를 진행합니다.`);
@@ -33,7 +28,10 @@ export default function SubscribePage() {
       <BootpayScript />
 
       <h1 className="text-2xl font-bold mb-4">💳 구독 및 결제</h1>
-      <p className="text-gray-600 mb-6">프리미엄 기능을 사용하시려면 구독 결제를 진행해주세요.</p>
+      {/* ✅ 라이트/다크 모두 가독성 유지 */}
+      <p className="text-gray-600 dark:text-gray-300 mb-6">
+        프리미엄 기능을 사용하시려면 구독 결제를 진행해주세요.
+      </p>
 
       <button
         onClick={openPopup}
@@ -50,13 +48,15 @@ export default function SubscribePage() {
         >
           {/* 팝업 카드 */}
           <div
-            className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-xl w-[95%] max-w-5xl relative"
+            /* ✅ 카드 배경/텍스트: 라이트(흰 배경=진한 글자), 다크(어두운 배경=흰 글자) */
+            className="bg-white text-slate-900 dark:bg-gray-900 dark:text-white p-6 rounded-lg shadow-xl w-[95%] max-w-5xl relative"
             onClick={(e) => e.stopPropagation()}
           >
             {/* 닫기 버튼 */}
             <button
               onClick={closePopup}
-              className="absolute top-2 right-2 text-gray-500 hover:text-gray-700 text-xl"
+              className="absolute top-2 right-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 text-xl"
+              aria-label="닫기"
             >
               &times;
             </button>
@@ -81,11 +81,13 @@ export default function SubscribePage() {
                           <span className="ml-2 text-blue-500 text-sm">(현재결재상태)</span>
                         )}
                       </div>
-                      <div className="text-right text-gray-600">
+                      {/* ✅ 가격 글씨도 다크에서 적절히 보이도록 */}
+                      <div className="text-right text-gray-600 dark:text-gray-300">
                         {plan.price === 0 ? '무료' : plan.price.toLocaleString() + '원'}
                       </div>
                     </div>
-                    <p className="text-sm text-gray-500">
+                    {/* ✅ 설명 가독성 */}
+                    <p className="text-sm text-gray-500 dark:text-gray-300">
                       {plan.description}
                     </p>
                   </div>

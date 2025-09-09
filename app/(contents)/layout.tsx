@@ -94,7 +94,8 @@ export default function ContentsLayout({ children }: { children: React.ReactNode
   }, [loading, signedIn, canSeeAll, pathname, router])
 
   return (
-    <div className="min-h-screen w-full flex">
+    // ✅ 라이트/다크 기본 텍스트 상속을 올바르게 설정
+    <div className="min-h-screen w-full flex text-slate-900 dark:text-white">
       {/* 좌측: 사이드바 (디자인/마크업 그대로) */}
       <Sidebar />
 
@@ -104,7 +105,7 @@ export default function ContentsLayout({ children }: { children: React.ReactNode
         <main className="flex-1 overflow-auto p-4">
           {/* 로딩 중에는 콘텐츠 대신 안내 한 줄만 */}
           {loading ? (
-            <div className="text-sm text-gray-500">권한 확인 중…</div>
+            <div className="text-sm text-gray-500 dark:text-gray-400">권한 확인 중…</div>
           ) : (
             children
           )}

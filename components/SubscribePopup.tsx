@@ -104,11 +104,13 @@ function SubscribePopup() {
                     </span>
                   )}
                 </div>
-                <div className="text-right text-gray-600">
+                {/* ✅ 가격: 다크에서 가독성 향상 */}
+                <div className="text-right text-gray-600 dark:text-gray-300">
                   {plan.price === 0 ? '무료' : plan.price.toLocaleString() + '원'}
                 </div>
               </div>
-              <p className="text-sm text-gray-500">{plan.description}</p>
+              {/* ✅ 설명: 다크에서 가독성 향상 */}
+              <p className="text-sm text-gray-500 dark:text-gray-300">{plan.description}</p>
             </div>
           </div>
         );
@@ -119,12 +121,13 @@ function SubscribePopup() {
   return (
     <div className="fixed inset-0 bg-black/50 z-50 grid place-items-center" onClick={close}>
       <div
-        className="bg-white dark:bg-gray-900 p-6 rounded-lg shadow-xl w-[95%] max-w-5xl relative"
+        /* ✅ 카드 배경/텍스트 가독성 보장 */
+        className="bg-white text-slate-900 dark:bg-gray-900 dark:text-white p-6 rounded-lg shadow-xl w-[95%] max-w-5xl relative"
         onClick={(e) => e.stopPropagation()}
       >
         <button
           onClick={close}
-          className="absolute top-2 right-2 text-gray-500 hover:text-gray-700 text-xl"
+          className="absolute top-2 right-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 text-xl"
           aria-label="닫기"
         >
           &times;
