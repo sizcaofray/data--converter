@@ -1,11 +1,11 @@
-// tailwind.config.js
-// 목적: dark 모드를 .dark 클래스로 전환(OS 설정은 layout의 head 스크립트가 자동 반영)
+/** @type {import('tailwindcss').Config} */
 module.exports = {
-  darkMode: 'class',
+  // ✅ OS 설정 자동으로 따름. .dark 클래스/스크립트 불필요.
+  darkMode: 'media',
   content: [
     './app/**/*.{js,ts,jsx,tsx}',
     './components/**/*.{js,ts,jsx,tsx}',
   ],
   theme: { extend: {} },
   plugins: [],
-}
+};

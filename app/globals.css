@@ -3,17 +3,28 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 브라우저 라이트/다크 모두 지원 힌트 */
+/* 라이트/다크 모두 지원 */
 :root { color-scheme: light dark; }
 
-@layer base {
-  /* 기본 페이지 크기 */
-  html { @apply min-h-screen; }
-  body { @apply min-h-screen transition-colors; }
+/* 페이지 크기/전환만 전역으로 지정 */
+html, body { min-height: 100%; }
+body { transition: color 150ms ease, background-color 150ms ease; }
 
-  /* 라이트(기본) */
-  html:not(.dark) body { @apply bg-white text-slate-900; }
+/* 라이트 기본 (흰 배경 + 진한 글자) */
+body {
+  background-color: #ffffff;       /* white */
+  color: #0f172a;                  /* slate-900 */
+}
 
-  /* 다크(.dark가 html에 붙으면) */
-  html.dark body { @apply bg-gray-900 text-white; }
+/* 다크 기본 (어두운 배경 + 흰 글자) — OS 자동 반영 */
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #0f172a;     /* slate-900 근사 */
+    color: #ffffff;
+  }
+}
+
+/* 모션 축소 환경 */
+@media (prefers-reduced-motion: reduce) {
+  body { transition: none; }
 }
