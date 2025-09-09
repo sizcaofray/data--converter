@@ -5,8 +5,7 @@ import { ReactNode } from 'react';
 
 import BootpayScript from '@/components/BootpayScript';
 import LayoutEffectWrapper from '@/components/LayoutEffectWrapper';
-// ※ 다크모드용 스크립트(HTML에 .dark 추가)는 사용하지 않습니다.
-
+import ServerKeyGuard from '@/components/session/ServerKeyGuard'; // 사용 중이면 유지 그대로
 import { UserProvider } from '@/contexts/UserContext';
 import { SubscribePopupProvider } from '@/contexts/SubscribePopupContext';
 
@@ -18,14 +17,13 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ko" suppressHydrationWarning>
-      {/* 색상은 전부 globals.css의 media 쿼리가 담당 */}
+      {/* 색상은 globals.css의 media 쿼리가 담당 */}
       <body className="min-h-screen transition-colors">
         <BootpayScript />
+        <ServerKeyGuard />
         <LayoutEffectWrapper />
         <SubscribePopupProvider>
-          <UserProvider>
-            {children}
-          </UserProvider>
+          <UserProvider>{children}</UserProvider>
         </SubscribePopupProvider>
       </body>
     </html>
