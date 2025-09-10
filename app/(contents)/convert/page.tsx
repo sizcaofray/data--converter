@@ -23,7 +23,12 @@ export default function ConvertPage() {
       {/* ⬇ 이 제목/설명은 메뉴 전환 시 우측 영역이 교체되는지 확인용 */}
       <h1 className="text-2xl font-bold">📁 파일 변환</h1>
       <p className="text-sm text-gray-500">
-        좌측에서 <strong>Convert</strong>를 클릭하면 이 영역이 우측 프레임에 표시됩니다.
+        파일을 변환 합니다.
+        1) 'Excel to Other' 또는 'Other to Excel' 중 하나를 선택하여 체크 합니다.
+        2) '파일선택' 버튼을 클릭하여 변환할 파일을 선택하거나 파일을 드래그 드롭으로 업로드 합니다.
+        3) 'Excel to Other'를 선택한 경우 변환할 형식을 선택합니다.
+        4) 'Other to Excel'는 변환 가능한 파일을 업로드 합니다.(현재가능 : CSV, TXT)
+        5) '변환시작' 버튼을 클릭하여 파일 변환을 시작합니다.
       </p>
 
       {/* ⬇ 기존 기능 컴포넌트 그대로 렌더 (기능 로직 미변경) */}
