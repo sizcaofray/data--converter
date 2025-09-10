@@ -27,7 +27,8 @@ export default function Home() {
       "
     >
       {/* 로그인 폼: 상속된 흰 글자(color) 차단 */}
-      <aside className="w-64 bg-white text-slate-900 dark:bg-gray-900 dark:text-white">
+      
+<aside className="w-64 bg-white text-slate-900 dark:bg-gray-900 dark:text-white">
         <AuthForm />
       </div>
 
