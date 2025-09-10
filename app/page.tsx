@@ -26,11 +26,10 @@ export default function Home() {
         dark:from-slate-900 dark:to-gray-950
       "
     >
-      {/* 로그인 폼: 상속된 흰 글자(color) 차단 */}
-      
-<aside className="w-64 bg-white text-slate-900 dark:bg-gray-900 dark:text-white">
+      {/* 로그인 폼 */}
+      <aside className="absolute top-6 right-6 z-10 w-64 bg-white text-slate-900 dark:bg-gray-900 dark:text-white rounded-2xl shadow p-6">
         <AuthForm />
-      </div>
+      </aside>
 
       {/* 메인 콘텐츠 */}
       <div className="flex flex-col items-center justify-center text-center pt-32 px-4">
