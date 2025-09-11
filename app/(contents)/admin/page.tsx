@@ -292,7 +292,9 @@ export default function AdminPage() {
                 {/* Role */}
                 <td className="py-2 pr-4 align-top">
                   <select
-                    className="border rounded px-2 py-1 bg-transparent"
+                    className="border rounded px-2 py-1 bg-white text-gray-900 dark:bg-transparent dark:text-gray-100 
+                    focus:outline-none focus:ring-2 focus:ring-blue-500 
+                    disabled:text-gray-400"
                     value={r.role}
                     onChange={(e) => patchRow(r.uid, { role: e.target.value as Role })}
                   >
