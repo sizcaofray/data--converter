@@ -1,69 +1,103 @@
 'use client';
 /**
  * contexts/UserContext.tsx
- * 기존 파일 구조 유지 + Firestore에서 role 동기화 복원
- * - auth 상태를 구독하고, 로그인된 사용자의 users/{uid} 문서에서 role을 읽어 컨텍스트에 반영
- * - role 미지정 시: isPaid → 'pro' / 기본 'free'
- * - 최소 변경으로 관리자 인식 실패(⛔ 관리자 권한) 문제를 해소
+ * - Firestore users/{uid} 문서를 읽어 role 등 상태를 컨텍스트로 제공
+ * - 신규 필드 노출: uniqueId(읽기), joinedAt(읽기), subscriptionStartAt/EndAt(읽기), isSubscribed(읽기)
+ * - 남은 일수(remainingDays)는 EndAt 기준으로 계산하여 파생 제공(저장은 하지 않음)
  */
+
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { User as FirebaseUser } from 'firebase/auth';
 import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from '@/lib/firebase/client';       // ✅ 기존 auth 모듈 그대로 사용
-import { db } from '@/lib/firebase/firebase';       // ✅ 기존 Firestore 클라이언트 사용
-import { doc, getDoc } from 'firebase/firestore';
+import { auth } from '@/lib/firebase/client'; // ✅ 기존 경로 유지
+import { db } from '@/lib/firebase/firebase';
+import { doc, getDoc, Timestamp } from 'firebase/firestore';
 
-export type UserRole = 'free' | 'pro' | 'admin';
+type Role = 'free' | 'basic' | 'premium' | 'admin';
 
-export type UserContextType = {
+export interface UserContextType {
   user: FirebaseUser | null;
-  role: UserRole;
+  role: Role;
   loading: boolean;
-};
+  // ▼ 신규 필드(읽기 전용)
+  uniqueId?: string | null;
+  joinedAt?: Timestamp | null;
+  subscriptionStartAt?: Timestamp | null;
+  subscriptionEndAt?: Timestamp | null;
+  isSubscribed?: boolean;
+  remainingDays?: number | null; // 파생 값
+}
 
 const UserContext = createContext<UserContextType>({
   user: null,
   role: 'free',
   loading: true,
+  uniqueId: null,
+  joinedAt: null,
+  subscriptionStartAt: null,
+  subscriptionEndAt: null,
+  isSubscribed: false,
+  remainingDays: null,
 });
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [role, setRole] = useState<UserRole>('free');
+  const [role, setRole] = useState<Role>('free');
   const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<{
+    uniqueId?: string | null;
+    joinedAt?: Timestamp | null;
+    subscriptionStartAt?: Timestamp | null;
+    subscriptionEndAt?: Timestamp | null;
+    isSubscribed?: boolean;
+  }>({});
 
-  // 🔁 Auth 상태 구독
+  // ✅ 남은 일수 계산(EndAt 기준)
+  const remainingDays = React.useMemo(() => {
+    if (!profile?.subscriptionEndAt) return null;
+    const end = profile.subscriptionEndAt.toDate().getTime();
+    const now = Date.now();
+    const diffMs = end - now;
+    const d = Math.ceil(diffMs / (1000 * 60 * 60 * 24)); // 오늘 포함해 반올림
+    return d < 0 ? 0 : d;
+  }, [profile?.subscriptionEndAt]);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
       if (!u) {
-        // 로그아웃 상태
         setRole('free');
+        setProfile({});
         setLoading(false);
-        console.info('[UserContext] signed out → role=free');
         return;
       }
 
-      // 로그인 상태 → Firestore에서 role 동기화
       try {
         const ref = doc(db, 'users', u.uid);
         const snap = await getDoc(ref);
-        const data = snap.exists() ? (snap.data() as any) : null;
-        const rawRole = (data?.role ?? '').toString().trim().toLowerCase();
+        const data = snap.data() ?? {};
 
-        // 과거 isPaid 플래그 호환
-        const isPaid = !!data?.isPaid;
+        // role 우선순위: 명시 role → (legacy) isPaid → 기본 free
+        let resolved: Role = 'free';
+        const rawRole = (data?.role ?? '').toString().trim();
+        if (rawRole === 'admin' || rawRole === 'premium' || rawRole === 'basic' || rawRole === 'free') {
+          resolved = rawRole as Role;
+        } else if (data?.isPaid === true || data?.isSubscribed === true) {
+          resolved = 'premium';
+        }
 
-        let nextRole: UserRole = 'free';
-        if (rawRole === 'admin') nextRole = 'admin';
-        else if (rawRole === 'pro') nextRole = 'pro';
-        else nextRole = isPaid ? 'pro' : 'free';
-
-        setRole(nextRole);
-        console.info('[UserContext] role synced:', { uid: u.uid, email: u.email, role: nextRole, rawRole, isPaid });
+        setRole(resolved);
+        setProfile({
+          uniqueId: data?.uniqueId ?? null,
+          joinedAt: data?.joinedAt ?? null,
+          subscriptionStartAt: data?.subscriptionStartAt ?? null,
+          subscriptionEndAt: data?.subscriptionEndAt ?? null,
+          isSubscribed: data?.isSubscribed ?? false,
+        });
       } catch (e) {
-        console.warn('[UserContext] role fetch failed, fallback to free:', e);
+        console.error('[UserContext] 사용자 문서 로드 실패:', e);
+        setProfile({});
         setRole('free');
       } finally {
         setLoading(false);
@@ -74,7 +108,19 @@ export function UserProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <UserContext.Provider value={{ user, role, loading }}>
+    <UserContext.Provider
+      value={{
+        user,
+        role,
+        loading,
+        uniqueId: profile.uniqueId ?? null,
+        joinedAt: profile.joinedAt ?? null,
+        subscriptionStartAt: profile.subscriptionStartAt ?? null,
+        subscriptionEndAt: profile.subscriptionEndAt ?? null,
+        isSubscribed: profile.isSubscribed ?? false,
+        remainingDays,
+      }}
+    >
       {children}
     </UserContext.Provider>
   );

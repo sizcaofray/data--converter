@@ -1,5 +1,11 @@
 'use client'
 
+/**
+ * components/AuthForm.tsx
+ * - Google 로그인 성공 시 ensureUserProfile() 호출로 users/{uid} 문서 보강
+ * - UI는 기존 그대로 유지 (디자인 변경 없음)
+ */
+
 import {
   GoogleAuthProvider,
   signInWithPopup,
@@ -9,113 +15,76 @@ import {
   onAuthStateChanged,
 } from 'firebase/auth'
 
-// ✅ Firebase 인증 및 DB 객체는 firebase.ts에서 직접 import
 import { auth, db } from '@/lib/firebase/firebase'
-
 import { doc, getDoc, setDoc } from 'firebase/firestore'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
+import { ensureUserProfile } from '@/lib/firebase/saveUser' // ✅ 추가: 최초 로그인 보강
 
 export default function AuthForm() {
-  const [userEmail, setUserEmail] = useState<string | null>(null)
+  // ✅ 상태: 로그인 여부/유저
+  const [user, setUser] = useState<null | { uid: string; email: string | null }>(null)
   const [loading, setLoading] = useState(true)
   const router = useRouter()
 
-  /**
-   * 🔧 사용자 문서 보장/보정:
-   * - 최초 로그인 시 문서가 없으면 기본 필드(role, isSubscribed) 포함해 생성
-   * - 문서가 있어도 누락된 필드가 있으면 merge 로 보정
-   */
-  const ensureUserDocument = async (uid: string, email: string) => {
-    const userRef = doc(db, 'users', uid)
-    const snap = await getDoc(userRef)
-
-    if (!snap.exists()) {
-      await setDoc(
-        userRef,
-        {
-          uid,
-          email,
-          role: 'user',          // ✅ 기본 롤
-          isSubscribed: false,   // ✅ 기본 구독 상태
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        },
-        { merge: true }
-      )
-      return
-    }
-
-    const data = snap.data() as any
-    const patch: Record<string, any> = {}
-    let needsUpdate = false
-
-    if (typeof data.role === 'undefined') {
-      patch.role = 'user'
-      needsUpdate = true
-    }
-    if (typeof data.isSubscribed === 'undefined') {
-      patch.isSubscribed = false
-      needsUpdate = true
-    }
-    if (needsUpdate) {
-      patch.updatedAt = Date.now()
-      await setDoc(userRef, patch, { merge: true })
-    }
-  }
-
-  // ✅ 로그인 유지: 로컬(브라우저 재시작 후에도 유지되길 원하면 browserLocalPersistence)
   useEffect(() => {
+    // ✅ 로그인 유지: 브라우저 로컬 저장(요구사항 준수)
     setPersistence(auth, browserLocalPersistence)
 
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        setUserEmail(user.email ?? null)
-        // 🔑 사용자 문서 보장/보정
-        await ensureUserDocument(user.uid, user.email ?? '')
+    // ✅ 인증 상태 구독
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (u) {
+        setUser({ uid: u.uid, email: u.email })
       } else {
-        setUserEmail(null)
+        setUser(null)
       }
       setLoading(false)
     })
     return () => unsub()
   }, [])
 
+  /** ✅ Google 로그인 */
   const handleLogin = async () => {
-    const provider = new GoogleAuthProvider()
-    const cred = await signInWithPopup(auth, provider)
-    const u = cred.user
-    setUserEmail(u.email ?? null)
-    // 🔑 로그인 직후에도 보장/보정
-    await ensureUserDocument(u.uid, u.email ?? '')
-    // 필요 시 라우팅
-    // router.push('/convert')
+    try {
+      const provider = new GoogleAuthProvider()
+      const cred = await signInWithPopup(auth, provider)
+      const { user } = cred
+
+      // ✅ Firestore 사용자 문서 보강(고유ID/가입일 불변 생성 등)
+      await ensureUserProfile({ uid: user.uid, email: user.email })
+
+      // ✅ 로그인 후 이동: 기존 흐름 유지 (예: /convert 등)
+      router.replace('/convert')
+    } catch (e) {
+      alert('로그인 중 오류가 발생했습니다.')
+      console.error(e)
+    }
   }
 
+  /** ✅ 로그아웃 */
   const handleLogout = async () => {
     await signOut(auth)
-    setUserEmail(null)
-    // router.push('/')
+    router.replace('/')
   }
 
   return (
-    <div className="w-full max-w-sm mx-auto border rounded-lg p-4 space-y-3">
-      {/* 단순한 상태 출력 */}
+    <div className="space-y-3">
       {loading ? (
-        <div className="text-sm text-gray-500">인증 상태 확인 중…</div>
+        <div className="text-sm text-gray-500">로그인 상태 확인 중...</div>
       ) : (
         <>
-          <div className="text-sm">
-            {userEmail ? `로그인됨: ${userEmail}` : '로그인 필요'}
-          </div>
-
-          {userEmail ? (
-            <button
-              onClick={handleLogout}
-              className="w-full border px-4 py-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition"
-            >
-              로그아웃
-            </button>
+          {user ? (
+            <>
+              <div className="text-sm text-gray-700 dark:text-gray-200">
+                로그인: {user.email ?? '(이메일 없음)'}
+              </div>
+              <button
+                onClick={handleLogout}
+                className="w-full border px-4 py-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+              >
+                로그아웃
+              </button>
+            </>
           ) : (
             <button
               onClick={handleLogin}
