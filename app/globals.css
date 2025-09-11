@@ -3,7 +3,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 라이트/다크 둘 다 지원 */
+/* 라이트/다크 둘 다 지원 (OS 설정 자동 반영) */
 :root { color-scheme: light dark; }
 
 /* 페이지 크기/전환만 전역으로 지정 */
@@ -27,4 +27,41 @@ body {
 /* 모션 축소 환경 */
 @media (prefers-reduced-motion: reduce) {
   body { transition: none; }
+}
+
+/* ----------------------------- */
+/* Select/Option 전역 가독성 보강 */
+/*  - 라이트: 흰 배경 + 어두운 글자
+    - 다크:   어두운 배경 + 밝은 글자
+    - 다른 컴포넌트에는 영향 없음(색상만 지정) */
+/* ----------------------------- */
+@layer base {
+  /* select 본체 텍스트/배경 (디자인 최소 변경: 색상만) */
+  select {
+    @apply text-gray-900 bg-white dark:text-gray-100 dark:bg-gray-800;
+  }
+
+  /* 옵션 목록은 OS 기본 UI를 따르지만, 가능한 범위에서 색상만 지정 */
+  select option {
+    color: #111827;            /* text-gray-900 */
+    background-color: #ffffff; /* 라이트 모드 배경 */
+  }
+  @media (prefers-color-scheme: dark) {
+    select option {
+      color: #f3f4f6;          /* text-gray-100 */
+      background-color: #111827; /* 다크 모드 배경 */
+    }
+  }
+
+  /* 비활성화 시 톤 다운(색상만) */
+  select:disabled,
+  select:disabled option {
+    color: #9ca3af;            /* text-gray-400 */
+  }
+
+  /* 일부 브라우저(IE 레거시/MS 계열) 값 표시 색상 상속 보정 */
+  select::-ms-value {
+    color: inherit;
+    background: inherit;
+  }
 }
