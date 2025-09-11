@@ -2,11 +2,10 @@
 /**
  * components/Sidebar.tsx
  *
- * 기능 요약
- *  - 관리자(role==='admin') 또는 구독자(isSubscribed===true) ⇒ 전체 메뉴 노출
- *  - 그 외(비구독 일반 사용자) ⇒ 'Data Convert'만 노출
- *  - Firestore users/{uid} 문서를 onSnapshot으로 실시간 구독하여 메뉴 즉시 갱신
- *  - 디자인/클래스는 그대로(필요 시 className만 기존 프로젝트 값으로 교체)
+ * 변경 요약
+ *  - Admin 메뉴는 오직 role==='admin'에서만 보임(구독자라도 admin이 아니면 숨김)
+ *  - 구독자면 유료 메뉴(Compare/Random)는 노출, 비구독자는 Data Convert만
+ *  - 실시간 사용자 문서 구독(onSnapshot)과 로딩 시 깜빡임 최소화는 유지
  */
 
 import Link from 'next/link'
@@ -18,28 +17,30 @@ import { auth, db } from '@/lib/firebase/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, onSnapshot } from 'firebase/firestore'
 
+type RoleNorm = 'admin' | 'user'
+
 export default function Sidebar() {
   const pathname = usePathname()
 
-  // ✅ 상태: 로딩/구독/역할
+  // 상태: 로딩/역할/구독
   const [loading, setLoading] = useState(true)
+  const [role, setRole] = useState<RoleNorm>('user')
   const [isSubscribed, setIsSubscribed] = useState(false)
-  const [role, setRole] = useState<'admin' | 'user' | undefined>()
 
   useEffect(() => {
     let unsubUser: (() => void) | null = null
 
     const unsubAuth = onAuthStateChanged(auth, (u) => {
       if (!u) {
-        // 비로그인 ⇒ 기본값으로 초기화
+        // 비로그인 → 기본값
+        setRole('user')
         setIsSubscribed(false)
-        setRole(undefined)
         setLoading(false)
         if (unsubUser) { unsubUser(); unsubUser = null }
         return
       }
 
-      // 로그인 ⇒ users/{uid} 실시간 구독
+      // 로그인 → users/{uid} 실시간 구독
       const userRef = doc(db, 'users', u.uid)
       if (unsubUser) { unsubUser(); unsubUser = null }
       unsubUser = onSnapshot(
@@ -65,20 +66,25 @@ export default function Sidebar() {
     }
   }, [])
 
-  const canSeeAll = role === 'admin' || isSubscribed
+  const isAdmin = role === 'admin'
+  const isPaid = !!isSubscribed
 
-  // ⚠️ 라벨/경로는 기존 프로젝트 메뉴와 동일하게 유지하세요.
+  // 메뉴 정의: adminOnly는 관리자 전용, requiresSub는 유료 메뉴
   const menuItems = [
-    { href: '/convert', label: 'Data Convert', requiresSub: false },
-    { href: '/compare', label: 'Compare',      requiresSub: true  },
-    { href: '/random',  label: 'Random',       requiresSub: true  },
-    { href: '/admin',   label: 'Admin',        requiresSub: true  },
-  ]
+    { href: '/convert', label: 'Data Convert', requiresSub: false, adminOnly: false },
+    { href: '/compare', label: 'Compare',      requiresSub: true,  adminOnly: false },
+    { href: '/random',  label: 'Random',       requiresSub: true,  adminOnly: false },
+    { href: '/admin',   label: 'Admin',        requiresSub: false, adminOnly: true  },
+  ] as const
 
-  // 로딩 중엔 깜빡임 최소화: 임시로 convert만
+  // 로딩 중엔 깜빡임 최소화(임시로 convert만)
   const visible = loading
     ? menuItems.filter(m => m.href === '/convert')
-    : (canSeeAll ? menuItems : menuItems.filter(m => !m.requiresSub))
+    : menuItems.filter(m => {
+        if (m.adminOnly) return isAdmin                  // Admin은 오직 관리자
+        if (m.requiresSub) return isAdmin || isPaid      // 유료 메뉴는 관리자 또는 구독자
+        return true                                      // 나머지는 모두
+      })
 
   return (
     <aside className="w-64 shrink-0 border-r bg-gray-50 dark:bg-gray-900 min-h-screen">
