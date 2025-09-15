@@ -1,9 +1,8 @@
 'use client'
 /**
  * components/LogoutHeader.tsx
- * - 디자인/마크업 유지
- * - 로그인 팝업을 사용자가 닫은 오류(auth/popup-closed-by-user)는 조용히 무시
- * - 로그아웃 후 '/' 이동
+ * - 기존 디자인/흐름 유지
+ * - 구독 버튼 → SubscribePopupContext.open() 연결
  */
 
 import React, { useEffect, useState } from 'react'
@@ -19,10 +18,16 @@ import {
   signOut,
 } from 'firebase/auth'
 
+// ✅ 추가: 구독 팝업 컨텍스트 사용
+import { useSubscribePopup } from '@/contexts/SubscribePopupContext'
+
 export default function LogoutHeader() {
   const router = useRouter()
   const [init, setInit] = useState(true)
   const [user, setUser] = useState<any>(null)
+
+  // ✅ 팝업 열기 함수
+  const { open } = useSubscribePopup()
 
   useEffect(() => {
     setPersistence(auth, browserLocalPersistence).catch(() => null)
@@ -37,11 +42,8 @@ export default function LogoutHeader() {
     try {
       const provider = new GoogleAuthProvider()
       await signInWithPopup(auth, provider)
-      // 필요 시: router.replace('/convert')
     } catch (e: any) {
-      // 사용자가 팝업을 닫은 경우는 조용히 무시
       if (e?.code === 'auth/popup-closed-by-user') return
-      // 그 외 오류만 콘솔 경고
       console.warn('[auth] signIn error:', e?.code || e)
     }
   }
@@ -54,7 +56,7 @@ export default function LogoutHeader() {
     }
   }
 
-  // 초기 로딩 중에도 헤더는 렌더(버튼 깜빡임만 방지)
+  // 초기 로딩 중: 버튼 비활성(깜빡임 방지)
   if (init) {
     return (
       <header className="h-14 border-b border-white/10 flex items-center justify-between px-4 select-none">
@@ -86,27 +88,23 @@ export default function LogoutHeader() {
       </div>
       <div className="flex-1 px-4" />
       <div className="shrink-0 flex items-center gap-3">
+        {/* ✅ 구독 버튼 → 팝업 open 연결 */}
         <button
           type="button"
+          onClick={open}
           className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
         >
           구독
         </button>
+
         {user && <span className="text-xs opacity-80">{user.email}</span>}
+
         {!user ? (
-          <button
-            type="button"
-            onClick={onLogin}
-            className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20"
-          >
+          <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
             로그인
           </button>
         ) : (
-          <button
-            type="button"
-            onClick={onLogout}
-            className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20"
-          >
+          <button type="button" onClick={onLogout} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
             로그아웃
           </button>
         )}
