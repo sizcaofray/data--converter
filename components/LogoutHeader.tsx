@@ -1,10 +1,9 @@
 'use client';
 /**
- * components/LogoutHeader.tsx
- * - ✅ 원본 레이아웃/정렬/버튼 순서 그대로 유지
- * - ✅ 구독 버튼 "왼쪽"에만 배지(남은기간/마지막사용일) 인라인 추가
- * - ✅ Basic이면 구독 버튼 라벨을 '업그레이드'로 변경, 클릭 시 Premium만 선택 가능하도록 팝업 열기
- * - ✅ Premium이면 버튼 대신 '프리미엄 이용중' 배지 노출
+ * - 상위 레이아웃/정렬/버튼 순서 변경 없음
+ * - 구독 버튼 "왼쪽"에만 배지(남은기간/마지막사용일) 인라인 추가
+ * - Basic이면 버튼 라벨 '업그레이드', Premium이면 버튼 대신 상태 배지
+ * - 타입 에러 해결: useUser() 컨텍스트 값을 any로 받아 Firestore 필드 접근
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -20,12 +19,10 @@ import {
   signOut,
 } from 'firebase/auth';
 
-// 구독 팝업 컨텍스트 (원본도 사용 중)
 import { useSubscribePopup } from '@/contexts/SubscribePopupContext';
-// 사용자 컨텍스트(역할/필드 읽기) — 프로젝트에 존재한다고 가정
 import { useUser } from '@/contexts/UserContext';
 
-// ── dayjs 없이 네이티브만 사용
+// ── 날짜 유틸 (dayjs 미사용)
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
 const fmt = (dt: Date) =>
   `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
@@ -47,14 +44,15 @@ export default function LogoutHeader() {
   const [init, setInit] = useState(true);
   const [authUser, setAuthUser] = useState<any>(null);
 
-  // ✅ 팝업 open()
   const { open } = useSubscribePopup();
 
-  // ✅ 역할/구독정보는 UserContext에서 읽음(존재하지 않으면 undefined로 안전 처리)
-  const { role, user: userDoc } = useUser?.() ?? ({} as any);
-  const normalizedRole = (role ?? '').toString().trim().toLowerCase();
-  const isBasic = normalizedRole === 'basic';
-  const isPremium = normalizedRole === 'premium';
+  // ✅ 타입 충돌 방지: 컨텍스트를 any로 받아 Firestore 필드만 안전 접근
+  const ctx: any = (useUser?.() as any) || {};
+  const role: string = (ctx.role ?? '').toString().trim().toLowerCase();
+  const userDoc: any = ctx.user ?? {}; // ← Firestore 유저 문서(구독 정보 포함)로 사용
+
+  const isBasic = role === 'basic';
+  const isPremium = role === 'premium';
 
   // 구독 만료일/마지막 사용일(있을 때만 표시)
   const subscriptionEndsAt = toDateSafe(userDoc?.subscriptionEndsAt);
@@ -89,7 +87,6 @@ export default function LogoutHeader() {
     }
   };
 
-  // 초기 로딩 중(깜빡임 방지) — 원본과 동일
   if (init) {
     return (
       <header className="h-14 border-b border-white/10 flex items-center justify-between px-4 select-none">
@@ -100,7 +97,6 @@ export default function LogoutHeader() {
         </div>
         <div className="flex-1 px-4" />
         <div className="shrink-0 flex items-center gap-3">
-          {/* 구독 버튼 (비활성) */}
           <button type="button" className="text-sm rounded px-3 py-1 border border-white/20 opacity-60" disabled>
             구독
           </button>
@@ -116,12 +112,26 @@ export default function LogoutHeader() {
           <span className="font-semibold">Data Converter</span>
         </Link>
       </div>
-
       <div className="flex-1 px-4" />
 
-      {/* ⚠️ 이 컨테이너의 순서/정렬/간격은 원본 그대로 유지 */}
+      {/* ⚠️ 원본 컨테이너/정렬/버튼 순서 그대로 */}
       <div className="shrink-0 flex items-center gap-3">
-        {/* ① 구독 영역 (원래 위치 그대로). Premium이면 상태 배지, Basic/기타면 버튼 */}
+        {/* ✨ 추가 배지: 구독/업그레이드 버튼의 '왼쪽'에 인라인으로만 표시 */}
+        {authUser && daysLeft !== null && (
+          <span
+            className="text-xs px-2 py-0.5 rounded border border-white/20"
+            title={subscriptionEndsAt ? `만료일: ${fmt(subscriptionEndsAt)}` : undefined}
+          >
+            남은 {daysLeft}일
+          </span>
+        )}
+        {authUser && lastUsedLabel && (
+          <span className="text-xs px-2 py-0.5 rounded border border-white/20" title="마지막 사용일">
+            마지막 {lastUsedLabel}
+          </span>
+        )}
+
+        {/* 구독/업그레이드 버튼 또는 Premium 배지 (원본 자리/순서 유지) */}
         {isPremium ? (
           <span className="text-xs px-2 py-0.5 rounded border border-emerald-500/60 text-emerald-400">
             프리미엄 이용중
@@ -129,37 +139,17 @@ export default function LogoutHeader() {
         ) : (
           <button
             type="button"
-            onClick={open} // 팝업 열기 (업그레이드/구독 공통)
+            onClick={open}
             className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
           >
             {isBasic ? '업그레이드' : '구독'}
           </button>
         )}
 
-        {/* ② ✨ 추가: 구독 버튼 '왼쪽'에 붙이는 게 아닌 '왼쪽편' 요구였지만
-                원본 버튼 순서를 유지하기 위해, 버튼 바로 오른쪽에 '배지'를 배치하면
-                시각적으로 '이메일 왼쪽' 자리에 들어갑니다(디자인/정렬 불변). */}
-        {authUser && daysLeft !== null && (
-          <span
-            className="mr-1 inline-flex items-center rounded border border-white/20 px-2 py-0.5 text-xs"
-            title={subscriptionEndsAt ? `만료일: ${fmt(subscriptionEndsAt)}` : undefined}
-          >
-            남은 {daysLeft}일
-          </span>
-        )}
-        {authUser && lastUsedLabel && (
-          <span
-            className="mr-1 inline-flex items-center rounded border border-white/20 px-2 py-0.5 text-xs"
-            title="마지막 사용일"
-          >
-            마지막 {lastUsedLabel}
-          </span>
-        )}
-
-        {/* ③ 이메일 — 원본 위치/클래스 유지 */}
+        {/* 이메일 (원본 위치/클래스 유지) */}
         {authUser && <span className="text-xs opacity-80">{authUser.email}</span>}
 
-        {/* ④ 로그인/로그아웃 — 원본 순서/클래스 유지 */}
+        {/* 로그인/로그아웃 버튼 (원본 순서/클래스 유지) */}
         {!authUser ? (
           <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
             로그인
