@@ -21,7 +21,6 @@ function SubscribePopup() {
 
   const normalizedRole = norm(role);
   const isAdmin = normalizedRole === 'admin';
-  const isBasicRole = normalizedRole === 'basic'; // ★ 추가: Basic 여부
 
   // Bootpay 준비 대기(안전)
   const waitBootpay = useCallback(async (retries = 10, intervalMs = 200) => {
@@ -48,7 +47,7 @@ function SubscribePopup() {
         email: user?.email || 'guest@example.com',
       };
 
-      (window as any).Bootpay.request({
+      Bootpay.request({
         application_id: '5b8f6a4d396fa665fdc2b5e8', // 실제 앱 ID
         price: plan.price,
         name: plan.name,
@@ -77,8 +76,7 @@ function SubscribePopup() {
     () =>
       PLANS.map((plan) => {
         const isCurrent = plan.key === normalizedRole;
-        // ★ 변경 포인트: Basic 사용자는 Basic 카드 비활성화 → Premium만 선택 가능
-        const disabled = isAdmin || isCurrent || (isBasicRole && plan.key === 'basic');
+        const disabled = isAdmin || isCurrent;
 
         return (
           <div
@@ -102,11 +100,7 @@ function SubscribePopup() {
                   {plan.name}
                   {disabled && (
                     <span className="ml-2 text-blue-500 text-sm">
-                      {isAdmin
-                        ? '관리자 상태로 결제 비활성화'
-                        : isBasicRole && plan.key === 'basic'
-                        ? '업그레이드는 Premium만 선택'
-                        : '현재 상태'}
+                      {isAdmin ? '관리자 상태로 결제 비활성화' : '현재 상태'}
                     </span>
                   )}
                 </div>
@@ -121,7 +115,7 @@ function SubscribePopup() {
           </div>
         );
       }),
-    [normalizedRole, isAdmin, isBasicRole, requestPayment]
+    [normalizedRole, isAdmin, requestPayment]
   );
 
   return (

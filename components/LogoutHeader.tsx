@@ -1,170 +1,114 @@
-'use client';
-
+'use client'
 /**
- * ✅ 원칙
- * - 상위(부모) 헤더의 레이아웃/정렬/구분선/버튼 순서를 절대 변경하지 않음.
- * - 새로 추가되는 배지(남은 기간, 마지막 사용일)만 "이메일 텍스트 왼쪽"에 인라인으로 삽입.
- * - 새 flex/div 래퍼 금지 → 최상위는 Fragment(<>...</>)로 반환.
- * - Basic이면 버튼 라벨만 '업그레이드'로 바꾸고, 클릭 시 Premium만 선택 가능한 팝업을 띄움.
- * - Premium이면 '프리미엄 이용중' 배지만 표시(버튼 없음).
+ * components/LogoutHeader.tsx
+ * - 기존 디자인/흐름 유지
+ * - 구독 버튼 → SubscribePopupContext.open() 연결
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { doc, onSnapshot, serverTimestamp, updateDoc } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase';
+import React, { useEffect, useState } from 'react'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { auth } from '@/lib/firebase/firebase'
+import {
+  onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+} from 'firebase/auth'
 
-// ── 네이티브 Date 유틸 (dayjs 미사용)
-const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-const formatDateTime = (dt: Date) =>
-  `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
-const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
-const diffDays = (end?: Date | null) =>
-  end ? Math.round((startOfDay(end).getTime() - startOfDay(new Date()).getTime()) / (24 * 60 * 60 * 1000)) : null;
-const toDateSafe = (v: any): Date | null => {
-  if (!v) return null;
-  if (v?.toDate) {
-    const d = v.toDate();
-    return isNaN(d.getTime()) ? null : d;
-    }
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d;
-};
-
-type PlanType = 'basic' | 'premium' | null;
-
-interface UserState {
-  email: string | null;
-  uid: string | null;
-  plan: PlanType;
-  subscriptionEndsAt: Date | null;
-  lastUsedAt: Date | null;
-}
+// ✅ 추가: 구독 팝업 컨텍스트 사용
+import { useSubscribePopup } from '@/contexts/SubscribePopupContext'
 
 export default function LogoutHeader() {
-  // 상위 레이아웃을 건드리지 않기 위해 최상위 요소는 Fragment로 반환
-  const [fbUser, setFbUser] = useState<User | null>(null);
-  const [u, setU] = useState<UserState>({
-    email: null,
-    uid: null,
-    plan: null,
-    subscriptionEndsAt: null,
-    lastUsedAt: null,
-  });
+  const router = useRouter()
+  const [init, setInit] = useState(true)
+  const [user, setUser] = useState<any>(null)
 
-  // (전역 팝업을 사용한다면) 여기서는 트리거만 하면 됨
-  const [showSubscribe, setShowSubscribe] = useState(false);
-  const [subscribeMode, setSubscribeMode] = useState<'new' | 'upgrade'>('new');
-  const [lockedPlan, setLockedPlan] = useState<PlanType>(null);
-  const [disabledPlans, setDisabledPlans] = useState<PlanType[]>([]);
+  // ✅ 팝업 열기 함수
+  const { open } = useSubscribePopup()
 
   useEffect(() => {
-    const off = onAuthStateChanged(auth, (user) => {
-      setFbUser(user ?? null);
-      if (!user) {
-        setU({ email: null, uid: null, plan: null, subscriptionEndsAt: null, lastUsedAt: null });
-        return;
-      }
+    setPersistence(auth, browserLocalPersistence).catch(() => null)
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u || null)
+      setInit(false)
+    })
+    return () => unsub()
+  }, [])
 
-      const ref = doc(db, 'users', user.uid);
-      // 마지막 사용일 기록(실패 무시)
-      updateDoc(ref, { lastUsedAt: serverTimestamp() }).catch(() => {});
+  const onLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider()
+      await signInWithPopup(auth, provider)
+    } catch (e: any) {
+      if (e?.code === 'auth/popup-closed-by-user') return
+      console.warn('[auth] signIn error:', e?.code || e)
+    }
+  }
 
-      // 유저 문서 실시간 구독
-      return onSnapshot(ref, (snap) => {
-        const d = snap.data() || {};
-        const plan: PlanType = (d.plan ?? null) as PlanType;
-        setU({
-          email: user.email,
-          uid: user.uid,
-          plan,
-          subscriptionEndsAt: toDateSafe(d.subscriptionEndsAt),
-          lastUsedAt: toDateSafe(d.lastUsedAt),
-        });
-      });
-    });
-    return () => {
-      if (typeof off === 'function') off();
-    };
-  }, []);
+  const onLogout = async () => {
+    try {
+      await signOut(auth)
+    } finally {
+      router.replace('/')
+    }
+  }
 
-  const daysLeft = useMemo(() => diffDays(u.subscriptionEndsAt), [u.subscriptionEndsAt]);
-  const lastUsedLabel = useMemo(() => (u.lastUsedAt ? formatDateTime(u.lastUsedAt) : null), [u.lastUsedAt]);
-
-  const isPremium = u.plan === 'premium';
-  const isBasic = u.plan === 'basic';
-  const isGuest = !u.uid;
-
-  // 버튼 동작(요소/순서는 유지, 핸들러만 분기)
-  const handleSubscribeClick = () => {
-    setSubscribeMode('new');
-    setLockedPlan(null);
-    setDisabledPlans([]);
-    setShowSubscribe(true);
-  };
-  const handleUpgradeClick = () => {
-    setSubscribeMode('upgrade');
-    setLockedPlan('premium');      // Premium 고정
-    setDisabledPlans(['basic']);   // Basic 비활성화
-    setShowSubscribe(true);
-  };
+  // 초기 로딩 중: 버튼 비활성(깜빡임 방지)
+  if (init) {
+    return (
+      <header className="h-14 border-b border-white/10 flex items-center justify-between px-4 select-none">
+        <div className="shrink-0">
+          <Link href="/" className="inline-flex items-center gap-2 hover:opacity-80">
+            <span className="font-semibold">Data Converter</span>
+          </Link>
+        </div>
+        <div className="flex-1 px-4" />
+        <div className="shrink-0 flex items-center gap-3">
+          <button
+            type="button"
+            className="text-sm rounded px-3 py-1 border border-white/20 opacity-60"
+            disabled
+          >
+            구독
+          </button>
+        </div>
+      </header>
+    )
+  }
 
   return (
-    <>
-      {/* ▼ 새 요소는 "왼쪽"에 인라인만 추가(상위 flex/정렬/구분선 영향 없음) */}
-      {u.uid && daysLeft !== null && (
-        <span
-          className="mr-2 inline-flex items-center rounded-full border border-gray-300/60 dark:border-gray-600/60 px-2 py-0.5 text-xs"
-          title={u.subscriptionEndsAt ? `만료일: ${formatDateTime(u.subscriptionEndsAt)}` : undefined}
-        >
-          남은 {daysLeft}일
-        </span>
-      )}
-      {u.uid && lastUsedLabel && (
-        <span
-          className="mr-2 inline-flex items-center rounded-full border border-gray-300/60 dark:border-gray-600/60 px-2 py-0.5 text-xs"
-          title="마지막 사용일"
-        >
-          마지막 {lastUsedLabel}
-        </span>
-      )}
-
-      {/* ▼ 기존 이메일 출력(클래스/위치/정렬 변경 없음) */}
-      <span className="text-sm font-medium">{u.email ?? '로그인 필요'}</span>
-
-      {/* ▼ 구독/업그레이드 → 기존 버튼 자리/순서 유지, 라벨과 핸들러만 분기 */}
-      {!isPremium && (
+    <header className="h-14 border-b border-white/10 flex items-center justify-between px-4 select-none">
+      <div className="shrink-0">
+        <Link href="/" className="inline-flex items-center gap-2 hover:opacity-80">
+          <span className="font-semibold">Data Converter</span>
+        </Link>
+      </div>
+      <div className="flex-1 px-4" />
+      <div className="shrink-0 flex items-center gap-3">
+        {/* ✅ 구독 버튼 → 팝업 open 연결 */}
         <button
           type="button"
-          onClick={isBasic ? handleUpgradeClick : handleSubscribeClick}
-          className="ml-2 px-3 py-1 text-xs rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
-          aria-label={isBasic ? '프리미엄으로 업그레이드' : '구독'}
-          title={isBasic ? '프리미엄으로 업그레이드' : '구독'}
-          disabled={isGuest}
+          onClick={open}
+          className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
         >
-          {isBasic ? '업그레이드' : '구독'}
+          구독
         </button>
-      )}
 
-      {/* ▼ Premium이면 버튼 대신 상태 배지(요소 추가나 순서 변경 없음) */}
-      {isPremium && (
-        <span className="ml-2 text-xs px-2 py-0.5 rounded-full border border-emerald-500/60 text-emerald-600 dark:text-emerald-400">
-          프리미엄 이용중
-        </span>
-      )}
+        {user && <span className="text-xs opacity-80">{user.email}</span>}
 
-      {/* ▼ 로그아웃 버튼: 항상 마지막(원본 순서 보존). 클래스/위치 변경 없음 */}
-      {fbUser && (
-        <button
-          type="button"
-          onClick={() => signOut(auth).catch(() => {})}
-          className="ml-2 px-3 py-1 text-xs rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
-        >
-          로그아웃
-        </button>
-      )}
-
-      {/** 전역 SubscribePopup을 이미 쓰고 있다면 여기서는 showSubscribe를 컨텍스트로 전달해 열어주세요. */}
-    </>
-  );
+        {!user ? (
+          <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
+            로그인
+          </button>
+        ) : (
+          <button type="button" onClick={onLogout} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
+            로그아웃
+          </button>
+        )}
+      </div>
+    </header>
+  )
 }
