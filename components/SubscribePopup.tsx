@@ -16,11 +16,11 @@ function SubscribePopup() {
   const { show, close } = useSubscribePopup();
   const { user, role } = useUser();
 
-  // show=false면 완전히 렌더하지 않음 (DOM 없음)
   if (!show) return null;
 
   const normalizedRole = norm(role);
   const isAdmin = normalizedRole === 'admin';
+  const isBasicRole = normalizedRole === 'basic';
 
   // Bootpay 준비 대기(안전)
   const waitBootpay = useCallback(async (retries = 10, intervalMs = 200) => {
@@ -76,7 +76,14 @@ function SubscribePopup() {
     () =>
       PLANS.map((plan) => {
         const isCurrent = plan.key === normalizedRole;
-        const disabled = isAdmin || isCurrent;
+
+        // ✅ 변경 포인트:
+        // - 관리자/현재 플랜은 비활성화(원본 유지)
+        // - Basic 사용자는 "Premium만" 클릭 가능하도록 free/basic 비활성화
+        const disabled =
+          isAdmin ||
+          isCurrent ||
+          (isBasicRole && plan.key !== 'premium'); // ← Basic이면 premium만 활성
 
         return (
           <div
@@ -100,28 +107,31 @@ function SubscribePopup() {
                   {plan.name}
                   {disabled && (
                     <span className="ml-2 text-blue-500 text-sm">
-                      {isAdmin ? '관리자 상태로 결제 비활성화' : '현재 상태'}
+                      {isAdmin
+                        ? '관리자 상태로 결제 비활성화'
+                        : isBasicRole && plan.key !== 'premium'
+                        ? '업그레이드는 Premium만 선택'
+                        : '현재 상태'}
                     </span>
                   )}
                 </div>
-                {/* ✅ 가격: 다크에서 가독성 향상 */}
+                {/* 가격 */}
                 <div className="text-right text-gray-600 dark:text-gray-300">
                   {plan.price === 0 ? '무료' : plan.price.toLocaleString() + '원'}
                 </div>
               </div>
-              {/* ✅ 설명: 다크에서 가독성 향상 */}
+              {/* 설명 */}
               <p className="text-sm text-gray-500 dark:text-gray-300">{plan.description}</p>
             </div>
           </div>
         );
       }),
-    [normalizedRole, isAdmin, requestPayment]
+    [normalizedRole, isAdmin, isBasicRole, requestPayment]
   );
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 grid place-items-center" onClick={close}>
       <div
-        /* ✅ 카드 배경/텍스트 가독성 보장 */
         className="bg-white text-slate-900 dark:bg-gray-900 dark:text-white p-6 rounded-lg shadow-xl w-[95%] max-w-5xl relative"
         onClick={(e) => e.stopPropagation()}
       >
