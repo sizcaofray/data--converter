@@ -16,14 +16,12 @@ function SubscribePopup() {
   const { show, close } = useSubscribePopup();
   const { user, role } = useUser();
 
-  // show=false면 완전히 렌더하지 않음 (DOM 없음)
   if (!show) return null;
 
   const normalizedRole = norm(role);
   const isAdmin = normalizedRole === 'admin';
-  const isBasicRole = normalizedRole === 'basic'; // ✅ Basic 제약을 위한 플래그 추가
+  const isBasicRole = normalizedRole === 'basic'; // ★ 변경: Basic 여부
 
-  // Bootpay 준비 대기(안전)
   const waitBootpay = useCallback(async (retries = 10, intervalMs = 200) => {
     for (let i = 0; i < retries; i++) {
       if (typeof window !== 'undefined' && (window as any).Bootpay) return (window as any).Bootpay;
@@ -77,9 +75,7 @@ function SubscribePopup() {
     () =>
       PLANS.map((plan) => {
         const isCurrent = plan.key === normalizedRole;
-
-        // ✅ 변경 포인트: Basic 사용자는 Basic 카드를 비활성화(= Premium만 클릭 허용)
-        const disabled = isAdmin || isCurrent || (isBasicRole && plan.key === 'basic');
+        const disabled = isAdmin || isCurrent || (isBasicRole && plan.key === 'basic'); // ★ 변경: Basic이면 Basic 카드 비활성화
 
         return (
           <div
@@ -111,12 +107,10 @@ function SubscribePopup() {
                     </span>
                   )}
                 </div>
-                {/* ✅ 가격: 다크에서 가독성 향상 */}
                 <div className="text-right text-gray-600 dark:text-gray-300">
                   {plan.price === 0 ? '무료' : plan.price.toLocaleString() + '원'}
                 </div>
               </div>
-              {/* ✅ 설명: 다크에서 가독성 향상 */}
               <p className="text-sm text-gray-500 dark:text-gray-300">{plan.description}</p>
             </div>
           </div>
@@ -128,7 +122,6 @@ function SubscribePopup() {
   return (
     <div className="fixed inset-0 bg-black/50 z-50 grid place-items-center" onClick={close}>
       <div
-        /* ✅ 카드 배경/텍스트 가독성 보장 (디자인 변경 없음) */
         className="bg-white text-slate-900 dark:bg-gray-900 dark:text-white p-6 rounded-lg shadow-xl w-[95%] max-w-5xl relative"
         onClick={(e) => e.stopPropagation()}
       >

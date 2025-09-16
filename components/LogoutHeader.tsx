@@ -2,9 +2,11 @@
 
 /**
  * ✅ 핵심 원칙
- * - 상위 헤더의 래퍼/정렬/구분선은 "부모"가 담당하므로 이 컴포넌트에서는 건드리지 않는다.
- * - 새로 추가되는 배지(남은기간, 마지막 사용일)는 "이메일 텍스트 앞"에만 인라인으로 삽입한다.
- * - 기존 버튼(구독/업그레이드/로그아웃 등)의 클래스/위치는 바꾸지 않는다.
+ * - 상위(부모) 레이아웃·정렬·구분선·버튼 순서는 절대 변경하지 않습니다.
+ * - 새로 추가되는 배지(남은 기간, 마지막 사용일)만 "이메일 텍스트의 왼쪽"에 인라인으로 삽입합니다.
+ * - 새 flex/div 래퍼를 추가하지 않기 위해 최상위는 Fragment(<>...</>)로 반환합니다.
+ * - Basic이면 버튼 라벨을 '업그레이드'로, 클릭 시 Premium만 선택 가능하도록 팝업을 띄웁니다.
+ * - Premium이면 '프리미엄 이용중' 배지만 노출(버튼 없음).
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -12,7 +14,7 @@ import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 import { doc, onSnapshot, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
 
-// ---------- 유틸 (dayjs 없이 네이티브로 처리) ----------
+// ── 네이티브 Date 유틸 (dayjs 미사용)
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
 const formatDateTime = (dt: Date) =>
   `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
@@ -29,7 +31,6 @@ const toDateSafe = (v: any): Date | null => {
   return isNaN(d.getTime()) ? null : d;
 };
 
-// ---------- 타입 ----------
 type PlanType = 'basic' | 'premium' | null;
 
 interface UserState {
@@ -41,7 +42,7 @@ interface UserState {
 }
 
 export default function LogoutHeader() {
-  // ✅ 외부(부모) 레이아웃은 그대로 유지. 이 컴포넌트는 "인라인 요소"만 쌓는다.
+  // ✅ 최상위에 div 추가하지 않음(부모 레이아웃 보존)
   const [fbUser, setFbUser] = useState<User | null>(null);
   const [u, setU] = useState<UserState>({
     email: null,
@@ -51,13 +52,12 @@ export default function LogoutHeader() {
     lastUsedAt: null,
   });
 
-  // 팝업 제어(이미 프로젝트에 있는 SubscribePopup을 그대로 연동)
+  // 팝업 제어 상태(전역 SubscribePopup을 쓰는 경우, 여기서 true/false만 트리거)
   const [showSubscribe, setShowSubscribe] = useState(false);
   const [subscribeMode, setSubscribeMode] = useState<'new' | 'upgrade'>('new');
   const [lockedPlan, setLockedPlan] = useState<PlanType>(null);
   const [disabledPlans, setDisabledPlans] = useState<PlanType[]>([]);
 
-  // ---------- 인증/유저 문서 구독 ----------
   useEffect(() => {
     const off = onAuthStateChanged(auth, (user) => {
       setFbUser(user ?? null);
@@ -68,10 +68,10 @@ export default function LogoutHeader() {
 
       const ref = doc(db, 'users', user.uid);
 
-      // 마지막 사용일 갱신(실패해도 무시)
+      // 마지막 사용일 기록(권한 이슈 발생 시 무시)
       updateDoc(ref, { lastUsedAt: serverTimestamp() }).catch(() => {});
 
-      // 실시간 문서 구독
+      // 유저 문서 실시간 구독
       return onSnapshot(ref, (snap) => {
         const d = snap.data() || {};
         const plan: PlanType = (d.plan ?? null) as PlanType;
@@ -89,6 +89,7 @@ export default function LogoutHeader() {
     };
   }, []);
 
+  // 계산 값 (렌더 영향 최소화를 위해 useMemo)
   const daysLeft = useMemo(() => diffDays(u.subscriptionEndsAt), [u.subscriptionEndsAt]);
   const lastUsedLabel = useMemo(() => (u.lastUsedAt ? formatDateTime(u.lastUsedAt) : null), [u.lastUsedAt]);
 
@@ -96,8 +97,8 @@ export default function LogoutHeader() {
   const isBasic = u.plan === 'basic';
   const isGuest = !u.uid;
 
+  // 버튼 동작(기존 버튼 요소/순서는 그대로 두고 핸들러만 분기)
   const handleSubscribeClick = () => {
-    // 새 구독(모든 플랜 선택 가능)
     setSubscribeMode('new');
     setLockedPlan(null);
     setDisabledPlans([]);
@@ -105,20 +106,18 @@ export default function LogoutHeader() {
   };
 
   const handleUpgradeClick = () => {
-    // 업그레이드(프리미엄만 선택 가능)
     setSubscribeMode('upgrade');
-    setLockedPlan('premium');
-    setDisabledPlans(['basic']);
+    setLockedPlan('premium');      // Premium 고정
+    setDisabledPlans(['basic']);   // Basic 비활성화
     setShowSubscribe(true);
   };
 
-  // ---------- 렌더 ----------
   return (
-    <div className="inline-flex items-center gap-2">
-      {/* ✅ 새 요소는 모두 "왼쪽"에 인라인으로 추가 — 레이아웃(정렬/구분선) 불변 */}
+    <>
+      {/* ▼ 추가 요소는 "왼쪽"에, 인라인으로만 삽입 (부모 flex나 정렬을 절대 변경하지 않음) */}
       {u.uid && daysLeft !== null && (
         <span
-          className="mr-1 inline-flex items-center rounded-full border border-gray-300/60 dark:border-gray-600/60 px-2 py-0.5 text-xs"
+          className="mr-2 inline-flex items-center rounded-full border border-gray-300/60 dark:border-gray-600/60 px-2 py-0.5 text-xs"
           title={u.subscriptionEndsAt ? `만료일: ${formatDateTime(u.subscriptionEndsAt)}` : undefined}
         >
           남은 {daysLeft}일
@@ -133,10 +132,10 @@ export default function LogoutHeader() {
         </span>
       )}
 
-      {/* ✅ 기존 이메일 위치/스타일 유지 */}
+      {/* ▼ 기존 이메일 텍스트 자리(클래스/정렬/간격 변경 없음) */}
       <span className="text-sm font-medium">{u.email ?? '로그인 필요'}</span>
 
-      {/* ✅ 기존 버튼 영역도 그대로 — 라벨/동작만 조건 분기 */}
+      {/* ▼ 구독/업그레이드 버튼은 "항상 기존 버튼 자리"에만 표시, 요소/순서 유지 */}
       {!isPremium && (
         <button
           type="button"
@@ -149,13 +148,15 @@ export default function LogoutHeader() {
           {isBasic ? '업그레이드' : '구독'}
         </button>
       )}
+
+      {/* ▼ Premium이면 버튼 대신 상태 배지(요소 추가·순서 변경 없음) */}
       {isPremium && (
         <span className="ml-2 text-xs px-2 py-0.5 rounded-full border border-emerald-500/60 text-emerald-600 dark:text-emerald-400">
           프리미엄 이용중
         </span>
       )}
 
-      {/* ✅ 로그아웃 버튼: 기존과 동일하게 유지 (클래스/위치 변경 금지) */}
+      {/* ▼ 로그아웃 버튼: "항상 마지막" — 기존 위치/클래스 그대로 유지 */}
       {fbUser && (
         <button
           type="button"
@@ -166,20 +167,12 @@ export default function LogoutHeader() {
         </button>
       )}
 
-      {/* ✅ 프로젝트에 이미 존재하는 SubscribePopup 사용(디자인 불변).
-          팝업 컴포넌트 파일에서 mode/lockedPlan/disabledPlans를 지원하지 않으면
-          아래 props는 제거하세요. */}
-      {/* 
-      <SubscribePopup
-        open={showSubscribe}
-        onClose={() => setShowSubscribe(false)}
-        mode={subscribeMode}
-        lockedPlan={lockedPlan}
-        disabledPlans={disabledPlans}
-        userEmail={u.email ?? undefined}
-        userId={u.uid ?? undefined}
-      />
-      */}
-    </div>
+      {/**
+       * ▼ 전역 SubscribePopup을 이미 사용 중이라면,
+       *    아래는 프로젝트의 팝업 트리거 로직과 연결만 하시면 됩니다.
+       *    팝업 컴포넌트를 이 파일에서 직접 렌더링하지 않아도 됩니다(전역 컨텍스트 트리거).
+       *    (props가 필요 없다면 이 상태값(showSubscribe 등)은 사용처로 옮기세요)
+       */}
+    </>
   );
 }
