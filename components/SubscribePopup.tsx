@@ -21,6 +21,7 @@ function SubscribePopup() {
 
   const normalizedRole = norm(role);
   const isAdmin = normalizedRole === 'admin';
+  const isBasicRole = normalizedRole === 'basic'; // ✅ Basic 제약을 위한 플래그 추가
 
   // Bootpay 준비 대기(안전)
   const waitBootpay = useCallback(async (retries = 10, intervalMs = 200) => {
@@ -76,7 +77,9 @@ function SubscribePopup() {
     () =>
       PLANS.map((plan) => {
         const isCurrent = plan.key === normalizedRole;
-        const disabled = isAdmin || isCurrent;
+
+        // ✅ 변경 포인트: Basic 사용자는 Basic 카드를 비활성화(= Premium만 클릭 허용)
+        const disabled = isAdmin || isCurrent || (isBasicRole && plan.key === 'basic');
 
         return (
           <div
@@ -100,7 +103,11 @@ function SubscribePopup() {
                   {plan.name}
                   {disabled && (
                     <span className="ml-2 text-blue-500 text-sm">
-                      {isAdmin ? '관리자 상태로 결제 비활성화' : '현재 상태'}
+                      {isAdmin
+                        ? '관리자 상태로 결제 비활성화'
+                        : isBasicRole && plan.key === 'basic'
+                        ? '업그레이드는 Premium만 선택'
+                        : '현재 상태'}
                     </span>
                   )}
                 </div>
@@ -115,13 +122,13 @@ function SubscribePopup() {
           </div>
         );
       }),
-    [normalizedRole, isAdmin, requestPayment]
+    [normalizedRole, isAdmin, isBasicRole, requestPayment]
   );
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 grid place-items-center" onClick={close}>
       <div
-        /* ✅ 카드 배경/텍스트 가독성 보장 */
+        /* ✅ 카드 배경/텍스트 가독성 보장 (디자인 변경 없음) */
         className="bg-white text-slate-900 dark:bg-gray-900 dark:text-white p-6 rounded-lg shadow-xl w-[95%] max-w-5xl relative"
         onClick={(e) => e.stopPropagation()}
       >
