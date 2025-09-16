@@ -3,11 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, getDoc, onSnapshot, serverTimestamp, updateDoc } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase'; // ✅ 프로젝트에서 사용중인 경로를 유지하세요.
-import dayjs from 'dayjs';
-
-// ⚠️ dayjs locale/timezone을 쓰고 있다면 이곳에서 설정하세요.
-// import 'dayjs/locale/ko'; dayjs.locale('ko');
+import { auth, db } from '@/lib/firebase'; // ✅ 프로젝트 경로 유지
 
 type PlanType = 'basic' | 'premium' | null;
 
@@ -19,9 +15,38 @@ interface UserState {
   lastUsedAt: Date | null;
 }
 
+/** YYYY-MM-DD HH:mm 포맷터 (로컬 타임존 기준) */
+function formatDateTime(dt: Date): string {
+  const pad = (n: number) => (n < 10 ? '0' + n : '' + n);
+  const y = dt.getFullYear();
+  const m = pad(dt.getMonth() + 1);
+  const d = pad(dt.getDate());
+  const hh = pad(dt.getHours());
+  const mm = pad(dt.getMinutes());
+  return `${y}-${m}-${d} ${hh}:${mm}`;
+}
+
+/** 날짜 차이를 “일” 단위로 계산(자정 기준 정규화) */
+function diffDaysUTC(a: Date, b: Date): number {
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
+  const da = startOfDay(a).getTime();
+  const db = startOfDay(b).getTime();
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  return Math.round((da - db) / MS_PER_DAY);
+}
+
+/** Firestore Timestamp/ISO/number → Date 안전 변환 */
+function toDateSafe(v: any): Date | null {
+  if (!v) return null;
+  if (v?.toDate) {
+    const d = v.toDate();
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 export default function LogoutHeader() {
-  // ✅ UI/디자인 보존: 기존 Header의 바깥 div, 정렬/간격 className은 그대로 유지하고
-  //    필요한 정보만 얹는 방식(텍스트 배지 + 버튼)으로 최소 변경합니다.
   const [user, setUser] = useState<User | null>(null);
   const [u, setU] = useState<UserState>({
     email: null,
@@ -33,11 +58,9 @@ export default function LogoutHeader() {
 
   // 구독/업그레이드 팝업 제어 (기존 SubscribePopup과 연동)
   const [showSubscribe, setShowSubscribe] = useState(false);
-
-  // 업그레이드 모드일 경우 프리미엄만 선택 가능하도록 상태 전달
   const [subscribeMode, setSubscribeMode] = useState<'new' | 'upgrade'>('new');
-  const [lockedPlan, setLockedPlan] = useState<PlanType>(null); // 'premium' 고정 등
-  const [disabledPlans, setDisabledPlans] = useState<PlanType[]>([]); // ['basic'] 등
+  const [lockedPlan, setLockedPlan] = useState<PlanType>(null);
+  const [disabledPlans, setDisabledPlans] = useState<PlanType[]>([]);
 
   // 🔹 인증 상태 구독 + 유저 문서 실시간 구독
   useEffect(() => {
@@ -50,35 +73,21 @@ export default function LogoutHeader() {
 
       const ref = doc(db, 'users', fbUser.uid);
 
-      // 마지막 사용일을 현재 시각으로 갱신(로그인/새로고침 시점)
+      // 마지막 사용일 갱신(읽기 권한 문제로 실패해도 무시)
       try {
         await updateDoc(ref, { lastUsedAt: serverTimestamp() });
-      } catch {
-        // 읽기 전용 권한 등으로 실패할 수 있음. 실패해도 UI는 계속 진행.
-      }
+      } catch {}
 
-      // 실시간 구독으로 plan/만료일/마지막 사용일 표시
       return onSnapshot(ref, (snap) => {
         const d = snap.data() || {};
-        // ⚠️ 필드 매핑: 현재 프로젝트에서 쓰는 필드명에 맞게 필요 시 수정하세요.
         const plan: PlanType = (d.plan ?? null) as PlanType;
-
-        // Firestore Timestamp 또는 문자열을 Date로 안전 변환
-        const toDate = (v: any): Date | null => {
-          if (!v) return null;
-          // Firestore Timestamp
-          if (v?.toDate) return v.toDate();
-          // ISO/number
-          const dt = new Date(v);
-          return isNaN(dt.getTime()) ? null : dt;
-        };
 
         setU({
           email: fbUser.email,
           uid: fbUser.uid,
           plan,
-          subscriptionEndsAt: toDate(d.subscriptionEndsAt),
-          lastUsedAt: toDate(d.lastUsedAt),
+          subscriptionEndsAt: toDateSafe(d.subscriptionEndsAt),
+          lastUsedAt: toDateSafe(d.lastUsedAt),
         });
       });
     });
@@ -88,61 +97,49 @@ export default function LogoutHeader() {
     };
   }, []);
 
-  // 남은 일수 계산 (만료일 없으면 null)
+  // 남은 일수 계산
   const daysLeft = useMemo(() => {
     if (!u.subscriptionEndsAt) return null;
-    const today = dayjs();
-    const end = dayjs(u.subscriptionEndsAt);
-    const diff = end.startOf('day').diff(today.startOf('day'), 'day');
-    return diff;
+    return diffDaysUTC(u.subscriptionEndsAt, new Date());
   }, [u.subscriptionEndsAt]);
 
   // 마지막 사용일 포맷
   const lastUsedLabel = useMemo(() => {
     if (!u.lastUsedAt) return null;
-    return dayjs(u.lastUsedAt).format('YYYY-MM-DD HH:mm');
+    return formatDateTime(u.lastUsedAt);
   }, [u.lastUsedAt]);
 
-  // 버튼/배지 상태
   const isPremium = u.plan === 'premium';
   const isBasic = u.plan === 'basic';
   const isGuest = !u.uid;
 
-  // 클릭: 새 구독(게스트/미구독) 또는 업그레이드(Basic)
   const handleSubscribeClick = () => {
-    // 새 구독 모드: 모든 플랜 선택 가능(프로젝트의 기존 SubscribePopup 기본 동작)
     setSubscribeMode('new');
     setLockedPlan(null);
-    setDisabledPlans([]); // 모두 허용
+    setDisabledPlans([]);
     setShowSubscribe(true);
   };
 
   const handleUpgradeClick = () => {
-    // 업그레이드 모드: premium만 클릭 가능하도록 제약
     setSubscribeMode('upgrade');
-    setLockedPlan('premium');     // 기본 선택 고정
+    setLockedPlan('premium');     // 프리미엄 고정
     setDisabledPlans(['basic']);  // basic 비활성화
     setShowSubscribe(true);
   };
 
-  // ✅ 기존 Header의 레이아웃/디자인은 유지: 배지/버튼만 ‘기존 자리’에 얹어주세요.
-  // 아래는 예시 구조입니다. 프로젝트의 현재 className들을 그대로 두고,
-  // 배지 <span>들과 버튼만 적절한 위치에 배치하세요.
   return (
     <div className="flex items-center gap-3">
-      {/* 🔹 남은기간/마지막사용일 배지: 사용자 이메일 앞쪽에 작게 노출 */}
+      {/* 🔹 남은기간/마지막사용일 배지: 이메일 앞에 작게 */}
       {u.uid && (
         <div className="flex items-center gap-2">
-          {/* 남은 기간 배지: premium/basic 공통 표기(만료일 있는 경우) */}
           {daysLeft !== null && (
             <span
               className="px-2 py-0.5 rounded-full text-xs border border-gray-300/60 dark:border-gray-600/60"
-              title={u.subscriptionEndsAt ? `만료일: ${dayjs(u.subscriptionEndsAt).format('YYYY-MM-DD')}` : undefined}
+              title={u.subscriptionEndsAt ? `만료일: ${formatDateTime(u.subscriptionEndsAt)}` : undefined}
             >
               남은 {daysLeft}일
             </span>
           )}
-          {/* 마지막 사용일 배지 */}
           {lastUsedLabel && (
             <span
               className="px-2 py-0.5 rounded-full text-xs border border-gray-300/60 dark:border-gray-600/60"
@@ -154,7 +151,7 @@ export default function LogoutHeader() {
         </div>
       )}
 
-      {/* 🔹 기존에 표시하던 사용자 이메일/프로필 영역 (디자인 유지) */}
+      {/* 🔹 사용자 이메일 (디자인 유지) */}
       <div className="flex items-center">
         {u.email ? (
           <span className="text-sm font-medium">{u.email}</span>
@@ -163,16 +160,14 @@ export default function LogoutHeader() {
         )}
       </div>
 
-      {/* 🔹 구독/업그레이드/프리미엄 배지(기존 버튼 자리에 그대로 배치) */}
+      {/* 🔹 구독/업그레이드/프리미엄 배지 */}
       <div className="ml-2">
-        {/* Premium이면 버튼 대신 상태 배지(디자인 유지 차원에서 소형 텍스트로) */}
         {isPremium && (
           <span className="text-xs px-2 py-0.5 rounded-full border border-emerald-500/60 text-emerald-600 dark:text-emerald-400">
             프리미엄 이용중
           </span>
         )}
 
-        {/* Basic이면 ‘업그레이드’ 버튼만 노출 */}
         {isBasic && (
           <button
             type="button"
@@ -185,7 +180,6 @@ export default function LogoutHeader() {
           </button>
         )}
 
-        {/* 미구독(또는 비로그인)이면 ‘구독’ 버튼 노출 */}
         {!isPremium && !isBasic && (
           <button
             type="button"
@@ -193,27 +187,20 @@ export default function LogoutHeader() {
             className="px-3 py-1 text-xs rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
             aria-label="구독"
             title="구독"
-            disabled={isGuest} // 비로그인 시 비활성화(혹은 로그인 유도)
+            disabled={isGuest}
           >
             구독
           </button>
         )}
       </div>
 
-      {/* 🔹 기존 SubscribePopup 연동: 디자인/컴포넌트는 그대로, 상태만 전달 */}
-      {/* 
-        ⬇️ 프로젝트에 이미 있는 SubscribePopup을 그대로 사용하세요.
-        - props 예시는 아래와 동일 이름으로 추가만 해주면 됩니다.
-        - 만약 SubscribePopup이 전역(레이아웃)에서 렌더링된다면,
-          전역 컨텍스트/상태로 치환해 동일한 값을 전달하면 됩니다.
-      */}
-      {/* <SubscribePopup
+      {/* ✅ 기존 SubscribePopup과 연동: props 이름만 맞추면 됩니다.
+      <SubscribePopup
         open={showSubscribe}
         onClose={() => setShowSubscribe(false)}
-        mode={subscribeMode}               // 'new' | 'upgrade'
-        lockedPlan={lockedPlan}            // 'premium' | null
-        disabledPlans={disabledPlans}      // ['basic'] 등
-        // 필요 시 현재 사용자 정보도 넘겨 결제 후 Firestore 업데이트에 활용
+        mode={subscribeMode}
+        lockedPlan={lockedPlan}
+        disabledPlans={disabledPlans}
         userEmail={u.email ?? undefined}
         userId={u.uid ?? undefined}
       /> */}
