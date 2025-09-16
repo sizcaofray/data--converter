@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * ✅ 핵심 원칙
- * - 상위(부모) 레이아웃·정렬·구분선·버튼 순서는 절대 변경하지 않습니다.
- * - 새로 추가되는 배지(남은 기간, 마지막 사용일)만 "이메일 텍스트의 왼쪽"에 인라인으로 삽입합니다.
- * - 새 flex/div 래퍼를 추가하지 않기 위해 최상위는 Fragment(<>...</>)로 반환합니다.
- * - Basic이면 버튼 라벨을 '업그레이드'로, 클릭 시 Premium만 선택 가능하도록 팝업을 띄웁니다.
- * - Premium이면 '프리미엄 이용중' 배지만 노출(버튼 없음).
+ * ✅ 원칙
+ * - 상위(부모) 헤더의 레이아웃/정렬/구분선/버튼 순서를 절대 변경하지 않음.
+ * - 새로 추가되는 배지(남은 기간, 마지막 사용일)만 "이메일 텍스트 왼쪽"에 인라인으로 삽입.
+ * - 새 flex/div 래퍼 금지 → 최상위는 Fragment(<>...</>)로 반환.
+ * - Basic이면 버튼 라벨만 '업그레이드'로 바꾸고, 클릭 시 Premium만 선택 가능한 팝업을 띄움.
+ * - Premium이면 '프리미엄 이용중' 배지만 표시(버튼 없음).
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -26,7 +26,7 @@ const toDateSafe = (v: any): Date | null => {
   if (v?.toDate) {
     const d = v.toDate();
     return isNaN(d.getTime()) ? null : d;
-  }
+    }
   const d = new Date(v);
   return isNaN(d.getTime()) ? null : d;
 };
@@ -42,7 +42,7 @@ interface UserState {
 }
 
 export default function LogoutHeader() {
-  // ✅ 최상위에 div 추가하지 않음(부모 레이아웃 보존)
+  // 상위 레이아웃을 건드리지 않기 위해 최상위 요소는 Fragment로 반환
   const [fbUser, setFbUser] = useState<User | null>(null);
   const [u, setU] = useState<UserState>({
     email: null,
@@ -52,7 +52,7 @@ export default function LogoutHeader() {
     lastUsedAt: null,
   });
 
-  // 팝업 제어 상태(전역 SubscribePopup을 쓰는 경우, 여기서 true/false만 트리거)
+  // (전역 팝업을 사용한다면) 여기서는 트리거만 하면 됨
   const [showSubscribe, setShowSubscribe] = useState(false);
   const [subscribeMode, setSubscribeMode] = useState<'new' | 'upgrade'>('new');
   const [lockedPlan, setLockedPlan] = useState<PlanType>(null);
@@ -67,8 +67,7 @@ export default function LogoutHeader() {
       }
 
       const ref = doc(db, 'users', user.uid);
-
-      // 마지막 사용일 기록(권한 이슈 발생 시 무시)
+      // 마지막 사용일 기록(실패 무시)
       updateDoc(ref, { lastUsedAt: serverTimestamp() }).catch(() => {});
 
       // 유저 문서 실시간 구독
@@ -89,7 +88,6 @@ export default function LogoutHeader() {
     };
   }, []);
 
-  // 계산 값 (렌더 영향 최소화를 위해 useMemo)
   const daysLeft = useMemo(() => diffDays(u.subscriptionEndsAt), [u.subscriptionEndsAt]);
   const lastUsedLabel = useMemo(() => (u.lastUsedAt ? formatDateTime(u.lastUsedAt) : null), [u.lastUsedAt]);
 
@@ -97,14 +95,13 @@ export default function LogoutHeader() {
   const isBasic = u.plan === 'basic';
   const isGuest = !u.uid;
 
-  // 버튼 동작(기존 버튼 요소/순서는 그대로 두고 핸들러만 분기)
+  // 버튼 동작(요소/순서는 유지, 핸들러만 분기)
   const handleSubscribeClick = () => {
     setSubscribeMode('new');
     setLockedPlan(null);
     setDisabledPlans([]);
     setShowSubscribe(true);
   };
-
   const handleUpgradeClick = () => {
     setSubscribeMode('upgrade');
     setLockedPlan('premium');      // Premium 고정
@@ -114,7 +111,7 @@ export default function LogoutHeader() {
 
   return (
     <>
-      {/* ▼ 추가 요소는 "왼쪽"에, 인라인으로만 삽입 (부모 flex나 정렬을 절대 변경하지 않음) */}
+      {/* ▼ 새 요소는 "왼쪽"에 인라인만 추가(상위 flex/정렬/구분선 영향 없음) */}
       {u.uid && daysLeft !== null && (
         <span
           className="mr-2 inline-flex items-center rounded-full border border-gray-300/60 dark:border-gray-600/60 px-2 py-0.5 text-xs"
@@ -132,10 +129,10 @@ export default function LogoutHeader() {
         </span>
       )}
 
-      {/* ▼ 기존 이메일 텍스트 자리(클래스/정렬/간격 변경 없음) */}
+      {/* ▼ 기존 이메일 출력(클래스/위치/정렬 변경 없음) */}
       <span className="text-sm font-medium">{u.email ?? '로그인 필요'}</span>
 
-      {/* ▼ 구독/업그레이드 버튼은 "항상 기존 버튼 자리"에만 표시, 요소/순서 유지 */}
+      {/* ▼ 구독/업그레이드 → 기존 버튼 자리/순서 유지, 라벨과 핸들러만 분기 */}
       {!isPremium && (
         <button
           type="button"
@@ -149,14 +146,14 @@ export default function LogoutHeader() {
         </button>
       )}
 
-      {/* ▼ Premium이면 버튼 대신 상태 배지(요소 추가·순서 변경 없음) */}
+      {/* ▼ Premium이면 버튼 대신 상태 배지(요소 추가나 순서 변경 없음) */}
       {isPremium && (
         <span className="ml-2 text-xs px-2 py-0.5 rounded-full border border-emerald-500/60 text-emerald-600 dark:text-emerald-400">
           프리미엄 이용중
         </span>
       )}
 
-      {/* ▼ 로그아웃 버튼: "항상 마지막" — 기존 위치/클래스 그대로 유지 */}
+      {/* ▼ 로그아웃 버튼: 항상 마지막(원본 순서 보존). 클래스/위치 변경 없음 */}
       {fbUser && (
         <button
           type="button"
@@ -167,12 +164,7 @@ export default function LogoutHeader() {
         </button>
       )}
 
-      {/**
-       * ▼ 전역 SubscribePopup을 이미 사용 중이라면,
-       *    아래는 프로젝트의 팝업 트리거 로직과 연결만 하시면 됩니다.
-       *    팝업 컴포넌트를 이 파일에서 직접 렌더링하지 않아도 됩니다(전역 컨텍스트 트리거).
-       *    (props가 필요 없다면 이 상태값(showSubscribe 등)은 사용처로 옮기세요)
-       */}
+      {/** 전역 SubscribePopup을 이미 쓰고 있다면 여기서는 showSubscribe를 컨텍스트로 전달해 열어주세요. */}
     </>
   );
 }
