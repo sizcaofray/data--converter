@@ -1,10 +1,10 @@
 'use client';
 /**
  * - 레이아웃/정렬/버튼 순서 변경 없음
- * - 구독/업그레이드 버튼 "왼쪽"에 배지 2개 인라인:
- *   1) 사용기한 N일  (N = 남은 일수 숫자, 마지막날 24:00까지 포함해 계산)
- *   2) 마지막 YYYY-MM-DD  (시간 제거)
- * - 기간 만료 시 Firestore의 users/{uid}.plan 을 'basic' 으로 다운그레이드 (실패해도 UI는 Basic 처리)
+ * - 구독/업그레이드 버튼 왼쪽에 배지 2개 인라인:
+ *   1) 만료: YYYY-MM-DD N일  (N = 남은 일수, 마지막날 24:00까지 포함해 계산)
+ *   2) 마지막 사용일: YYYY-MM-DD  (문구 '마지막' 삭제)
+ * - 기간 만료 시 Firestore plan을 'basic'으로 다운그레이드 (실패해도 UI는 Basic 처리)
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -27,7 +27,7 @@ import { useUser } from '@/contexts/UserContext';
 import { db } from '@/lib/firebase/firebase';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 
-// ── 날짜 유틸 (dayjs 미사용)
+// ── 날짜 유틸
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
 const fmtDate = (dt: Date) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 const endOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate(), 23, 59, 59, 999);
@@ -40,14 +40,13 @@ const toDateSafe = (v: any): Date | null => {
   const d = new Date(v);
   return isNaN(d.getTime()) ? null : d;
 };
-/** 마지막날 24:00까지 포함해 남은 '일' 숫자 계산 */
+/** 마지막날 24:00까지 포함해 남은 '일' 숫자 계산 (오늘이 만료일이면 1일로 표기) */
 const remainingDaysInclusive = (end: Date | null | undefined): number | null => {
   if (!end) return null;
   const now = new Date();
-  const until = endOfDay(end); // 마지막날 24:00 포함
-  const ms = until.getTime() - now.getTime();
+  const until = endOfDay(end);
   const dayMs = 24 * 60 * 60 * 1000;
-  return Math.ceil(ms / dayMs); // 오늘이 마지막날이면 1로 표시
+  return Math.ceil((until.getTime() - now.getTime()) / dayMs);
 };
 
 export default function LogoutHeader() {
@@ -105,7 +104,9 @@ export default function LogoutHeader() {
   );
 
   // 남은 일수(마지막날 24:00까지 포함)
-  const remain = useMemo(() => remainingDaysInclusive(subscriptionEndsAt), [subscriptionEndsAt]);
+  const remainRaw = useMemo(() => remainingDaysInclusive(subscriptionEndsAt), [subscriptionEndsAt]);
+  // 표시용: 최소 0일로 보정 (음수면 0으로)
+  const remain = Math.max(remainRaw ?? 0, 0);
 
   // 현재 표시용 등급 (만료 시 Basic으로 강제 표시)
   const [displayRole, setDisplayRole] = useState<'basic' | 'premium' | ''>('');
@@ -114,19 +115,18 @@ export default function LogoutHeader() {
       setDisplayRole('');
       return;
     }
-    if (roleFromCtx === 'premium' && remain !== null && remain <= 0) {
-      // 만료: 표시만 먼저 Basic
-      setDisplayRole('basic');
+    if (roleFromCtx === 'premium' && (remainRaw ?? 0) <= 0) {
+      setDisplayRole('basic'); // 만료면 Basic로 표시
     } else {
       setDisplayRole(roleFromCtx as any);
     }
-  }, [roleFromCtx, remain]);
+  }, [roleFromCtx, remainRaw]);
 
   // Firestore 실제 다운그레이드 (중복 실행 방지)
   const downgradedRef = useRef(false);
   useEffect(() => {
     const shouldDowngrade =
-      authUser?.uid && roleFromCtx === 'premium' && remain !== null && remain <= 0 && !downgradedRef.current;
+      authUser?.uid && roleFromCtx === 'premium' && (remainRaw ?? 0) <= 0 && !downgradedRef.current;
     if (!shouldDowngrade) return;
 
     downgradedRef.current = true;
@@ -144,7 +144,7 @@ export default function LogoutHeader() {
       }
     };
     run();
-  }, [authUser?.uid, roleFromCtx, remain]);
+  }, [authUser?.uid, roleFromCtx, remainRaw]);
 
   // Auth 상태 구독
   useEffect(() => {
@@ -207,16 +207,17 @@ export default function LogoutHeader() {
 
       {/* ⚠️ 원본 컨테이너/정렬/버튼 순서 그대로 */}
       <div className="shrink-0 flex items-center gap-3">
-        {/* ✨ 구독/업그레이드 버튼 "왼쪽" 배지들 */}
+        {/* ✨ 구독/업그레이드 버튼 왼쪽 배지들 */}
         {authUser && subscriptionEndsAt && (
           <span className="text-xs px-2 py-0.5 rounded border border-white/20" title="마지막날 24:00까지 사용 가능">
-            {/* 요청: '사용기한 N일' 로 표기 (날짜 표시는 제거) */}
-            {`사용기한 ${Math.max(remain ?? 0, 0)}일`}
+            {/* 만료일: 날짜 + 공백 + N일 */}
+            {`${fmtDate(subscriptionEndsAt)} ${remain}일`}
           </span>
         )}
         {authUser && lastUsedAt && (
           <span className="text-xs px-2 py-0.5 rounded border border-white/20" title="마지막 사용일">
-            {`마지막 ${fmtDate(lastUsedAt)}`}
+            {/* '마지막' 문구 제거 → 날짜만 */}
+            {fmtDate(lastUsedAt)}
           </span>
         )}
 
@@ -240,7 +241,7 @@ export default function LogoutHeader() {
 
         {/* 로그인/로그아웃 버튼 (원본 순서/클래스 유지) */}
         {!authUser ? (
-          <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg:white/10 bg-white/10 hover:bg-white/20">
+          <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
             로그인
           </button>
         ) : (
