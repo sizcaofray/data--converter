@@ -1,13 +1,13 @@
 'use client';
 /**
- * - 상위 레이아웃/정렬/버튼 순서 변경 없음
- * - "구독/업그레이드" 버튼 **왼쪽**에 배지(남은 일수, 마지막 사용일) 인라인 추가
- * - Basic이면 버튼 라벨 '업그레이드', Premium이면 버튼 대신 상태 배지
- * - 타입 에러 해결: useUser() 값을 any로 받아 Firestore 문서 필드 안전 접근
- * - lastUsedAt가 문서에 없을 땐 authUser.metadata.lastSignInTime로 보조
+ * - 레이아웃/정렬/버튼 순서 변경 없음
+ * - 구독/업그레이드 버튼 "왼쪽"에 배지 2개 인라인:
+ *   1) 사용기한 N일  (N = 남은 일수 숫자, 마지막날 24:00까지 포함해 계산)
+ *   2) 마지막 YYYY-MM-DD  (시간 제거)
+ * - 기간 만료 시 Firestore의 users/{uid}.plan 을 'basic' 으로 다운그레이드 (실패해도 UI는 Basic 처리)
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase/firebase';
@@ -23,13 +23,14 @@ import {
 import { useSubscribePopup } from '@/contexts/SubscribePopupContext';
 import { useUser } from '@/contexts/UserContext';
 
+// ▼ Firestore로 다운그레이드 적용
+import { db } from '@/lib/firebase/firebase';
+import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+
 // ── 날짜 유틸 (dayjs 미사용)
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-const fmt = (dt: Date) =>
-  `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
-const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
-const diffDays = (end: Date | null | undefined) =>
-  end ? Math.round((startOfDay(end).getTime() - startOfDay(new Date()).getTime()) / 86400000) : null;
+const fmtDate = (dt: Date) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+const endOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate(), 23, 59, 59, 999);
 const toDateSafe = (v: any): Date | null => {
   if (!v) return null;
   if (v?.toDate) {
@@ -39,6 +40,15 @@ const toDateSafe = (v: any): Date | null => {
   const d = new Date(v);
   return isNaN(d.getTime()) ? null : d;
 };
+/** 마지막날 24:00까지 포함해 남은 '일' 숫자 계산 */
+const remainingDaysInclusive = (end: Date | null | undefined): number | null => {
+  if (!end) return null;
+  const now = new Date();
+  const until = endOfDay(end); // 마지막날 24:00 포함
+  const ms = until.getTime() - now.getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+  return Math.ceil(ms / dayMs); // 오늘이 마지막날이면 1로 표시
+};
 
 export default function LogoutHeader() {
   const router = useRouter();
@@ -47,10 +57,9 @@ export default function LogoutHeader() {
 
   const { open } = useSubscribePopup();
 
-  // ✅ 타입 충돌 방지: 컨텍스트 any로 받아, 다양한 키를 유연하게 조회
+  // 컨텍스트 any로 받아 Firestore 문서 필드 접근 (프로젝트별 키 차이 대응)
   const ctx: any = (useUser?.() as any) || {};
-  // 역할(plan) 추론: role → userDoc.plan → user.plan → subscription.plan …
-  const role: string = String(
+  const roleFromCtx: string = String(
     ctx.role ??
       ctx.userDoc?.plan ??
       ctx.user?.plan ??
@@ -61,7 +70,6 @@ export default function LogoutHeader() {
     .trim()
     .toLowerCase();
 
-  // userDoc 후보: 프로젝트마다 저장 위치가 다를 수 있어 가장 그럴듯한 것부터 순회
   const userDoc: any =
     ctx.userDoc ??
     ctx.user ??
@@ -70,19 +78,15 @@ export default function LogoutHeader() {
     ctx.subscription ??
     {};
 
-  const isBasic = role === 'basic';
-  const isPremium = role === 'premium';
-
-  // ── 구독 만료/마지막 사용일: 여러 키를 시도하고, 마지막 사용일은 auth 메타데이터로 보조
+  // 만료일 / 마지막 사용일
   const subscriptionEndsAt = toDateSafe(
     userDoc.subscriptionEndsAt ??
       userDoc.endsAt ??
       ctx.subscriptionEndsAt ??
-      ctx.subscription?.endsAt ??
-      ctx.plan?.endsAt
+      ctx.subscription?.endsAt
   );
 
-  // lastUsedAt이 없으면 authUser.metadata.lastSignInTime 사용
+  // lastUsedAt 없으면 auth 메타데이터로 보조
   const [authLastSignIn, setAuthLastSignIn] = useState<Date | null>(null);
   useEffect(() => {
     if (authUser?.metadata?.lastSignInTime) {
@@ -100,10 +104,49 @@ export default function LogoutHeader() {
       authLastSignIn
   );
 
-  const daysLeft = useMemo(() => diffDays(subscriptionEndsAt), [subscriptionEndsAt]);
-  const lastUsedLabel = useMemo(() => (lastUsedAt ? fmt(lastUsedAt) : null), [lastUsedAt]);
+  // 남은 일수(마지막날 24:00까지 포함)
+  const remain = useMemo(() => remainingDaysInclusive(subscriptionEndsAt), [subscriptionEndsAt]);
 
-  // ── Auth 상태
+  // 현재 표시용 등급 (만료 시 Basic으로 강제 표시)
+  const [displayRole, setDisplayRole] = useState<'basic' | 'premium' | ''>('');
+  useEffect(() => {
+    if (!roleFromCtx) {
+      setDisplayRole('');
+      return;
+    }
+    if (roleFromCtx === 'premium' && remain !== null && remain <= 0) {
+      // 만료: 표시만 먼저 Basic
+      setDisplayRole('basic');
+    } else {
+      setDisplayRole(roleFromCtx as any);
+    }
+  }, [roleFromCtx, remain]);
+
+  // Firestore 실제 다운그레이드 (중복 실행 방지)
+  const downgradedRef = useRef(false);
+  useEffect(() => {
+    const shouldDowngrade =
+      authUser?.uid && roleFromCtx === 'premium' && remain !== null && remain <= 0 && !downgradedRef.current;
+    if (!shouldDowngrade) return;
+
+    downgradedRef.current = true;
+    const run = async () => {
+      try {
+        const ref = doc(db, 'users', authUser.uid);
+        await updateDoc(ref, {
+          plan: 'basic',
+          subscriptionEndsAt: null, // 만료 처리 시점에 비움(선택)
+          downgradedAt: serverTimestamp(),
+        });
+        setDisplayRole('basic');
+      } catch (e) {
+        console.warn('[subscription] downgrade failed:', e);
+      }
+    };
+    run();
+  }, [authUser?.uid, roleFromCtx, remain]);
+
+  // Auth 상태 구독
   useEffect(() => {
     setPersistence(auth, browserLocalPersistence).catch(() => null);
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -131,7 +174,6 @@ export default function LogoutHeader() {
     }
   };
 
-  // ── 초기 로딩 스켈레톤(원본 유지)
   if (init) {
     return (
       <header className="h-14 border-b border-white/10 flex items-center justify-between px-4 select-none">
@@ -150,7 +192,9 @@ export default function LogoutHeader() {
     );
   }
 
-  // ── 본 렌더 (원본 구조/순서/정렬 유지)
+  const isBasic = displayRole === 'basic';
+  const isPremium = displayRole === 'premium';
+
   return (
     <header className="h-14 border-b border-white/10 flex items-center justify-between px-4 select-none">
       <div className="shrink-0">
@@ -161,20 +205,18 @@ export default function LogoutHeader() {
 
       <div className="flex-1 px-4" />
 
-      {/* ⚠️ 오른쪽 컨테이너: 구조/정렬/순서 원본 그대로 */}
+      {/* ⚠️ 원본 컨테이너/정렬/버튼 순서 그대로 */}
       <div className="shrink-0 flex items-center gap-3">
-        {/* ✨ 여기! 구독/업그레이드 버튼 **왼쪽**에 배지 2개 인라인 */}
-        {authUser && daysLeft !== null && (
-          <span
-            className="text-xs px-2 py-0.5 rounded border border-white/20"
-            title={subscriptionEndsAt ? `만료일: ${fmt(subscriptionEndsAt)}` : undefined}
-          >
-            남은 {daysLeft}일
+        {/* ✨ 구독/업그레이드 버튼 "왼쪽" 배지들 */}
+        {authUser && subscriptionEndsAt && (
+          <span className="text-xs px-2 py-0.5 rounded border border-white/20" title="마지막날 24:00까지 사용 가능">
+            {/* 요청: '사용기한 N일' 로 표기 (날짜 표시는 제거) */}
+            {`사용기한 ${Math.max(remain ?? 0, 0)}일`}
           </span>
         )}
-        {authUser && lastUsedLabel && (
+        {authUser && lastUsedAt && (
           <span className="text-xs px-2 py-0.5 rounded border border-white/20" title="마지막 사용일">
-            마지막 {lastUsedLabel}
+            {`마지막 ${fmtDate(lastUsedAt)}`}
           </span>
         )}
 
@@ -198,7 +240,7 @@ export default function LogoutHeader() {
 
         {/* 로그인/로그아웃 버튼 (원본 순서/클래스 유지) */}
         {!authUser ? (
-          <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
+          <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg:white/10 bg-white/10 hover:bg-white/20">
             로그인
           </button>
         ) : (
