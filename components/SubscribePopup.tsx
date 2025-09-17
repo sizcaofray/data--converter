@@ -22,7 +22,6 @@ function SubscribePopup() {
   const isAdmin = normalizedRole === 'admin';
   const isBasicRole = normalizedRole === 'basic';
 
-  // Bootpay 준비 대기(안전)
   const waitBootpay = useCallback(async (retries = 10, intervalMs = 200) => {
     for (let i = 0; i < retries; i++) {
       if (typeof window !== 'undefined' && (window as any).Bootpay) return (window as any).Bootpay;
@@ -76,14 +75,8 @@ function SubscribePopup() {
     () =>
       PLANS.map((plan) => {
         const isCurrent = plan.key === normalizedRole;
-
-        // ✅ 변경 포인트:
-        // - 관리자/현재 플랜은 비활성화(원본 유지)
-        // - Basic 사용자는 "Premium만" 클릭 가능하도록 free/basic 비활성화
-        const disabled =
-          isAdmin ||
-          isCurrent ||
-          (isBasicRole && plan.key !== 'premium'); // ← Basic이면 premium만 활성
+        // Basic 사용자는 premium만 활성화
+        const disabled = isAdmin || isCurrent || (isBasicRole && plan.key !== 'premium');
 
         return (
           <div
@@ -115,12 +108,10 @@ function SubscribePopup() {
                     </span>
                   )}
                 </div>
-                {/* 가격 */}
                 <div className="text-right text-gray-600 dark:text-gray-300">
                   {plan.price === 0 ? '무료' : plan.price.toLocaleString() + '원'}
                 </div>
               </div>
-              {/* 설명 */}
               <p className="text-sm text-gray-500 dark:text-gray-300">{plan.description}</p>
             </div>
           </div>
