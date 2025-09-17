@@ -1,13 +1,11 @@
 'use client';
 /**
- * 요구사항
  * - 레이아웃/정렬/버튼 순서 변경 없음
- * - 구독/업그레이드 버튼 "왼쪽"에 배지 2개 인라인:
+ * - 구독/업그레이드 버튼 왼쪽에 배지 2개 인라인:
  *    1) 만료: YYYY-MM-DD N일  (N = 남은 일수, 마지막날 24:00까지 포함)
- *    2) 마지막 사용일: YYYY-MM-DD  (문구 '마지막' 제거)
- * - N일이 항상 숫자로 나오도록 보장 (NaN/음수 방지: 최소 0일)
- * - 기간 만료 시 Firestore의 users/{uid}.plan 을 'basic' 으로 다운그레이드 (실패해도 UI는 Basic 처리)
- * - 타입 충돌 방지: useUser() 컨텍스트는 any로 받아 Firestore 문서 필드 접근
+ *    2) 마지막 사용일: YYYY-MM-DD
+ * - N일 항상 숫자 보장 (NaN/음수 방지)
+ * - 만료 시 Firestore plan = 'basic' 으로 다운그레이드 (실패해도 UI는 Basic 처리)
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -32,7 +30,6 @@ import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 // ── 날짜 유틸
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
 const fmtDate = (dt: Date) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-const endOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate(), 23, 59, 59, 999);
 const toDateSafe = (v: any): Date | null => {
   if (!v) return null;
   if (v?.toDate) {
@@ -43,15 +40,25 @@ const toDateSafe = (v: any): Date | null => {
   return isNaN(d.getTime()) ? null : d;
 };
 
-/** 마지막날 24:00까지 포함, 항상 "정수 일수"를 반환(최소 0일). NaN/음수 방지 */
+/**
+ * ✅ 남은 '일' 계산 (마지막날 24:00까지 포함)
+ *  - todayStart: 오늘 00:00
+ *  - endNextDayStart: 만료일 다음날 00:00
+ *  - days = ceil((endNextDayStart - todayStart) / 1day)
+ *  - 결과 최소 0 보장
+ */
 const remainingDaysInclusive = (end: Date | null | undefined): number => {
   if (!end) return 0;
-  const now = new Date();
-  const until = endOfDay(end);
   const dayMs = 24 * 60 * 60 * 1000;
-  const ms = until.getTime() - now.getTime();
+
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  const endNextDayStart = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 0, 0, 0, 0);
+
+  const ms = endNextDayStart.getTime() - todayStart.getTime();
   if (!Number.isFinite(ms)) return 0;
-  // 오늘이 만료일이면 1일, 이미 지났으면 0일, 그 외는 올림
+
   const days = Math.ceil(ms / dayMs);
   return Math.max(days, 0);
 };
@@ -110,8 +117,9 @@ export default function LogoutHeader() {
       authLastSignIn
   );
 
-  // 남은 일수(마지막날 24:00까지 포함) — 항상 숫자
+  // ✅ 남은 일수(마지막날 24:00까지 포함) — 항상 숫자
   const remain = useMemo(() => remainingDaysInclusive(subscriptionEndsAt), [subscriptionEndsAt]);
+  const remainText = Number.isFinite(remain) ? String(remain) : '0';
 
   // 현재 표시용 등급 (만료 시 Basic으로 강제 표시)
   const [displayRole, setDisplayRole] = useState<'basic' | 'premium' | ''>('');
@@ -141,7 +149,7 @@ export default function LogoutHeader() {
         const ref = doc(db, 'users', authUser.uid);
         await updateDoc(ref, {
           plan: 'basic',
-          subscriptionEndsAt: null, // 만료 처리 시점에 비움(선택)
+          subscriptionEndsAt: null,
           downgradedAt: serverTimestamp(),
         });
         setDisplayRole('basic');
@@ -216,13 +224,11 @@ export default function LogoutHeader() {
         {/* ✨ 구독/업그레이드 버튼 왼쪽 배지들 */}
         {authUser && subscriptionEndsAt && (
           <span className="text-xs px-2 py-0.5 rounded border border-white/20" title="마지막날 24:00까지 사용 가능">
-            {/* 만료일: 날짜 + 공백 + N일 (N 보장) */}
-            {`${fmtDate(subscriptionEndsAt)} ${remain}일`}
+            {`${fmtDate(subscriptionEndsAt)} ${remainText}일`}
           </span>
         )}
         {authUser && lastUsedAt && (
           <span className="text-xs px-2 py-0.5 rounded border border-white/20" title="마지막 사용일">
-            {/* '마지막' 문구 제거 → 날짜만 */}
             {fmtDate(lastUsedAt)}
           </span>
         )}
