@@ -1,11 +1,13 @@
 'use client';
 /**
+ * 요구사항 & 안정화
  * - 레이아웃/정렬/버튼 순서 변경 없음
- * - 구독/업그레이드 버튼 왼쪽에 배지 2개 인라인:
+ * - 구독/업그레이드 버튼 "왼쪽"에 배지 2개 인라인:
  *    1) 만료: YYYY-MM-DD N일  (N = 남은 일수, 마지막날 24:00까지 포함)
- *    2) 마지막 사용일: YYYY-MM-DD
- * - N일 항상 숫자 보장 (NaN/음수 방지)
+ *    2) 마지막 사용일: YYYY-MM-DD  (문구 '마지막' 제거)
+ * - N일 항상 숫자 보장 (NaN/음수 방지: 최소 0)
  * - 만료 시 Firestore plan = 'basic' 으로 다운그레이드 (실패해도 UI는 Basic 처리)
+ * - 컨텍스트(useSubscribePopup, useUser) 미설정이어도 페이지가 죽지 않도록 방어
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -30,15 +32,6 @@ import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 // ── 날짜 유틸
 const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
 const fmtDate = (dt: Date) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-const toDateSafe = (v: any): Date | null => {
-  if (!v) return null;
-  if (v?.toDate) {
-    const d = v.toDate();
-    return isNaN(d.getTime()) ? null : d;
-  }
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d;
-};
 
 /**
  * ✅ 남은 '일' 계산 (마지막날 24:00까지 포함)
@@ -63,40 +56,66 @@ const remainingDaysInclusive = (end: Date | null | undefined): number => {
   return Math.max(days, 0);
 };
 
+const toDateSafe = (v: any): Date | null => {
+  if (!v) return null;
+  if (v?.toDate) {
+    const d = v.toDate();
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+};
+
 export default function LogoutHeader() {
   const router = useRouter();
   const [init, setInit] = useState(true);
   const [authUser, setAuthUser] = useState<any>(null);
 
-  const { open } = useSubscribePopup();
+  // ── 구독 팝업 훅: 미설정이어도 페이지가 죽지 않도록 방어
+  let popupCtx: any = null;
+  try {
+    popupCtx = (useSubscribePopup as any)?.();
+  } catch {
+    popupCtx = null;
+  }
+  const open = popupCtx?.open ?? (() => {}); // 없으면 no-op
+  const popupAvailable = !!popupCtx?.open;
 
-  // 컨텍스트 any로 받아 Firestore 문서 필드 접근 (프로젝트별 키 차이 대응)
-  const ctx: any = (useUser?.() as any) || {};
+  // ── 유저 컨텍스트 훅: 미설정이어도 방어
+  let userCtx: any = {};
+  try {
+    userCtx = (useUser as any)?.() ?? {};
+  } catch {
+    userCtx = {};
+  }
+
+  // 역할(plan) 파싱 (여러 키 시도)
   const roleFromCtx: string = String(
-    ctx.role ??
-      ctx.userDoc?.plan ??
-      ctx.user?.plan ??
-      ctx.profile?.plan ??
-      ctx.subscription?.plan ??
+    userCtx.role ??
+      userCtx.userDoc?.plan ??
+      userCtx.user?.plan ??
+      userCtx.profile?.plan ??
+      userCtx.subscription?.plan ??
       ''
   )
     .trim()
     .toLowerCase();
 
+  // Firestore 사용자 문서 후보 (여러 키 시도)
   const userDoc: any =
-    ctx.userDoc ??
-    ctx.user ??
-    ctx.profile ??
-    ctx.account ??
-    ctx.subscription ??
+    userCtx.userDoc ??
+    userCtx.user ??
+    userCtx.profile ??
+    userCtx.account ??
+    userCtx.subscription ??
     {};
 
   // 만료일 / 마지막 사용일
   const subscriptionEndsAt = toDateSafe(
     userDoc.subscriptionEndsAt ??
       userDoc.endsAt ??
-      ctx.subscriptionEndsAt ??
-      ctx.subscription?.endsAt
+      userCtx.subscriptionEndsAt ??
+      userCtx.subscription?.endsAt
   );
 
   // lastUsedAt 없으면 auth 메타데이터로 보조
@@ -113,7 +132,7 @@ export default function LogoutHeader() {
     userDoc.lastUsedAt ??
       userDoc.lastLoginAt ??
       userDoc.lastActiveAt ??
-      ctx.lastUsedAt ??
+      userCtx.lastUsedAt ??
       authLastSignIn
   );
 
@@ -154,6 +173,7 @@ export default function LogoutHeader() {
         });
         setDisplayRole('basic');
       } catch (e) {
+        // 다운그레이드 실패해도 화면은 Basic 유지
         console.warn('[subscription] downgrade failed:', e);
       }
     };
@@ -188,6 +208,7 @@ export default function LogoutHeader() {
     }
   };
 
+  // ── 초기 로딩 시(원본 스켈레톤 유지)
   if (init) {
     return (
       <header className="h-14 border-b border-white/10 flex items-center justify-between px-4 select-none">
@@ -243,6 +264,8 @@ export default function LogoutHeader() {
             type="button"
             onClick={open}
             className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
+            disabled={!popupAvailable} // 컨텍스트 없으면 비활성화(페이지는 유지)
+            title={popupAvailable ? undefined : '구독 팝업 컨텍스트가 설정되지 않았습니다'}
           >
             {isBasic ? '업그레이드' : '구독'}
           </button>
