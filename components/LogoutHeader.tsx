@@ -3,14 +3,14 @@
  * components/LogoutHeader.tsx
  * -----------------------------------------------------------------------------
  * ✅ 표시 규칙
- *  - 구독일:   "구독일 YYYY-MM-DD" (없으면 "구독일 미설정")
  *  - 만료일:   "만료일 YYYY-MM-DD (N일)"  // 마지막날 24:00까지 포함
- *    · 만료일 없음/지남 → "만료일 0일"
+ *    · 만료일 없음/지남 → "만료일 0일" (날짜가 없으면 0일 고정)
+ *  - 마지막 사용일(있을 때만): "마지막 사용일 YYYY-MM-DD"
  *
  * ✅ 방어/디버깅
- *  - 다양한 키 폴백(구독일/만료일 각각) + 컨텍스트에 없으면 Firestore에서 1회 조회
- *  - DEBUG 로그로 어떤 키가 잡혔는지/최종 배지 문자열 확인
- *  - 디자인/마크업/클래스 변경 최소화(텍스트만 변경)
+ *  - 다양한 만료일 키 폴백 + 컨텍스트에 없으면 Firestore users/{uid}를 1회 조회
+ *  - DEBUG 로그: 어떤 키가 잡혔는지/최종 배지 문자열 확인
+ *  - 디자인/마크업/클래스 변경 없음(텍스트만 개선)
  * -----------------------------------------------------------------------------
  */
 
@@ -91,36 +91,15 @@ const END_KEYS = [
   'billingEndDate',
 ] as const;
 
-/** 구독 시작일(구독일) 후보 키(확장) */
-const START_KEYS = [
-  'subscriptionStartAt',
-  'subscriptionStartedAt',
-  'startAt',
-  'startedAt',
-  'startDate',
-  'start_date',
-  'subStartAt',
-  'subStartedAt',
-  'subStartDate',
-  'billingStartAt',
-  'billingStartedAt',
-  'billingStartDate',
-  'paidAt',
-  'paidDate',
-  'purchasedAt',
-  'activatedAt',
-  'subscribedAt',
-  'createdAt', // 초기 생성일을 구독 시작으로 쓰는 경우 대비
-] as const;
-
-const pickRawByKeys = (obj: any | null | undefined, keys: readonly string[]) => {
+/** 객체에서 만료일 후보 키를 순서대로 검사하여 최초 값을 반환 */
+const pickEndRaw = (obj: any | null | undefined): any => {
   if (!obj || typeof obj !== 'object') return null;
-  for (const k of keys) {
+  for (const k of END_KEYS) {
     if (obj[k] !== undefined && obj[k] !== null) return obj[k];
   }
   // 흔한 중첩 컨테이너
-  const nested = obj.subscription || obj.billing || obj.plan || {};
-  for (const k of keys) {
+  const nested = obj?.subscription || obj?.billing || obj?.plan || {};
+  for (const k of END_KEYS) {
     if (nested[k] !== undefined && nested[k] !== null) return nested[k];
   }
   return null;
@@ -149,9 +128,14 @@ export default function LogoutHeader() {
 
   // Auth
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
+  const [authLastSignIn, setAuthLastSignIn] = useState<Date | null>(null);
+
   useEffect(() => {
     setPersistence(auth, browserLocalPersistence).catch(() => null);
-    const unsub = onAuthStateChanged(auth, (u) => setAuthUser(u || null));
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setAuthUser(u || null);
+      setAuthLastSignIn(u?.metadata?.lastSignInTime ? toDateSafe(u.metadata.lastSignInTime) : null);
+    });
     return () => unsub();
   }, []);
 
@@ -176,19 +160,16 @@ export default function LogoutHeader() {
     userCtx.subscription ??
     {};
 
-  // 1차: 컨텍스트에서 구독일/만료일 후보
-  const rawStartFromCtx = coalesce(pickRawByKeys(userDoc, START_KEYS), pickRawByKeys(userCtx, START_KEYS));
-  const rawEndFromCtx   = coalesce(pickRawByKeys(userDoc, END_KEYS),   pickRawByKeys(userCtx, END_KEYS));
+  // 1차: 컨텍스트에서 만료일 후보
+  const rawEndFromCtx = coalesce(pickEndRaw(userDoc), pickEndRaw(userCtx));
 
-  // 2차: 부족 시 Firestore에서 1회 조회(둘 다 보강)
+  // 2차: 없으면 Firestore에서 한번 조회(보강)
   const [fetchedUserData, setFetchedUserData] = useState<any>(null);
-  const [extraStartRaw, setExtraStartRaw] = useState<any>(null);
   const [extraEndRaw, setExtraEndRaw] = useState<any>(null);
 
   useEffect(() => {
     if (!authUser?.uid) return;
-    if (rawStartFromCtx !== undefined && rawEndFromCtx !== undefined &&
-        rawStartFromCtx !== null && rawEndFromCtx !== null) return;
+    if (rawEndFromCtx !== null && rawEndFromCtx !== undefined) return;
     let cancel = false;
     (async () => {
       try {
@@ -198,12 +179,7 @@ export default function LogoutHeader() {
         const data = snap.data();
         if (cancel) return;
         setFetchedUserData(data);
-        if (rawStartFromCtx === null || rawStartFromCtx === undefined) {
-          setExtraStartRaw(pickRawByKeys(data, START_KEYS));
-        }
-        if (rawEndFromCtx === null || rawEndFromCtx === undefined) {
-          setExtraEndRaw(pickRawByKeys(data, END_KEYS));
-        }
+        setExtraEndRaw(pickEndRaw(data) ?? null);
         if (DEBUG) {
           console.log('📥 [LogoutHeader] fetched user doc:', data);
         }
@@ -212,14 +188,24 @@ export default function LogoutHeader() {
       }
     })();
     return () => { cancel = true; };
-  }, [authUser?.uid, rawStartFromCtx, rawEndFromCtx]);
+  }, [authUser?.uid, rawEndFromCtx]);
 
-  // 최종 원시값 → Date
-  const rawStart = coalesce(rawStartFromCtx, extraStartRaw);
-  const rawEnd   = coalesce(rawEndFromCtx,   extraEndRaw);
+  // 최종 만료일 원시값 → Date
+  const rawEnd = coalesce(rawEndFromCtx, extraEndRaw);
+  const subscriptionEndsAt: Date | null = toDateSafe(rawEnd);
 
-  const subscriptionStartAt: Date | null = toDateSafe(rawStart);
-  const subscriptionEndsAt:  Date | null = toDateSafe(rawEnd);
+  // 마지막 사용일(없으면 auth 메타 보조)
+  const lastUsedAt = toDateSafe(
+    coalesce(
+      userDoc.lastUsedAt,
+      userDoc.lastLoginAt,
+      userDoc.lastActiveAt,
+      userCtx.lastUsedAt,
+      userCtx.profile?.lastUsedAt,
+      userCtx.activity?.lastUsedAt,
+      authLastSignIn
+    )
+  );
 
   // ✅ 남은 일수: 만료일 없으면 0, 있으면 계산값(음수면 0)
   const remainNum: number = useMemo(() => {
@@ -228,11 +214,7 @@ export default function LogoutHeader() {
     return r > 0 ? r : 0;
   }, [subscriptionEndsAt]);
 
-  // ✅ 배지 문자열 (라벨 포함)
-  const startBadgeText = subscriptionStartAt
-    ? `구독일 ${fmtDate(subscriptionStartAt)}`
-    : '구독일 미설정';
-
+  // ✅ 배지 문자열
   const endBadgeText = subscriptionEndsAt
     ? `만료일 ${fmtDate(subscriptionEndsAt)} (${remainNum}일)`
     : '만료일 0일';
@@ -248,18 +230,12 @@ export default function LogoutHeader() {
         console.table(rows);
       } catch {}
     };
-    showKeys(userDoc, 'doc.START', START_KEYS);
-    showKeys(userDoc, 'doc.END',   END_KEYS);
-    showKeys(userCtx, 'ctx.START', START_KEYS);
-    showKeys(userCtx, 'ctx.END',   END_KEYS);
-    if (fetchedUserData) {
-      showKeys(fetchedUserData, 'fetched.START', START_KEYS);
-      showKeys(fetchedUserData, 'fetched.END',   END_KEYS);
-    }
+    showKeys(userDoc, 'doc.END', END_KEYS);
+    showKeys(userCtx, 'ctx.END', END_KEYS);
+    if (fetchedUserData) showKeys(fetchedUserData, 'fetched.END', END_KEYS);
 
-    console.log('🏷️ [LogoutHeader] startBadgeText =', startBadgeText, '| endBadgeText =', endBadgeText, {
-      subscriptionStartAt: subscriptionStartAt ? subscriptionStartAt.toString() : null,
-      subscriptionEndsAt:  subscriptionEndsAt  ? subscriptionEndsAt.toString()  : null,
+    console.log('🏷️ [LogoutHeader] endBadgeText =', endBadgeText, {
+      parsedEnd: subscriptionEndsAt ? subscriptionEndsAt.toString() : null,
       remainNum,
       roleFromCtx,
     });
@@ -338,17 +314,7 @@ export default function LogoutHeader() {
 
       {/* 우측 영역 (원본 순서/클래스 유지) */}
       <div className="flex items-center gap-2">
-        {/* ✅ 구독일 배지 */}
-        {authUser && (
-          <span
-            className="text-xs px-2 py-0.5 rounded border border-white/20"
-            title={subscriptionStartAt ? '구독 시작일' : '구독 시작일이 설정되지 않았습니다.'}
-          >
-            {startBadgeText}
-          </span>
-        )}
-
-        {/* ✅ 만료일 배지 */}
+        {/* ✅ 만료일 배지만 표시 */}
         {authUser && (
           <span
             className="text-xs px-2 py-0.5 rounded border border-white/20"
@@ -358,7 +324,17 @@ export default function LogoutHeader() {
           </span>
         )}
 
-        {/* 구독/업그레이드 or Premium 배지 */}
+        {/* 마지막 사용일(있을 때만) — 라벨 명시로 혼동 방지 */}
+        {authUser && lastUsedAt && (
+          <span
+            className="text-xs px-2 py-0.5 rounded border border-white/20"
+            title="마지막 사용일"
+          >
+            {`마지막 사용일 ${fmtDate(lastUsedAt)}`}
+          </span>
+        )}
+
+        {/* 구독/업그레이드 또는 Premium 배지 */}
         {isPremium ? (
           <span className="text-xs px-2 py-0.5 rounded border border-emerald-500/60 text-emerald-400">
             프리미엄 이용중
