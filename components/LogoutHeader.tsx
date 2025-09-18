@@ -2,15 +2,15 @@
 /**
  * components/LogoutHeader.tsx
  * -----------------------------------------------------------------------------
- * ✅ 표시 규칙
- *  - 만료일:   "만료일 YYYY-MM-DD (N일)"  // 마지막날 24:00까지 포함
- *    · 만료일 없음/지남 → "만료일 0일" (날짜가 없으면 0일 고정)
- *  - 마지막 사용일(있을 때만): "마지막 사용일 YYYY-MM-DD"
+ * ✅ 표시 규칙(최종)
+ *  - 오직 하나의 배지:
+ *      · 만료일 존재  → "만료일 YYYY-MM-DD (N일)"   // 마지막날 24:00 포함
+ *      · 만료일 없음/경과 → "만료일 0일"
  *
  * ✅ 방어/디버깅
- *  - 다양한 만료일 키 폴백 + 컨텍스트에 없으면 Firestore users/{uid}를 1회 조회
- *  - DEBUG 로그: 어떤 키가 잡혔는지/최종 배지 문자열 확인
- *  - 디자인/마크업/클래스 변경 없음(텍스트만 개선)
+ *  - 다양한 만료일 키 폴백 + 컨텍스트에서 못 찾으면 Firestore users/{uid} 1회 조회
+ *  - DEBUG 로그: 어떤 키가 잡혔는지/최종 배지 문자열
+ *  - 디자인/마크업/클래스 변경 없음
  * -----------------------------------------------------------------------------
  */
 
@@ -128,14 +128,9 @@ export default function LogoutHeader() {
 
   // Auth
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
-  const [authLastSignIn, setAuthLastSignIn] = useState<Date | null>(null);
-
   useEffect(() => {
     setPersistence(auth, browserLocalPersistence).catch(() => null);
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setAuthUser(u || null);
-      setAuthLastSignIn(u?.metadata?.lastSignInTime ? toDateSafe(u.metadata.lastSignInTime) : null);
-    });
+    const unsub = onAuthStateChanged(auth, (u) => setAuthUser(u || null));
     return () => unsub();
   }, []);
 
@@ -180,9 +175,7 @@ export default function LogoutHeader() {
         if (cancel) return;
         setFetchedUserData(data);
         setExtraEndRaw(pickEndRaw(data) ?? null);
-        if (DEBUG) {
-          console.log('📥 [LogoutHeader] fetched user doc:', data);
-        }
+        if (DEBUG) console.log('📥 [LogoutHeader] fetched user doc:', data);
       } catch (e) {
         console.warn('[LogoutHeader] fetch user doc failed:', e);
       }
@@ -194,19 +187,6 @@ export default function LogoutHeader() {
   const rawEnd = coalesce(rawEndFromCtx, extraEndRaw);
   const subscriptionEndsAt: Date | null = toDateSafe(rawEnd);
 
-  // 마지막 사용일(없으면 auth 메타 보조)
-  const lastUsedAt = toDateSafe(
-    coalesce(
-      userDoc.lastUsedAt,
-      userDoc.lastLoginAt,
-      userDoc.lastActiveAt,
-      userCtx.lastUsedAt,
-      userCtx.profile?.lastUsedAt,
-      userCtx.activity?.lastUsedAt,
-      authLastSignIn
-    )
-  );
-
   // ✅ 남은 일수: 만료일 없으면 0, 있으면 계산값(음수면 0)
   const remainNum: number = useMemo(() => {
     if (!subscriptionEndsAt) return 0;
@@ -214,7 +194,7 @@ export default function LogoutHeader() {
     return r > 0 ? r : 0;
   }, [subscriptionEndsAt]);
 
-  // ✅ 배지 문자열
+  // ✅ 배지 문자열(유일하게 이것만 표시)
   const endBadgeText = subscriptionEndsAt
     ? `만료일 ${fmtDate(subscriptionEndsAt)} (${remainNum}일)`
     : '만료일 0일';
@@ -314,23 +294,13 @@ export default function LogoutHeader() {
 
       {/* 우측 영역 (원본 순서/클래스 유지) */}
       <div className="flex items-center gap-2">
-        {/* ✅ 만료일 배지만 표시 */}
+        {/* ✅ 오직 만료일 배지만 표시 */}
         {authUser && (
           <span
             className="text-xs px-2 py-0.5 rounded border border-white/20"
             title={subscriptionEndsAt ? '마지막날 24:00까지 사용 가능' : '만료일이 설정되지 않았습니다.'}
           >
             {endBadgeText}
-          </span>
-        )}
-
-        {/* 마지막 사용일(있을 때만) — 라벨 명시로 혼동 방지 */}
-        {authUser && lastUsedAt && (
-          <span
-            className="text-xs px-2 py-0.5 rounded border border-white/20"
-            title="마지막 사용일"
-          >
-            {`마지막 사용일 ${fmtDate(lastUsedAt)}`}
           </span>
         )}
 
