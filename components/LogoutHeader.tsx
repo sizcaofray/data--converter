@@ -1,12 +1,9 @@
 'use client';
 /**
  * LogoutHeader.tsx
- * - 디자인/마크업/버튼 순서/클래스 변경 없음 (로직 + 로그만 보강)
- * - 만료일 키 불일치 대응: subscriptionEndAt / subscriptionEndsAt / endAt / endsAt / end_date 등 폭넓게 폴백
- * - 남은 일수 N: 마지막날 24:00 포함 (최소 0)
- * - 만료 시 Firestore plan=basic 다운그레이드 (실패해도 UI는 basic 표시 유지)
- * - useSubscribePopup / useUser 미설정 상황 방어
- * - 상세 콘솔 로그 출력(키/타입/계산 값 확인용)
+ * - 디자인/마크업/클래스 변경 없음 (로직만 조정)
+ * - 날짜 없거나 남은 일수 계산 불가여도 '일'은 항상 표시(로그인 시)
+ * - 만료일 키 불일치 폴백, 디버그 로그, 만료 시 basic 강등 로직 유지
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -27,7 +24,7 @@ import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { useSubscribePopup } from '@/contexts/SubscribePopupContext';
 import { useUser } from '@/contexts/UserContext';
 
-// === 디버그 로그 스위치 (필요시 true, 배포 시 false 권장) =========================
+// === 디버그 로그 스위치 =========================================================
 const DEBUG = true;
 
 // ── 날짜 유틸
@@ -36,35 +33,25 @@ const fmtDate = (dt: Date) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${p
 
 /**
  * ✅ 남은 '일' 계산 (마지막날 24:00까지 포함)
- *  - todayStart: 오늘 00:00 (로컬 타임존, 브라우저 기준)
- *  - endNextDayStart: 만료일 다음날 00:00
- *  - days = ceil((endNextDayStart - todayStart) / 1day)
- *  - 결과 최소 0 보장
  */
 const remainingDaysInclusive = (end: Date | null | undefined): number => {
   if (!end) return 0;
   const dayMs = 24 * 60 * 60 * 1000;
-
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
-
   const endNextDayStart = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 0, 0, 0, 0);
-
   const ms = endNextDayStart.getTime() - todayStart.getTime();
   if (!Number.isFinite(ms)) return 0;
-
   const days = Math.ceil(ms / dayMs);
   return Math.max(days, 0);
 };
 
 const toDateSafe = (v: any): Date | null => {
   if (!v) return null;
-  // Firestore Timestamp
   if (v?.toDate) {
     const d = v.toDate();
     return isNaN(d.getTime()) ? null : d;
   }
-  // 문자열/숫자/Date 호환
   const d = new Date(v);
   return isNaN(d.getTime()) ? null : d;
 };
@@ -95,17 +82,20 @@ export default function LogoutHeader() {
 
   // Auth 상태
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
-  const [init, setInit] = useState(true);
-
-  // Auth 메타(마지막 로그인 시간) 보조
   const [authLastSignIn, setAuthLastSignIn] = useState<Date | null>(null);
+
   useEffect(() => {
-    if (authUser?.metadata?.lastSignInTime) {
-      setAuthLastSignIn(toDateSafe(authUser.metadata.lastSignInTime));
-    } else {
-      setAuthLastSignIn(null);
-    }
-  }, [authUser]);
+    setPersistence(auth, browserLocalPersistence).catch(() => null);
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setAuthUser(u || null);
+      if (u?.metadata?.lastSignInTime) {
+        setAuthLastSignIn(toDateSafe(u.metadata.lastSignInTime));
+      } else {
+        setAuthLastSignIn(null);
+      }
+    });
+    return () => unsub();
+  }, []);
 
   // 역할(plan) 파싱 (여러 키 시도)
   const roleFromCtx: string = String(
@@ -129,26 +119,20 @@ export default function LogoutHeader() {
     {};
 
   // ── 만료일 필드 광범위 폴백
-  //    흔히 쓰이는 변형들: subscriptionEndAt / subscriptionEndsAt / endAt / endsAt / end_date / endDate 등
   const rawEnd =
     coalesce(
-      // 최우선: 문서 안
       userDoc.subscriptionEndAt,
       userDoc.subscriptionEndsAt,
       userDoc.endAt,
       userDoc.endsAt,
       userDoc.endDate,
       userDoc.end_date,
-
-      // 컨텍스트 직계
       userCtx.subscriptionEndAt,
       userCtx.subscriptionEndsAt,
       userCtx.endAt,
       userCtx.endsAt,
       userCtx.endDate,
       userCtx.end_date,
-
-      // 컨텍스트 내부 오브젝트
       userCtx.subscription?.endAt,
       userCtx.subscription?.endsAt,
       userCtx.subscription?.endDate,
@@ -170,9 +154,11 @@ export default function LogoutHeader() {
     )
   );
 
-  // ✅ 남은 일수(마지막날 24:00까지 포함) — 항상 숫자
-  const remain = useMemo(() => remainingDaysInclusive(subscriptionEndsAt), [subscriptionEndsAt]);
-  const remainText = Number.isFinite(remain) ? String(remain) : '0';
+  // ❗남은 일수: 날짜가 없으면 계산 자체를 하지 않고 null로 둠 → '일'만 표기
+  const remainNum: number | null = useMemo(
+    () => (subscriptionEndsAt ? remainingDaysInclusive(subscriptionEndsAt) : null),
+    [subscriptionEndsAt]
+  );
 
   // 현재 표시용 등급 (만료 시 Basic으로 강제 표시)
   const [displayRole, setDisplayRole] = useState<'basic' | 'premium' | ''>('');
@@ -181,13 +167,16 @@ export default function LogoutHeader() {
       setDisplayRole('');
       return;
     }
-    if (roleFromCtx === 'premium' && remain <= 0) {
-      // 만료: 표시만 먼저 Basic
-      setDisplayRole('basic');
+    if (roleFromCtx === 'premium') {
+      if (subscriptionEndsAt && remainingDaysInclusive(subscriptionEndsAt) <= 0) {
+        setDisplayRole('basic');
+      } else {
+        setDisplayRole('premium');
+      }
     } else {
       setDisplayRole(roleFromCtx as any);
     }
-  }, [roleFromCtx, remain]);
+  }, [roleFromCtx, subscriptionEndsAt]);
 
   // Firestore 실제 다운그레이드 (중복 실행 방지)
   const downgradedRef = useRef(false);
@@ -195,9 +184,7 @@ export default function LogoutHeader() {
     if (downgradedRef.current) return;
     if (displayRole !== 'basic') return;
     if (!authUser?.uid) return;
-
-    // roleFromCtx가 premium이었는데 remain<=0으로 basic 표시된 경우에만 시도
-    if (roleFromCtx === 'premium' && remain <= 0) {
+    if (roleFromCtx === 'premium' && subscriptionEndsAt && remainingDaysInclusive(subscriptionEndsAt) <= 0) {
       downgradedRef.current = true;
       (async () => {
         try {
@@ -213,42 +200,10 @@ export default function LogoutHeader() {
         }
       })();
     }
-  }, [authUser?.uid, roleFromCtx, remain, displayRole]);
+  }, [authUser?.uid, roleFromCtx, displayRole, subscriptionEndsAt]);
 
-  // ── 콘솔 디버그 (키/타입/계산값 전부 확인)
+  // ── 콘솔 디버그
   if (DEBUG) {
-    // 수집 가능한 만료일 관련 모든 키와 타입 프린트
-    const inspect = (obj: any, keys: string[]) =>
-      keys.map((k) => {
-        const v = obj?.[k];
-        return [k, v === undefined ? 'undefined' : v === null ? 'null' : Object.prototype.toString.call(v), v] as const;
-      });
-
-    const userDocKeys = [
-      'subscriptionEndAt',
-      'subscriptionEndsAt',
-      'endAt',
-      'endsAt',
-      'endDate',
-      'end_date',
-      'lastUsedAt',
-      'lastLoginAt',
-      'lastActiveAt',
-    ];
-    const userCtxKeys = [
-      'role',
-      'subscriptionEndAt',
-      'subscriptionEndsAt',
-      'endAt',
-      'endsAt',
-      'endDate',
-      'end_date',
-      'lastUsedAt',
-    ];
-
-    // eslint-disable-next-line no-console
-    console.log('🧪 [LogoutHeader:DEBUG] authUser=', !!authUser, 'uid=', authUser?.uid);
-    // eslint-disable-next-line no-console
     console.table({
       'doc.subscriptionEndAt': userDoc?.subscriptionEndAt ?? '(n/a)',
       'doc.subscriptionEndsAt': userDoc?.subscriptionEndsAt ?? '(n/a)',
@@ -256,39 +211,21 @@ export default function LogoutHeader() {
       'doc.endsAt': userDoc?.endsAt ?? '(n/a)',
       'doc.endDate': userDoc?.endDate ?? '(n/a)',
       'doc.end_date': userDoc?.end_date ?? '(n/a)',
-
       'ctx.subscriptionEndAt': userCtx?.subscriptionEndAt ?? '(n/a)',
       'ctx.subscriptionEndsAt': userCtx?.subscriptionEndsAt ?? '(n/a)',
       'ctx.endAt': userCtx?.endAt ?? '(n/a)',
       'ctx.endsAt': userCtx?.endsAt ?? '(n/a)',
       'ctx.endDate': userCtx?.endDate ?? '(n/a)',
       'ctx.end_date': userCtx?.end_date ?? '(n/a)',
-
       'ctx.role': roleFromCtx || '(empty)',
     });
-
-    // eslint-disable-next-line no-console
     console.log(
-      '🧮 [LogoutHeader:DEBUG] rawEnd=',
-      rawEnd,
-      '| parsed subscriptionEndsAt=',
-      subscriptionEndsAt ? subscriptionEndsAt.toString() : null,
-      '| lastUsedAt=',
-      lastUsedAt ? lastUsedAt.toString() : null,
-      '| remain(days)=',
-      remain
+      '🧮 [LogoutHeader:DEBUG]',
+      'rawEnd=', rawEnd,
+      '| parsed=', subscriptionEndsAt ? subscriptionEndsAt.toString() : null,
+      '| remainNum=', remainNum
     );
   }
-
-  // Auth 상태 구독
-  useEffect(() => {
-    setPersistence(auth, browserLocalPersistence).catch(() => null);
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setAuthUser(u || null);
-      setInit(false);
-    });
-    return () => unsub();
-  }, []);
 
   const onLogin = async () => {
     try {
@@ -321,19 +258,36 @@ export default function LogoutHeader() {
 
       {/* 우측 영역 (원본 순서/클래스 유지) */}
       <div className="flex items-center gap-2">
-        {/* ✨ 구독/업그레이드 버튼 왼쪽 배지들 */}
-        {authUser && subscriptionEndsAt && (
-          <span className="text-xs px-2 py-0.5 rounded border border-white/20" title="마지막날 24:00까지 사용 가능">
-            {`${fmtDate(subscriptionEndsAt)} ${remainText}일`}
+        {/**
+         * ✅ 변경 핵심:
+         * - 이전: authUser && subscriptionEndsAt 가 둘 다 있어야 배지 렌더 → 아무것도 안 보일 수 있었음
+         * - 현재: authUser 만 있으면 배지 렌더
+         *    - 날짜가 있으면: "YYYY-MM-DD {남은일수}일"
+         *    - 날짜가 없으면: "일" 만 표기 (숫자 생략)
+         */}
+        {authUser && (
+          <span
+            className="text-xs px-2 py-0.5 rounded border border-white/20"
+            title={
+              subscriptionEndsAt
+                ? '마지막날 24:00까지 사용 가능'
+                : '만료일 정보가 없습니다(관리자/결제 연동 상태 확인 필요).'
+            }
+          >
+            {subscriptionEndsAt ? `${fmtDate(subscriptionEndsAt)} ` : ''}
+            {Number.isFinite(remainNum as number) && subscriptionEndsAt
+              ? `${remainNum}일`
+              : '일' /* ← 날짜 없거나 계산 불가여도 최소 '일'은 보이게 */}
           </span>
         )}
+
         {authUser && lastUsedAt && (
           <span className="text-xs px-2 py-0.5 rounded border border-white/20" title="마지막 사용일">
             {fmtDate(lastUsedAt)}
           </span>
         )}
 
-        {/* 구독/업그레이드 버튼 or Premium 상태 배지 (원본 자리/순서 유지) */}
+        {/* 구독/업그레이드 버튼 or Premium 상태 배지 */}
         {isPremium ? (
           <span className="text-xs px-2 py-0.5 rounded border border-emerald-500/60 text-emerald-400">프리미엄 이용중</span>
         ) : (
@@ -348,12 +302,12 @@ export default function LogoutHeader() {
           </button>
         )}
 
-        {/* 이메일 (원본 위치/클래스 유지) */}
+        {/* 이메일 */}
         {authUser?.email && <span className="text-sm opacity-80">{authUser.email}</span>}
 
-        {/* 로그인/로그아웃 버튼 (원본 순서/클래스 유지) */}
+        {/* 로그인/로그아웃 */}
         {!authUser ? (
-          <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
+          <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg白/20">
             로그인
           </button>
         ) : (
