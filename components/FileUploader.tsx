@@ -23,7 +23,7 @@ type ExcelToOtherDownloadMode = 'separate' | 'zip';
 
 const OTHER_ACCEPT_EXTS = ['.csv', '.txt', '.xml'] as const;
 
-/* 시트명 안전화 (31자 제한 + 금지문자 제거 + 중복 방지) */
+/* 시트명 안전화 */
 function sanitizeSheetName(name: string, existing: Set<string>) {
   let s = name.replace(/[\\/?*:\[\]]/g, ' ').substring(0, 31).trim();
   if (!s) s = 'Sheet';
@@ -45,14 +45,14 @@ function unionKeys(rows: any[]): string[] {
   return Array.from(set);
 }
 
-/* CSV 파서 (정교: XLSX 자체 CSV 파서 사용) */
+/* CSV 파서(XLSX 파서 활용) */
 function parseCSV(text: string): any[] {
   const wb = XLSX.read(text, { type: 'string' });
   const sheet = wb.Sheets[wb.SheetNames[0]];
   return XLSX.utils.sheet_to_json(sheet);
 }
 
-/* TXT: 한 줄을 한 행으로(value 컬럼) */
+/* TXT: 한 줄 → 한 행(value) */
 function parseTXT(text: string): any[] {
   return text
     .split(/\r?\n/)
@@ -61,9 +61,7 @@ function parseTXT(text: string): any[] {
     .map(value => ({ value }));
 }
 
-/* XML → 시트 맵
-   - selector 지정 시 해당 노드들을 한 시트(XML)로 변환
-   - 없으면 반복 태그 자동 감지로 여러 시트 생성(휴리스틱) */
+/* XML → 시트 맵 (selector 우선, 없으면 자동 감지) */
 function parseXMLtoSheets(xmlText: string, selector?: string): Record<string, any[]> {
   const out: Record<string, any[]> = {};
   try {
@@ -74,7 +72,6 @@ function parseXMLtoSheets(xmlText: string, selector?: string): Record<string, an
 
     const elementToRow = (el: Element): Record<string, any> => {
       const row: Record<string, any> = {};
-      // 속성
       for (const attr of Array.from(el.attributes)) row[`@${attr.name}`] = attr.value;
       const kids = Array.from(el.children) as Element[];
       if (kids.length === 0) {
@@ -82,31 +79,25 @@ function parseXMLtoSheets(xmlText: string, selector?: string): Record<string, an
         return row;
       }
       kids.forEach(k => {
-        const grandkids = Array.from(k.children) as Element[];
-        if (grandkids.length === 0) {
-          row[k.tagName] = k.textContent?.trim() ?? '';
-        } else {
-          // 단순 문자열화 (필요 시 더 정교하게 변환 가능)
-          row[k.tagName] = k.textContent?.trim() ?? '';
-        }
+        const gkids = Array.from(k.children) as Element[];
+        if (gkids.length === 0) row[k.tagName] = k.textContent?.trim() ?? '';
+        else row[k.tagName] = k.textContent?.trim() ?? '';
       });
       return row;
     };
 
     if (selector && doc.querySelectorAll(selector).length > 0) {
-      // 지정 선택자 노드를 한 시트(XML)로
       const nodes = Array.from(doc.querySelectorAll(selector)) as Element[];
       out['XML'] = nodes.map(elementToRow);
       return out;
     }
 
-    // 자동 감지: 동일 태그가 반복되는 자식들을 테이블로 간주
     const collectTables = (node: Element, path = node.tagName) => {
-      const childElems = Array.from(node.children) as Element[];
-      if (childElems.length === 0) return;
+      const childs = Array.from(node.children) as Element[];
+      if (childs.length === 0) return;
 
       const freq = new Map<string, Element[]>();
-      childElems.forEach(c => {
+      childs.forEach(c => {
         const arr = freq.get(c.tagName) ?? [];
         arr.push(c);
         freq.set(c.tagName, arr);
@@ -115,18 +106,15 @@ function parseXMLtoSheets(xmlText: string, selector?: string): Record<string, an
       for (const [tag, elems] of freq) {
         if (elems.length >= 2) {
           const sheetName = `${path}_${tag}`;
-          const rows = elems.map(el => elementToRow(el));
-          out[sheetName] = rows;
+          out[sheetName] = elems.map(el => elementToRow(el));
         }
       }
-
-      childElems.forEach(c => collectTables(c, `${path}_${c.tagName}`));
+      childs.forEach(c => collectTables(c, `${path}_${c.tagName}`));
     };
 
     const root = doc.documentElement;
     collectTables(root, root.tagName);
 
-    // 아무 테이블도 못 찾으면 전체를 한 시트로 보존
     if (Object.keys(out).length === 0) {
       out[root.tagName] = [{ '#text': root.textContent?.trim() ?? '' }];
     }
@@ -136,7 +124,7 @@ function parseXMLtoSheets(xmlText: string, selector?: string): Record<string, an
   return out;
 }
 
-/* CSV / TXT / XML 생성기 */
+/* 생성기들 */
 function rowsToCSV(rows: any[]): string {
   if (!rows || rows.length === 0) return '';
   const keys = unionKeys(rows);
@@ -152,10 +140,7 @@ function rowsToTXT(rows: any[]): string {
 }
 const xmlNameOk = (s: string) => /^[A-Za-z_][\w.-]*$/.test(s);
 const esc = (s: any) =>
-  String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 function rowsToXML(rows: any[], rootTag = 'rows', rowTag = 'row'): string {
   const keys = unionKeys(rows);
   const open = (t: string, attrs = '') => `<${t}${attrs ? ' ' + attrs : ''}>`;
@@ -167,11 +152,8 @@ function rowsToXML(rows: any[], rootTag = 'rows', rowTag = 'row'): string {
     lines.push(open(rowTag));
     keys.forEach(k => {
       const v = r?.[k] ?? '';
-      if (xmlNameOk(k)) {
-        lines.push(`${open(k)}${esc(v)}${close(k)}`);
-      } else {
-        lines.push(`${open('col', `name="${esc(k)}"`)}${esc(v)}${close('col')}`);
-      }
+      if (xmlNameOk(k)) lines.push(`${open(k)}${esc(v)}${close(k)}`);
+      else lines.push(`${open('col', `name="${esc(k)}"`)}${esc(v)}${close('col')}`);
     });
     lines.push(close(rowTag));
   });
@@ -189,7 +171,7 @@ function downloadBlob(content: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-/* ZIP 일괄 다운로드(동적 import, 실패 시 개별 다운로드 폴백) */
+/* ZIP 일괄 다운로드(실패 시 개별 다운로드 폴백) */
 async function saveAsZip(files: { path: string; content: string }[], zipName = 'converted.zip') {
   try {
     const JSZip = (await import('jszip')).default;
@@ -232,10 +214,10 @@ export default function FileUploader() {
   /* 상태 */
   const [mode, setMode] = useState<Mode>('excel-to-other');
   const [files, setFiles] = useState<File[]>([]);
-  const [format, setFormat] = useState<OutputFormat>('csv');                // Excel→Other 출력 포맷
-  const [dlMode, setDlMode] = useState<ExcelToOtherDownloadMode>('separate'); // Excel→Other 다운로드 방식
-  const [encoding, setEncoding] = useState<'utf-8' | 'euc-kr' | 'shift_jis' | 'iso-8859-1'>('utf-8'); // Other→Excel 인코딩
-  const [xmlRowSelector, setXmlRowSelector] = useState<string>('');         // Other→Excel XML 선택자
+  const [format, setFormat] = useState<OutputFormat>('csv');                // ※ Excel→Other 출력 포맷 (CSV/TXT/XML 모두 포함)
+  const [dlMode, setDlMode] = useState<ExcelToOtherDownloadMode>('separate');
+  const [encoding, setEncoding] = useState<'utf-8' | 'euc-kr' | 'shift_jis' | 'iso-8859-1'>('utf-8');
+  const [xmlRowSelector, setXmlRowSelector] = useState<string>('');
   const [preview, setPreview] = useState<{ name: string; rows: any[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -243,7 +225,6 @@ export default function FileUploader() {
   const handleFiles = (selected: FileList | File[]) => {
     setError(null);
     const list = Array.from(selected || []);
-    // 확장자 검증
     const invalid = list.find(f => {
       const lower = f.name.toLowerCase();
       if (mode === 'excel-to-other') return !lower.endsWith('.xlsx');
@@ -253,7 +234,6 @@ export default function FileUploader() {
       setError(`지원하지 않는 형식: ${invalid.name}`);
       return;
     }
-    // 중복 제거(이름+사이즈)
     const dedup = list.filter(f => !files.some(x => x.name === f.name && x.size === f.size));
     if (dedup.length === 0) return;
     setFiles(prev => [...prev, ...dedup]);
@@ -280,33 +260,28 @@ export default function FileUploader() {
         let ext = '';
 
         if (outFormat === 'csv') {
-          content = rowsToCSV(rows);
-          mime = 'text/csv'; ext = 'csv';
+          content = rowsToCSV(rows);        mime = 'text/csv';           ext = 'csv';
         } else if (outFormat === 'txt') {
-          content = rowsToTXT(rows);
-          mime = 'text/plain'; ext = 'txt';
+          content = rowsToTXT(rows);        mime = 'text/plain';         ext = 'txt';
         } else {
-          content = rowsToXML(rows, 'rows', 'row');
-          mime = 'application/xml'; ext = 'xml';
+          content = rowsToXML(rows, 'rows', 'row'); mime = 'application/xml'; ext = 'xml';
         }
 
         downloadBlob(new Blob([content], { type: mime }), `${base}_${sheetName}.${ext}`);
       }
     } else {
-      // ZIP 일괄 다운로드
+      // ZIP
       const pack: { path: string; content: string }[] = [];
       for (const [sheetName, rows] of Object.entries(sheets)) {
         if (!rows || rows.length === 0) continue;
         let content = '';
         let ext = '';
-        if (outFormat === 'csv') { content = rowsToCSV(rows); ext = 'csv'; }
-        else if (outFormat === 'txt') { content = rowsToTXT(rows); ext = 'txt'; }
-        else { content = rowsToXML(rows, 'rows', 'row'); ext = 'xml'; }
+        if (outFormat === 'csv')      { content = rowsToCSV(rows);              ext = 'csv'; }
+        else if (outFormat === 'txt') { content = rowsToTXT(rows);              ext = 'txt'; }
+        else                          { content = rowsToXML(rows, 'rows', 'row'); ext = 'xml'; }
         pack.push({ path: `${base}/${base}_${sheetName}.${ext}`, content });
       }
-      if (pack.length > 0) {
-        await saveAsZip(pack, `${base}_${outFormat}.zip`);
-      }
+      if (pack.length > 0) await saveAsZip(pack, `${base}_${outFormat}.zip`);
     }
   };
 
@@ -316,28 +291,18 @@ export default function FileUploader() {
     const used = new Set<string>();
 
     for (const file of inputs) {
-      // 인코딩 적용(브라우저 지원 인코딩: utf-8, euc-kr 등)
       const buf = await file.arrayBuffer();
       let text = '';
-      try {
-        text = new TextDecoder(encoding).decode(buf);
-      } catch {
-        text = new TextDecoder('utf-8').decode(buf);
-      }
+      try { text = new TextDecoder(encoding).decode(buf); }
+      catch { text = new TextDecoder('utf-8').decode(buf); }
 
       const lower = file.name.toLowerCase();
       let sheetMap: Record<string, any[]> = {};
 
-      if (lower.endsWith('.csv')) {
-        sheetMap = { Sheet1: parseCSV(text) };
-      } else if (lower.endsWith('.txt')) {
-        sheetMap = { Sheet1: parseTXT(text) };
-      } else if (lower.endsWith('.xml')) {
-        sheetMap = parseXMLtoSheets(text, xmlRowSelector || undefined);
-      } else {
-        // 이론상 도달하지 않음(사전 확장자 검증)
-        sheetMap = { Sheet1: [{ note: '지원되지 않는 형식' }] };
-      }
+      if (lower.endsWith('.csv'))      sheetMap = { Sheet1: parseCSV(text) };
+      else if (lower.endsWith('.txt')) sheetMap = { Sheet1: parseTXT(text) };
+      else if (lower.endsWith('.xml')) sheetMap = parseXMLtoSheets(text, xmlRowSelector || undefined);
+      else                              sheetMap = { Sheet1: [{ note: '지원되지 않는 형식' }] };
 
       const base = file.name.replace(/\.[^/.]+$/, '');
       const multi = Object.keys(sheetMap).length > 1;
@@ -352,7 +317,7 @@ export default function FileUploader() {
     return wb;
   }
 
-  /* Other / Excel 공용 변환 핸들러 */
+  /* 공용 변환 핸들러 */
   const handleConvert = async () => {
     setError(null);
     if (files.length === 0) {
@@ -361,9 +326,7 @@ export default function FileUploader() {
     }
     try {
       if (mode === 'excel-to-other') {
-        for (const f of files) {
-          await exportExcelSheets(f, format, dlMode);
-        }
+        for (const f of files) await exportExcelSheets(f, format, dlMode);
       } else {
         const wb = await buildWorkbookFromOtherFiles(files);
         const name =
@@ -386,7 +349,6 @@ export default function FileUploader() {
   /* 미리보기(Other→Excel) */
   async function quickPreview(file: File, enc: string, selector?: string) {
     const lower = file.name.toLowerCase();
-    // 엑셀의 경우도 지원(참고용)
     if (lower.endsWith('.xlsx')) {
       const data = new Uint8Array(await file.arrayBuffer());
       const wb = XLSX.read(data, { type: 'array' });
@@ -395,7 +357,8 @@ export default function FileUploader() {
     } else {
       const buf = await file.arrayBuffer();
       let text = '';
-      try { text = new TextDecoder(enc as any).decode(buf); } catch { text = new TextDecoder('utf-8').decode(buf); }
+      try { text = new TextDecoder(enc as any).decode(buf); }
+      catch { text = new TextDecoder('utf-8').decode(buf); }
       if (lower.endsWith('.csv')) return { name: file.name, rows: parseCSV(text) };
       if (lower.endsWith('.txt')) return { name: file.name, rows: parseTXT(text) };
       if (lower.endsWith('.xml')) {
@@ -445,7 +408,7 @@ export default function FileUploader() {
         />
       </label>
 
-      {/* 드래그 앤 드롭 영역 */}
+      {/* 드래그 앤 드롭 */}
       <div
         onDrop={onDrop}
         onDragOver={onDragOver}
@@ -471,7 +434,7 @@ export default function FileUploader() {
         </ul>
       )}
 
-      {/* Excel → Other 옵션 */}
+      {/* Excel → Other 옵션 (★ XML 포함) */}
       {mode === 'excel-to-other' && (
         <div className="flex flex-wrap items-center gap-6">
           <div>
