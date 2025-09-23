@@ -1,25 +1,22 @@
-// layout.tsx
-// 목적: 사이트 전역 레이아웃. 상단 공지 배너(ENV로 ON/OFF), 하단 푸터(약관/개인정보 링크) 추가.
-// 주의: 디자인 변경 최소화. 기존 children 렌더 구조 유지.
-// 다크모드 자동 추종: globals.css에서 이미 적용됨.
+// app/layout.tsx
+// 목적: 문서(body)를 100vh로 고정하고 상단(공지)·중앙(콘텐츠)·하단(푸터)을
+// flex-col로 배치하여 문서 자체 스크롤을 제거, 중앙만 필요 시 내부 스크롤.
+// 디자인은 그대로, 동작/레이아웃만 교정.
 
 import './globals.css'
 import { ReactNode } from 'react'
-
-// ▶ 공지 배너는 환경변수로 제어 (Vercel 또는 .env.local)
-// - NEXT_PUBLIC_NOTICE_ENABLED: 'true'면 배너 노출
-// - NEXT_PUBLIC_NOTICE_MESSAGE: 배너 메시지 문자열
-// - NEXT_PUBLIC_NOTICE_LEVEL: 'info' | 'warn' | 'error' (배경색만 다르게 표시)
-const NOTICE_ENABLED = process.env.NEXT_PUBLIC_NOTICE_ENABLED === 'true'
-const NOTICE_MESSAGE = process.env.NEXT_PUBLIC_NOTICE_MESSAGE || ''
-const NOTICE_LEVEL = process.env.NEXT_PUBLIC_NOTICE_LEVEL || 'info'
 
 export const metadata = {
   title: '로그인 페이지',
   description: '구글 계정 로그인 예제',
 }
 
-// ▶ 배너 색상 간단 매핑 (디자인 최소 변경)
+// ── (선택) 공지 배너용 ENV (없으면 배너 안보임)
+const NOTICE_ENABLED = process.env.NEXT_PUBLIC_NOTICE_ENABLED === 'true'
+const NOTICE_MESSAGE = process.env.NEXT_PUBLIC_NOTICE_MESSAGE || ''
+const NOTICE_LEVEL = process.env.NEXT_PUBLIC_NOTICE_LEVEL || 'info'
+
+// 배너 색상 간단 매핑
 function bannerClass(level: string) {
   switch (level) {
     case 'warn':
@@ -34,49 +31,39 @@ function bannerClass(level: string) {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ko" suppressHydrationWarning>
-      {/* body는 기존 스타일 유지, 다크모드 자동 추종 */}
-      <body className="min-h-screen transition-colors flex flex-col">
-        {/* ───────────────────────────────────────────────────────────
-            상단 공지 배너 (ENV로 제어)
-            - 운영 공지, 점검 알림, 결제 이슈 안내 등에 사용
-            - 페이지 이동과 무관하게 전역 표시
-           ─────────────────────────────────────────────────────────── */}
+      {/* 
+        핵심 포인트
+        - body: h-screen(=100vh) + overflow-hidden + flex-col
+        - 중앙 컨테이너: flex-1 min-h-0 overflow-auto (내부 스크롤 전담)
+      */}
+      <body className="h-screen overflow-hidden flex flex-col transition-colors">
+        {/* 상단 공지 배너 (ENV로 ON/OFF) */}
         {NOTICE_ENABLED && NOTICE_MESSAGE && (
           <div
-            className={`w-full text-sm px-4 py-2 ${bannerClass(
-              NOTICE_LEVEL
-            )}`}
+            className={`w-full text-sm px-4 py-2 ${bannerClass(NOTICE_LEVEL)}`}
             role="status"
             aria-live="polite"
           >
-            <div className="max-w-6xl mx-auto">
-              {NOTICE_MESSAGE}
-            </div>
+            <div className="max-w-6xl mx-auto">{NOTICE_MESSAGE}</div>
           </div>
         )}
 
-        {/* 메인 콘텐츠 */}
-        <div className="flex-1">{children}</div>
+        {/* 중앙: 실제 페이지 콘텐츠.
+            - flex-1: 남는 높이를 모두 차지
+            - min-h-0: flex 자식에서 overflow 계산 정확히 하게 함 (중요)
+            - overflow-auto: 내용이 많을 때만 이 영역 안에서 스크롤 */}
+        <div className="flex-1 min-h-0 overflow-auto">
+          {children}
+        </div>
 
-        {/* ───────────────────────────────────────────────────────────
-            하단 푸터 (법적 고지 링크)
-            - 디자인 최소 변경: 얇은 바 + 작은 글씨
-            - 약관/개인정보처리방침 링크만 고정 제공
-           ─────────────────────────────────────────────────────────── */}
+        {/* 하단 푸터: 법무 링크(디자인 최소) */}
         <footer className="border-t border-gray-200 dark:border-gray-800 text-xs">
           <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-center gap-3">
-            {/* 내부 링크: /legal/terms, /legal/privacy */}
-            <a
-              href="/legal/terms"
-              className="underline underline-offset-2 hover:opacity-80"
-            >
+            <a href="/legal/terms" className="underline underline-offset-2 hover:opacity-80">
               이용약관
             </a>
             <span className="opacity-60">·</span>
-            <a
-              href="/legal/privacy"
-              className="underline underline-offset-2 hover:opacity-80"
-            >
+            <a href="/legal/privacy" className="underline underline-offset-2 hover:opacity-80">
               개인정보처리방침
             </a>
           </div>
