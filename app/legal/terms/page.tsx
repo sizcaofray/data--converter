@@ -1,15 +1,70 @@
-// app/legal/terms/page.tsx
-// 목적: 이용약관(샘플 틀). 실제 사업 정책/법무 검토 후 세부 조정 권장.
-// 디자인 변경 최소화: 기본 타이포 + 섹션 구분만 적용.
+'use client';
+/**
+ * 이용약관 페이지
+ * - 상단에 "뒤로가기"와 "나가기" 버튼 제공
+ * - 뒤로가기: 히스토리가 있으면 router.back(), 없으면 fallback으로 이동
+ * - 나가기: ?from=/원래경로 를 우선, 없으면 '/'
+ * - 신규 파일 생성 없이 페이지 내부에서만 처리 (디자인 최소 변경)
+ */
 
-export const metadata = {
-  title: '이용약관',
-  description: '서비스 이용약관',
-}
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useCallback, useMemo } from 'react';
 
 export default function TermsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // from 파라미터 읽기 (외부 URL 방지: '/'로 시작하는 내부 경로만 허용)
+  const fromParam = searchParams.get('from') || '';
+  const fallback = useMemo(() => {
+    return fromParam.startsWith('/') ? fromParam : '/';
+  }, [fromParam]);
+
+  // 뒤로가기 핸들러: 히스토리가 있으면 back, 없으면 fallback
+  const handleBack = useCallback(() => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back();
+    } else {
+      router.push(fallback);
+    }
+  }, [router, fallback]);
+
+  // 나가기 핸들러: 무조건 fallback으로
+  const handleExit = useCallback(() => {
+    router.push(fallback);
+  }, [router, fallback]);
+
   return (
     <main className="max-w-3xl mx-auto px-4 py-10">
+      {/* 상단 액션바: 뒤로/나가기 */}
+      <div className="mb-6 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleBack}
+            className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+            aria-label="이전 페이지로 돌아가기"
+            title="이전 페이지로 돌아가기"
+          >
+            ← 뒤로가기
+          </button>
+          <button
+            type="button"
+            onClick={handleExit}
+            className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+            aria-label="원래 페이지로 나가기"
+            title={`원래 페이지로 나가기${fromParam ? ` (${fallback})` : ''}`}
+          >
+            나가기
+          </button>
+        </div>
+        {/* 선택: 현재 fallback 힌트(운영 시 숨겨도 됨) */}
+        {fromParam && (
+          <span className="text-xs opacity-60">원래 페이지: {fallback}</span>
+        )}
+      </div>
+
+      {/* 본문 시작 */}
       <h1 className="text-2xl font-bold mb-6">이용약관</h1>
 
       {/* 제1조 목적 */}
@@ -66,7 +121,7 @@ export default function TermsPage() {
         </ul>
       </section>
 
-      {/* 제6조 회원의 의무 / 제7조 회사의 의무 등 필요 항목 추가 */}
+      {/* 제6·7·8조 등 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">제6조 (회원의 의무)</h2>
         <p className="leading-7">
@@ -81,7 +136,6 @@ export default function TermsPage() {
         </p>
       </section>
 
-      {/* 분쟁, 관할 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">제8조 (분쟁의 해결)</h2>
         <p className="leading-7">
@@ -91,5 +145,5 @@ export default function TermsPage() {
 
       <p className="text-sm opacity-70">시행일: 2025-09-23</p>
     </main>
-  )
+  );
 }

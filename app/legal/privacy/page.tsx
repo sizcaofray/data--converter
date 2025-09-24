@@ -1,18 +1,67 @@
-// app/legal/privacy/page.tsx
-// 목적: 개인정보처리방침(샘플 틀). 수집항목/보유기간/제3자 제공/파기/안전성 확보조치 등은
-// 실제 수집 방식(Firebase Auth/Firestore/결제사)을 반영해 반드시 보완하세요.
+'use client';
+/**
+ * 개인정보처리방침 페이지
+ * - 상단에 "뒤로가기"와 "나가기" 버튼 제공
+ * - Terms 페이지와 동일 로직 (일관성)
+ */
 
-export const metadata = {
-  title: '개인정보처리방침',
-  description: '개인정보처리방침',
-}
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useCallback, useMemo } from 'react';
 
 export default function PrivacyPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const fromParam = searchParams.get('from') || '';
+  const fallback = useMemo(() => {
+    return fromParam.startsWith('/') ? fromParam : '/';
+  }, [fromParam]);
+
+  const handleBack = useCallback(() => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back();
+    } else {
+      router.push(fallback);
+    }
+  }, [router, fallback]);
+
+  const handleExit = useCallback(() => {
+    router.push(fallback);
+  }, [router, fallback]);
+
   return (
     <main className="max-w-3xl mx-auto px-4 py-10">
+      {/* 상단 액션바 */}
+      <div className="mb-6 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleBack}
+            className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+            aria-label="이전 페이지로 돌아가기"
+            title="이전 페이지로 돌아가기"
+          >
+            ← 뒤로가기
+          </button>
+          <button
+            type="button"
+            onClick={handleExit}
+            className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+            aria-label="원래 페이지로 나가기"
+            title={`원래 페이지로 나가기${fromParam ? ` (${fallback})` : ''}`}
+          >
+            나가기
+          </button>
+        </div>
+        {fromParam && (
+          <span className="text-xs opacity-60">원래 페이지: {fallback}</span>
+        )}
+      </div>
+
+      {/* 본문 시작 */}
       <h1 className="text-2xl font-bold mb-6">개인정보처리방침</h1>
 
-      {/* 수집항목 및 수집방법 */}
+      {/* 1. 수집항목 및 수집방법 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">1. 수집하는 개인정보 항목 및 수집방법</h2>
         <ul className="list-disc pl-6 leading-7">
@@ -21,7 +70,7 @@ export default function PrivacyPage() {
         </ul>
       </section>
 
-      {/* 이용목적 */}
+      {/* 2. 이용목적 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">2. 개인정보의 이용 목적</h2>
         <ul className="list-disc pl-6 leading-7">
@@ -32,7 +81,7 @@ export default function PrivacyPage() {
         </ul>
       </section>
 
-      {/* 보유 및 이용기간 */}
+      {/* 3. 보유 및 이용기간 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">3. 보유 및 이용기간</h2>
         <p className="leading-7">
@@ -40,7 +89,7 @@ export default function PrivacyPage() {
         </p>
       </section>
 
-      {/* 제3자 제공 및 처리위탁 */}
+      {/* 4. 제3자 제공 및 처리위탁 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">4. 제3자 제공 및 처리위탁</h2>
         <p className="leading-7">
@@ -48,7 +97,7 @@ export default function PrivacyPage() {
         </p>
       </section>
 
-      {/* 파기절차 및 방법 */}
+      {/* 5. 파기절차 및 방법 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">5. 개인정보의 파기절차 및 방법</h2>
         <p className="leading-7">
@@ -56,7 +105,7 @@ export default function PrivacyPage() {
         </p>
       </section>
 
-      {/* 안전성 확보조치 */}
+      {/* 6. 안전성 확보조치 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">6. 개인정보의 안전성 확보 조치</h2>
         <ul className="list-disc pl-6 leading-7">
@@ -65,7 +114,7 @@ export default function PrivacyPage() {
         </ul>
       </section>
 
-      {/* 권리 행사 */}
+      {/* 7. 권리 행사 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">7. 이용자 및 법정대리인의 권리와 행사방법</h2>
         <p className="leading-7">
@@ -73,7 +122,7 @@ export default function PrivacyPage() {
         </p>
       </section>
 
-      {/* 고지 및 변경 */}
+      {/* 8. 고지의 의무 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">8. 고지의 의무</h2>
         <p className="leading-7">
@@ -83,5 +132,5 @@ export default function PrivacyPage() {
 
       <p className="text-sm opacity-70">시행일: 2025-09-23</p>
     </main>
-  )
+  );
 }
