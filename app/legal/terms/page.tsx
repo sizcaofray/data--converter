@@ -1,15 +1,16 @@
 'use client';
 /**
  * 이용약관 페이지
- * - Next 경고 해결: useSearchParams()를 Suspense 경계 안에서만 사용
- * - 뒤로가기/나가기 버튼 유지
+ * - 버튼: "이전 화면으로"만 제공(나가기 제거)
+ * - 히스토리가 없을 때는 ?from 또는 '/'로 이동 (조용히 동작)
+ * - useSearchParams 사용부는 Suspense 경계 안으로 제한
  */
 
 import { Suspense, useCallback, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 export default function TermsPage() {
-  // ✅ Suspense로 감싸서 CSR bailout 경고/빌드 에러를 방지
+  // Suspense로 감싸 CSR bailout 경고/빌드 에러 방지
   return (
     <Suspense
       fallback={
@@ -23,7 +24,6 @@ export default function TermsPage() {
   );
 }
 
-/** 실제 콘텐츠 컴포넌트(여기서만 useSearchParams 사용) */
 function TermsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -35,45 +35,29 @@ function TermsContent() {
     [fromParam]
   );
 
+  // "이전 화면으로": 히스토리 있으면 뒤로가기, 없으면 fallback으로 이동
   const handleBack = useCallback(() => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
-      router.back(); // 히스토리 존재 시 뒤로가기
+      router.back();
     } else {
-      router.push(fallback); // 없으면 안전 경로로
+      router.push(fallback);
     }
-  }, [router, fallback]);
-
-  const handleExit = useCallback(() => {
-    router.push(fallback);
   }, [router, fallback]);
 
   return (
     <main className="max-w-3xl mx-auto px-4 py-10">
       {/* 상단 액션바 */}
       <div className="mb-6 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleBack}
-            className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
-            aria-label="이전 페이지로 돌아가기"
-            title="이전 페이지로 돌아가기"
-          >
-            ← 뒤로가기
-          </button>
-          <button
-            type="button"
-            onClick={handleExit}
-            className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
-            aria-label="원래 페이지로 나가기"
-            title={`원래 페이지로 나가기${fromParam ? ` (${fallback})` : ''}`}
-          >
-            나가기
-          </button>
-        </div>
-        {fromParam && (
-          <span className="text-xs opacity-60">원래 페이지: {fallback}</span>
-        )}
+        <button
+          type="button"
+          onClick={handleBack}
+          className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+          aria-label="이전 화면으로"
+          title="이전 화면으로"
+        >
+          ← 이전 화면으로
+        </button>
+        {/* 필요 시 오른쪽 공간에 공지/시행일 등을 배치 가능 */}
       </div>
 
       {/* 본문 */}
@@ -83,7 +67,9 @@ function TermsContent() {
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">제1조 (목적)</h2>
         <p className="leading-7">
-          본 약관은 회사(이하 &quot;회사&quot;)가 제공하는 데이터 변환 서비스(이하 &quot;서비스&quot;)의 이용과 관련하여 회사와 이용자(이하 &quot;회원&quot;) 간의 권리, 의무 및 책임사항, 기타 필요한 사항을 규정함을 목적으로 합니다.
+          본 약관은 회사(이하 &quot;회사&quot;)가 제공하는 데이터 변환 서비스(이하 &quot;서비스&quot;)의
+          이용과 관련하여 회사와 이용자(이하 &quot;회원&quot;) 간의 권리, 의무 및 책임사항, 기타 필요한 사항을
+          규정함을 목적으로 합니다.
         </p>
       </section>
 
@@ -101,14 +87,17 @@ function TermsContent() {
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">제3조 (약관의 게시와 개정)</h2>
         <p className="leading-7">
-          ① 회사는 본 약관의 내용을 회원이 쉽게 알 수 있도록 서비스 화면 하단에 게시합니다. ② 회사는 관련 법령을 위배하지 않는 범위에서 본 약관을 개정할 수 있으며, 개정 시 적용일자 및 개정사유를 명시하여 사전에 공지합니다.
+          ① 회사는 본 약관의 내용을 회원이 쉽게 알 수 있도록 서비스 화면 하단에 게시합니다.
+          ② 회사는 관련 법령을 위배하지 않는 범위에서 본 약관을 개정할 수 있으며, 개정 시 적용일자 및 개정사유를
+          명시하여 사전에 공지합니다.
         </p>
       </section>
 
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">제4조 (이용계약의 성립)</h2>
         <p className="leading-7">
-          회원이 본 약관에 동의하고 로그인 절차를 완료함으로써 이용계약이 성립합니다. 일부 기능은 유료 구독 결제가 필요할 수 있습니다.
+          회원이 본 약관에 동의하고 로그인 절차를 완료함으로써 이용계약이 성립합니다. 일부 기능은 유료 구독
+          결제가 필요할 수 있습니다.
         </p>
       </section>
 

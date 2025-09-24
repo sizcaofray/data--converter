@@ -1,15 +1,15 @@
 'use client';
 /**
  * 개인정보처리방침 페이지
- * - Next 경고 해결: useSearchParams()를 Suspense 경계 안에서만 사용
- * - 뒤로가기/나가기 버튼 유지
+ * - 버튼: "이전 화면으로"만 제공(나가기 제거)
+ * - 히스토리가 없을 때는 ?from 또는 '/'로 이동 (조용히 동작)
+ * - useSearchParams 사용부는 Suspense 경계 안으로 제한
  */
 
 import { Suspense, useCallback, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 export default function PrivacyPage() {
-  // ✅ Suspense로 감싸서 CSR bailout 경고/빌드 에러를 방지
   return (
     <Suspense
       fallback={
@@ -23,7 +23,6 @@ export default function PrivacyPage() {
   );
 }
 
-/** 실제 콘텐츠 컴포넌트(여기서만 useSearchParams 사용) */
 function PrivacyContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -35,6 +34,7 @@ function PrivacyContent() {
     [fromParam]
   );
 
+  // "이전 화면으로": 히스토리 있으면 뒤로가기, 없으면 fallback으로 이동
   const handleBack = useCallback(() => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
       router.back();
@@ -43,37 +43,19 @@ function PrivacyContent() {
     }
   }, [router, fallback]);
 
-  const handleExit = useCallback(() => {
-    router.push(fallback);
-  }, [router, fallback]);
-
   return (
     <main className="max-w-3xl mx-auto px-4 py-10">
       {/* 상단 액션바 */}
       <div className="mb-6 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleBack}
-            className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
-            aria-label="이전 페이지로 돌아가기"
-            title="이전 페이지로 돌아가기"
-          >
-            ← 뒤로가기
-          </button>
-          <button
-            type="button"
-            onClick={handleExit}
-            className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
-            aria-label="원래 페이지로 나가기"
-            title={`원래 페이지로 나가기${fromParam ? ` (${fallback})` : ''}`}
-          >
-            나가기
-          </button>
-        </div>
-        {fromParam && (
-          <span className="text-xs opacity-60">원래 페이지: {fallback}</span>
-        )}
+        <button
+          type="button"
+          onClick={handleBack}
+          className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+          aria-label="이전 화면으로"
+          title="이전 화면으로"
+        >
+          ← 이전 화면으로
+        </button>
       </div>
 
       {/* 본문 */}
