@@ -1,21 +1,39 @@
 'use client';
 /**
  * 개인정보처리방침 페이지
- * - 상단에 "뒤로가기"와 "나가기" 버튼 제공
- * - Terms 페이지와 동일 로직 (일관성)
+ * - Next 경고 해결: useSearchParams()를 Suspense 경계 안에서만 사용
+ * - 뒤로가기/나가기 버튼 유지
  */
 
+import { Suspense, useCallback, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useMemo } from 'react';
 
 export default function PrivacyPage() {
+  // ✅ Suspense로 감싸서 CSR bailout 경고/빌드 에러를 방지
+  return (
+    <Suspense
+      fallback={
+        <main className="max-w-3xl mx-auto px-4 py-10">
+          <div className="text-sm opacity-70">로딩 중…</div>
+        </main>
+      }
+    >
+      <PrivacyContent />
+    </Suspense>
+  );
+}
+
+/** 실제 콘텐츠 컴포넌트(여기서만 useSearchParams 사용) */
+function PrivacyContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  // 내부 경로만 허용(/로 시작), 그 외는 안전 기본값 '/'
   const fromParam = searchParams.get('from') || '';
-  const fallback = useMemo(() => {
-    return fromParam.startsWith('/') ? fromParam : '/';
-  }, [fromParam]);
+  const fallback = useMemo(
+    () => (fromParam.startsWith('/') ? fromParam : '/'),
+    [fromParam]
+  );
 
   const handleBack = useCallback(() => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
@@ -58,7 +76,7 @@ export default function PrivacyPage() {
         )}
       </div>
 
-      {/* 본문 시작 */}
+      {/* 본문 */}
       <h1 className="text-2xl font-bold mb-6">개인정보처리방침</h1>
 
       {/* 1. 수집항목 및 수집방법 */}
