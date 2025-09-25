@@ -10,7 +10,8 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { User as FirebaseUser } from 'firebase/auth';
 import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from '@/lib/firebase/client'; // ✅ 기존 경로 유지
+//import { auth } from '@/lib/firebase/client'; // ✅ 기존 경로 유지
+import { auth } from '@/lib/firebase/firebase';
 import { db } from '@/lib/firebase/firebase';
 import { doc, getDoc, Timestamp } from 'firebase/firestore';
 
