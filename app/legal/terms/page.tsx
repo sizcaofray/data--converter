@@ -1,9 +1,9 @@
 'use client';
 /**
- * 이용약관 (개선판)
- * - 서비스 스택 반영: Firebase Auth/Firestore, Bootpay 결제, Vercel 호스팅
- * - 필수 조항 보강: 서비스 범위/책임제한/구독·환불/파일처리/분쟁/약관변경/연락처/시행일
- * - UI는 기존 구조 유지(이전 화면 버튼 + 본문), 문구만 업데이트
+ * 이용약관 (고정형 '이전' 버튼 반영판)
+ * - 기존 구조/문구/스타일 보존
+ * - 우측 상단에 스크롤과 무관하게 따라오는 '이전 화면' 버튼 추가 (fixed)
+ * - 뒤로가기 로직: 브라우저 히스토리 있으면 history.back(), 없으면 ?from 또는 홈(/)로 이동
  */
 
 import { Suspense, useCallback, useMemo } from 'react';
@@ -27,10 +27,10 @@ function TermsBody() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // 시행일(표기만) — 변경 시 여기만 수정
+  // ✅ 시행일(표기만) — 필요 시 여기만 수정
   const effectiveDate = '2025-10-01';
 
-  // 뒤로가기: 히스토리가 없으면 ?from 또는 홈으로
+  // ✅ 뒤로가기: 히스토리가 있으면 뒤로, 없으면 ?from 또는 홈(/)로 대체 이동
   const handleBack = useCallback(() => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
       window.history.back();
@@ -40,6 +40,7 @@ function TermsBody() {
     router.replace(from);
   }, [router, searchParams]);
 
+  // ✅ 운영 연락처 (그대로 유지)
   const contact = useMemo(
     () => ({
       email: 'zoochildfam@gmail.com', // 운영 이메일(샘플)
@@ -48,8 +49,35 @@ function TermsBody() {
   );
 
   return (
-    <main className="max-w-3xl mx-auto px-4 py-10">
-      {/* 상단 바: 뒤로가기 */}
+    <main className="relative max-w-3xl mx-auto px-4 py-10">
+      {/* ============================================
+         📌 우측 상단 '이전 화면' 고정 버튼 (추가 부분)
+         - 스크롤과 무관하게 항상 보이도록 fixed 사용
+         - 다크모드/가독성/반응형 여백 반영
+      ============================================ */}
+      <button
+        type="button"
+        onClick={handleBack}
+        aria-label="이전 화면으로"
+        title="이전 화면으로"
+        className="
+          fixed top-3 right-3 md:top-6 md:right-6 z-50
+          inline-flex items-center gap-2
+          rounded-2xl border border-black/10
+          bg-white/80 dark:bg-neutral-900/70 backdrop-blur
+          px-3 py-2 md:px-4 md:py-2.5
+          text-sm md:text-base font-medium
+          shadow-lg hover:shadow-xl
+          transition
+        "
+      >
+        <span aria-hidden>←</span>
+        <span>이전</span>
+      </button>
+      {/* ============================================ */}
+
+      {/* 상단 바: 기존 '이전 화면' 바는 유지하되, 디자인 변경 없이 남겨둡니다.
+          (원하시면 아래 div 블록을 제거해도 동작에는 문제없습니다.) */}
       <div className="mb-6 flex items-center justify-between">
         <button
           onClick={handleBack}
@@ -61,7 +89,7 @@ function TermsBody() {
         </button>
       </div>
 
-      {/* 본문 시작 */}
+      {/* ===== 본문 시작 (원문 유지) ===== */}
       <h1 className="text-2xl font-bold mb-6">이용약관</h1>
 
       {/* 제1조 목적 */}
@@ -160,6 +188,7 @@ function TermsBody() {
           <li>시행일: {effectiveDate}</li>
         </ul>
       </section>
+      {/* ===== 본문 끝 ===== */}
     </main>
   );
 }
