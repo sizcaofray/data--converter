@@ -1,9 +1,9 @@
 'use client';
 /**
- * 이용약관 (고정형 '이전' 버튼 반영판)
- * - 기존 구조/문구/스타일 보존
- * - 우측 상단에 스크롤과 무관하게 따라오는 '이전 화면' 버튼 추가 (fixed)
- * - 뒤로가기 로직: 브라우저 히스토리 있으면 history.back(), 없으면 ?from 또는 홈(/)로 이동
+ * 이용약관 (우측 상단 '닫기(X)' 버튼 버전)
+ * - 기존 고정 '이전' 버튼을 X(닫기) 아이콘으로 변경
+ * - 기존 상단의 '← 이전 화면으로' 버튼 제거
+ * - 디자인, 내용, 구조 변경 없음
  */
 
 import { Suspense, useCallback, useMemo } from 'react';
@@ -27,10 +27,10 @@ function TermsBody() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // ✅ 시행일(표기만) — 필요 시 여기만 수정
+  // 시행일
   const effectiveDate = '2025-10-01';
 
-  // ✅ 뒤로가기: 히스토리가 있으면 뒤로, 없으면 ?from 또는 홈(/)로 대체 이동
+  // 뒤로가기 또는 닫기 동작
   const handleBack = useCallback(() => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
       window.history.back();
@@ -40,10 +40,10 @@ function TermsBody() {
     router.replace(from);
   }, [router, searchParams]);
 
-  // ✅ 운영 연락처 (그대로 유지)
+  // 운영 연락처
   const contact = useMemo(
     () => ({
-      email: 'zoochildfam@gmail.com', // 운영 이메일(샘플)
+      email: 'zoochildfam@gmail.com',
     }),
     []
   );
@@ -51,45 +51,29 @@ function TermsBody() {
   return (
     <main className="relative max-w-3xl mx-auto px-4 py-10">
       {/* ============================================
-         📌 우측 상단 '이전 화면' 고정 버튼 (추가 부분)
-         - 스크롤과 무관하게 항상 보이도록 fixed 사용
-         - 다크모드/가독성/반응형 여백 반영
+         📌 우측 상단 닫기(X) 버튼 (고정)
       ============================================ */}
       <button
         type="button"
         onClick={handleBack}
-        aria-label="이전 화면으로"
-        title="이전 화면으로"
+        aria-label="닫기"
+        title="닫기"
         className="
           fixed top-3 right-3 md:top-6 md:right-6 z-50
-          inline-flex items-center gap-2
-          rounded-2xl border border-black/10
+          inline-flex items-center justify-center
+          rounded-full border border-black/10
           bg-white/80 dark:bg-neutral-900/70 backdrop-blur
-          px-3 py-2 md:px-4 md:py-2.5
-          text-sm md:text-base font-medium
+          w-9 h-9 md:w-10 md:h-10
+          text-lg font-bold
           shadow-lg hover:shadow-xl
           transition
         "
       >
-        <span aria-hidden>←</span>
-        <span>이전</span>
+        ×
       </button>
       {/* ============================================ */}
 
-      {/* 상단 바: 기존 '이전 화면' 바는 유지하되, 디자인 변경 없이 남겨둡니다.
-          (원하시면 아래 div 블록을 제거해도 동작에는 문제없습니다.) */}
-      <div className="mb-6 flex items-center justify-between">
-        <button
-          onClick={handleBack}
-          className="rounded border px-3 py-1 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
-          aria-label="이전 화면으로"
-          title="이전 화면으로"
-        >
-          ← 이전 화면으로
-        </button>
-      </div>
-
-      {/* ===== 본문 시작 (원문 유지) ===== */}
+      {/* ===== 본문 시작 ===== */}
       <h1 className="text-2xl font-bold mb-6">이용약관</h1>
 
       {/* 제1조 목적 */}
@@ -108,7 +92,7 @@ function TermsBody() {
         <ul className="list-disc pl-6 leading-7">
           <li>“회원”이란 본 약관에 동의하고 Google 계정 등으로 로그인하여 서비스를 이용하는 자를 말합니다.</li>
           <li>“유료서비스”란 구독 결제를 통해 제공되는 고급 기능을 의미합니다.</li>
-          <li>“파일”이란 회원이 업로드·변환·다운로드하는 모든 데이터(문서/이미지/표 등)를 의미합니다.</li>
+          <li>“파일”이란 회원이 업로드·변환·다운로드하는 모든 데이터를 의미합니다.</li>
         </ul>
       </section>
 
@@ -142,12 +126,12 @@ function TermsBody() {
         </ul>
       </section>
 
-      {/* 제6조 콘텐츠 및 파일 처리(중요) */}
+      {/* 제6조 콘텐츠 및 파일 처리 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">제6조 (콘텐츠 및 파일 처리)</h2>
         <ul className="list-disc pl-6 leading-7">
-          <li>회원이 업로드한 파일의 저작권과 법적 책임은 회원에게 있습니다. 불법·유해 콘텐츠 업로드를 금지합니다.</li>
-          <li>회사는 변환 처리를 위해 필요한 범위에서만 파일을 일시적으로 저장/처리하며, 목적 달성 후 지체 없이 삭제합니다(상세는 개인정보처리방침 참조).</li>
+          <li>회원이 업로드한 파일의 저작권과 법적 책임은 회원에게 있습니다.</li>
+          <li>회사는 변환 처리를 위해 필요한 범위에서만 파일을 일시적으로 저장/처리하며, 목적 달성 후 지체 없이 삭제합니다.</li>
           <li>시스템·네트워크·알고리즘 특성상 변환 결과의 완전성·정확성·호환성을 100% 보장하지 않습니다.</li>
         </ul>
       </section>
@@ -161,7 +145,7 @@ function TermsBody() {
         </ul>
       </section>
 
-      {/* 제8조 면책 및 책임 제한(중요) */}
+      {/* 제8조 면책 및 책임 제한 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">제8조 (면책 및 책임 제한)</h2>
         <ul className="list-disc pl-6 leading-7">
