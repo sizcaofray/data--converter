@@ -1,9 +1,9 @@
 'use client';
 /**
- * 개인정보처리방침 페이지
- * - 버튼: "이전 화면으로"만 제공(나가기 제거)
- * - 히스토리가 없을 때는 ?from 또는 '/'로 이동 (조용히 동작)
- * - useSearchParams 사용부는 Suspense 경계 안으로 제한
+ * 개인정보처리방침 (개선판)
+ * - 서비스 스택 반영: Firebase Auth/Firestore, Bootpay, Vercel
+ * - 수집항목/목적/보관·파기/처리위탁/국외이전/쿠키/이용자권리/안전성/아동/개정/문의/시행일
+ * - UI는 기존 구조 유지(이전 화면 버튼 + 본문), 문구만 업데이트
  */
 
 import { Suspense, useCallback, useMemo } from 'react';
@@ -18,39 +18,41 @@ export default function PrivacyPage() {
         </main>
       }
     >
-      <PrivacyContent />
+      <PrivacyBody />
     </Suspense>
   );
 }
 
-function PrivacyContent() {
+function PrivacyBody() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // 내부 경로만 허용(/로 시작), 그 외는 안전 기본값 '/'
-  const fromParam = searchParams.get('from') || '';
-  const fallback = useMemo(
-    () => (fromParam.startsWith('/') ? fromParam : '/'),
-    [fromParam]
-  );
+  // 시행일(표기만) — 변경 시 여기만 수정
+  const effectiveDate = '2025-09-26';
 
-  // "이전 화면으로": 히스토리 있으면 뒤로가기, 없으면 fallback으로 이동
   const handleBack = useCallback(() => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
-      router.back();
-    } else {
-      router.push(fallback);
+      window.history.back();
+      return;
     }
-  }, [router, fallback]);
+    const from = searchParams?.get('from') || '/';
+    router.replace(from);
+  }, [router, searchParams]);
+
+  const contact = useMemo(
+    () => ({
+      email: 'privacy@data-converter.com', // 개인정보 문의 전용(샘플)
+    }),
+    []
+  );
 
   return (
     <main className="max-w-3xl mx-auto px-4 py-10">
-      {/* 상단 액션바 */}
-      <div className="mb-6 flex items-center justify-between gap-2">
+      {/* 상단 바: 뒤로가기 */}
+      <div className="mb-6 flex items-center justify-between">
         <button
-          type="button"
           onClick={handleBack}
-          className="inline-flex items-center rounded-md border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+          className="rounded border px-3 py-1 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
           aria-label="이전 화면으로"
           title="이전 화면으로"
         >
@@ -65,8 +67,10 @@ function PrivacyContent() {
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">1. 수집하는 개인정보 항목 및 수집방법</h2>
         <ul className="list-disc pl-6 leading-7">
-          <li>수집항목: Google 계정 기본정보(이메일, 표시명), 결제 관련 식별자(결제사 제공), 서비스 이용내역(변환 로그, 사용량 등)</li>
-          <li>수집방법: 회원가입/로그인(Firebase Auth), 결제 진행 시 결제사 연동, 서비스 이용 과정에서 자동 수집</li>
+          <li>회원 식별: Google 계정 기본정보(이메일, 표시명) — Firebase Auth를 통해 수집</li>
+          <li>결제 처리: 결제 식별자, 거래 번호 등 — Bootpay 연동 과정에서 수집</li>
+          <li>서비스 이용: 업로드 파일 메타데이터(파일명, 크기, 형식) 및 처리 로그</li>
+          <li>수집방법: 회원 가입/로그인, 결제 시점, 서비스 기능 이용 시 자동 수집</li>
         </ul>
       </section>
 
@@ -74,63 +78,91 @@ function PrivacyContent() {
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">2. 개인정보의 이용 목적</h2>
         <ul className="list-disc pl-6 leading-7">
-          <li>회원 식별 및 로그인 유지, 구독 상태 확인</li>
-          <li>유료 결제 처리 및 청구 내역 관리</li>
-          <li>서비스 제공(파일 변환/비교/다운로드) 및 품질 개선, 이용 통계</li>
-          <li>법령 준수 및 분쟁 대응</li>
+          <li>회원 식별 및 인증, 부정 이용 방지</li>
+          <li>구독 결제 처리, 결제 이력 관리, 고객 요청 응대</li>
+          <li>파일 변환 제공 및 품질 개선(오류 분석, 처리 성능 개선 등)</li>
+          <li>법적 의무 준수(전자상거래 등에서의 소비자보호 관련 법령 등)</li>
         </ul>
       </section>
 
-      {/* 3. 보유 및 이용기간 */}
+      {/* 3. 보관 및 파기 */}
       <section className="mb-6">
-        <h2 className="text-lg font-semibold mb-2">3. 보유 및 이용기간</h2>
-        <p className="leading-7">
-          개인정보는 수집·이용 목적 달성 시까지 보유하며, 관련 법령에 따라 일정 기간 보관이 필요한 경우 해당 기간 동안 보관 후 지체 없이 파기합니다.
-        </p>
-      </section>
-
-      {/* 4. 제3자 제공 및 처리위탁 */}
-      <section className="mb-6">
-        <h2 className="text-lg font-semibold mb-2">4. 제3자 제공 및 처리위탁</h2>
-        <p className="leading-7">
-          결제 처리, 클라우드 인프라 운영 등 서비스 제공을 위해 필요한 범위에서 제3자에게 위탁하거나 제공할 수 있으며, 해당 사실과 내용을 사전에 고지합니다.
-        </p>
-      </section>
-
-      {/* 5. 파기절차 및 방법 */}
-      <section className="mb-6">
-        <h2 className="text-lg font-semibold mb-2">5. 개인정보의 파기절차 및 방법</h2>
-        <p className="leading-7">
-          보유기간 만료 또는 처리 목적 달성 시 지체 없이 파기하며, 전자적 파일 형태 정보는 복구·재생이 불가능한 기술적 방법으로 파기합니다.
-        </p>
-      </section>
-
-      {/* 6. 안전성 확보조치 */}
-      <section className="mb-6">
-        <h2 className="text-lg font-semibold mb-2">6. 개인정보의 안전성 확보 조치</h2>
+        <h2 className="text-lg font-semibold mb-2">3. 보관 기간 및 파기 절차</h2>
         <ul className="list-disc pl-6 leading-7">
-          <li>접속권한 관리(역할 기반 접근), 암호화 전송(HTTPS), 접근 로그 보관</li>
-          <li>외부 위탁 시 해당 업체의 보안성 검토 및 관리·감독</li>
+          <li>계정정보: 회원 탈퇴 시 즉시 삭제. 다만, 관계 법령에 따라 일정 기간 보관될 수 있음.</li>
+          <li>결제정보: 전자상거래 등 소비자보호 관련 법령에 따른 보관 기간 준수 후 파기.</li>
+          <li>업로드 파일: 변환 목적 달성 후 지체 없이 삭제(일시 보관), 예외는 서비스 화면에 별도 고지.</li>
         </ul>
       </section>
 
-      {/* 7. 권리 행사 */}
+      {/* 4. 제3자 제공/처리위탁/국외이전 */}
       <section className="mb-6">
-        <h2 className="text-lg font-semibold mb-2">7. 이용자 및 법정대리인의 권리와 행사방법</h2>
+        <h2 className="text-lg font-semibold mb-2">4. 제3자 제공, 처리위탁 및 국외이전</h2>
+        <ul className="list-disc pl-6 leading-7">
+          <li>원칙적으로 회원의 개인정보를 제3자에게 판매하거나 임의 제공하지 않습니다.</li>
+          <li>서비스 운영을 위해 다음 처리업무를 위탁/연동할 수 있습니다:
+            <ul className="list-disc pl-6 mt-2">
+              <li>인증/데이터 저장: Google Firebase(Auth/Firestore)</li>
+              <li>결제: Bootpay(결제대행)</li>
+              <li>호스팅/배포: Vercel</li>
+            </ul>
+          </li>
+          <li>국외이전이 수반될 수 있으며(예: 글로벌 클라우드), 이전 국가, 이전 일시, 보관 장소, 보호조치 등은 해당 서비스 제공자의 정책과 국내법 기준에 따라 관리됩니다.</li>
+        </ul>
+      </section>
+
+      {/* 5. 쿠키/로그 */}
+      <section className="mb-6">
+        <h2 className="text-lg font-semibold mb-2">5. 쿠키 및 로그 정보</h2>
+        <ul className="list-disc pl-6 leading-7">
+          <li>서비스 품질 개선과 보안, 세션 유지를 위해 쿠키와 접속 로그가 사용될 수 있습니다.</li>
+          <li>브라우저 설정으로 쿠키 저장을 거부할 수 있으나, 이 경우 일부 기능 이용이 제한될 수 있습니다.</li>
+        </ul>
+      </section>
+
+      {/* 6. 이용자 권리 */}
+      <section className="mb-6">
+        <h2 className="text-lg font-semibold mb-2">6. 이용자의 권리와 행사 방법</h2>
+        <ul className="list-disc pl-6 leading-7">
+          <li>개인정보 열람·정정·삭제·처리정지 요청이 가능합니다.</li>
+          <li>요청은 서비스 내 ‘문의’ 또는 아래 연락처로 가능합니다. 법령상 예외 또는 기술적 제한이 있을 수 있습니다.</li>
+        </ul>
+      </section>
+
+      {/* 7. 안전성 확보조치 */}
+      <section className="mb-6">
+        <h2 className="text-lg font-semibold mb-2">7. 안전성 확보 조치</h2>
+        <ul className="list-disc pl-6 leading-7">
+          <li>접근통제, 암호화(전송 구간 TLS), 최소권한 원칙, 정기 점검 등 합리적 보호조치를 적용합니다.</li>
+          <li>다만, 인터넷 특성상 보안사고의 위험을 완전히 배제할 수 없음을 알려드립니다.</li>
+        </ul>
+      </section>
+
+      {/* 8. 아동의 개인정보 */}
+      <section className="mb-6">
+        <h2 className="text-lg font-semibold mb-2">8. 아동의 개인정보 보호</h2>
         <p className="leading-7">
-          회원은 언제든지 본인 정보 열람·정정·삭제·처리정지를 요청할 수 있으며, 문의는 고객센터 또는 이메일로 접수하실 수 있습니다.
+          본 서비스는 원칙적으로 만 14세 미만 아동을 대상으로 하지 않습니다. 해당 연령대의 이용이 필요한 경우,
+          관련 법령에 따른 추가 동의 절차를 이행합니다.
         </p>
       </section>
 
-      {/* 8. 고지의 의무 */}
+      {/* 9. 방침의 변경 */}
       <section className="mb-6">
-        <h2 className="text-lg font-semibold mb-2">8. 고지의 의무</h2>
+        <h2 className="text-lg font-semibold mb-2">9. 개인정보처리방침의 변경</h2>
         <p className="leading-7">
-          본 방침은 관련 법령, 서비스 정책 변경에 따라 개정될 수 있으며, 중요한 변경사항이 있는 경우 서비스 내 공지 또는 이메일로 안내합니다.
+          본 방침을 변경하는 경우 시행일 및 변경사유를 명시하여 서비스 화면에 사전 공지합니다.
         </p>
       </section>
 
-      <p className="text-sm opacity-70">시행일: 2025-09-23</p>
+      {/* 10. 문의 및 시행일 */}
+      <section className="mb-2">
+        <h2 className="text-lg font-semibold mb-2">10. 문의처 및 시행일</h2>
+        <ul className="list-disc pl-6 leading-7">
+          <li>문의: {contact.email}</li>
+          <li>시행일: {effectiveDate}</li>
+        </ul>
+      </section>
     </main>
   );
 }

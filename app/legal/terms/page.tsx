@@ -28,7 +28,7 @@ function TermsBody() {
   const searchParams = useSearchParams();
 
   // 시행일(표기만) — 변경 시 여기만 수정
-  const effectiveDate = '2025-09-26';
+  const effectiveDate = '2025-10-01';
 
   // 뒤로가기: 히스토리가 없으면 ?from 또는 홈으로
   const handleBack = useCallback(() => {
@@ -42,7 +42,7 @@ function TermsBody() {
 
   const contact = useMemo(
     () => ({
-      email: 'support@data-converter.com', // 운영 이메일(샘플)
+      email: 'zoochildfam@gmail.com', // 운영 이메일(샘플)
     }),
     []
   );
