@@ -1,25 +1,20 @@
 'use client';
 /**
- * Compare Page — 오류 발생 시 alert 즉시 노출 버전
+ * Compare Page — 오류 발생 시 alert 즉시 노출 + TS 인덱싱 수정
  * ------------------------------------------------------------------
- * ✅ 디자인/마크업 구조는 보존(표 전체 스크롤, 행 수 셀렉트는 높이만 제어)
+ * ✅ 디자인/마크업 보존(표 전체 스크롤, 행 수 셀렉트는 높이만 제어)
  * ✅ 1000건↑ 자동 엑셀 다운로드 & 통합 다운로드 버튼 유지
  * ✅ 모든 비교/파싱/다운로드 과정의 예외를 alert + console로 즉시 안내
  * ✅ 전역 비동기 예외도 비교 중일 때만 잡아 alert로 안내
- *
- * 주석을 충분히 남겼습니다. 필요 시 로직만 취사 선택하여 반영하셔도 됩니다.
+ * ✅ TS 수정: 테이블 렌더용 행을 Record<string, any>로 타입 보강
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-
-// 엑셀 다운로드 용 (xlsx)
 import * as XLSX from 'xlsx';
 
 // ======================= 공통 유틸: 에러 처리 =======================
-/** Error/unknown → 사용자 메시지 문자열 */
 function formatErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message || String(err);
-  // axios/fetch 등 다양한 실패 응답을 방어적으로 처리
   try {
     if (typeof err === 'object' && err !== null) {
       // @ts-ignore
@@ -39,10 +34,8 @@ function formatErrorMessage(err: unknown): string {
   return typeof err === 'string' ? err : '알 수 없는 오류가 발생했습니다.';
 }
 
-/** 콘솔 + alert 동시 보고 */
 function reportCompareError(err: unknown, context?: string) {
   const msg = formatErrorMessage(err);
-  // 디버깅을 위해 원본도 남김
   // eslint-disable-next-line no-console
   console.error('[Compare] 오류', { context, error: err });
   if (typeof window !== 'undefined') {
@@ -59,20 +52,21 @@ function reportCompareError(err: unknown, context?: string) {
 type Row = Record<string, any>;
 type Parsed = Row[];
 
+// ✅ 테이블 표시용 행 타입(동적 컬럼 접근 허용)
+type DisplayRow = Record<string, any> & { __type?: string };
+
 type CompareResult = {
-  key: string;              // 비교 기준 키
-  added: Row[];             // 변환본에만 있음
-  deleted: Row[];           // 원본에만 있음
-  updated: Array<{ before: Row; after: Row }>; // 동일 키에서 값 변경
-  same: Row[];              // 완전 동일
+  key: string;
+  added: Row[];
+  deleted: Row[];
+  updated: Array<{ before: Row; after: Row }>;
+  same: Row[];
   total: number;
 };
 
-const DEFAULT_KEY = 'id'; // 기본 비교 키(프로젝트 기준 첫 번째 key 사용 가정)
+const DEFAULT_KEY = 'id';
 
-// 간단 CSV 파서(쉼표/탭 모두 지원, 따옴표 최소 처리) — 실제 프로젝트 파서가 있으면 그대로 사용
 function parseCSV(text: string): Parsed {
-  // 탭 포함 여부로 분기 (가벼운 휴리스틱)
   const delimiter = text.includes('\t') ? '\t' : ',';
   const lines = text.replace(/\r/g, '').split('\n').filter(Boolean);
   if (lines.length === 0) return [];
@@ -85,7 +79,6 @@ function parseCSV(text: string): Parsed {
   });
 }
 
-// 셀 내부 따옴표 처리 간단화
 function splitCSVLine(line: string, delimiter: string): string[] {
   const out: string[] = [];
   let buf = '';
@@ -93,7 +86,6 @@ function splitCSVLine(line: string, delimiter: string): string[] {
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') {
-      // 연속 따옴표는 escape로 처리
       if (inQuotes && line[i + 1] === '"') {
         buf += '"';
         i++;
@@ -111,14 +103,12 @@ function splitCSVLine(line: string, delimiter: string): string[] {
   return out.map(s => s.trim());
 }
 
-// JSON 파서(배열 최상위 가정)
 function parseJSON(text: string): Parsed {
   const data = JSON.parse(text);
   if (!Array.isArray(data)) throw new Error('JSON 최상위는 배열이어야 합니다.');
   return data as Parsed;
 }
 
-// XLSX 파서(첫 시트 기준, 헤더 자동)
 function parseXLSX(file: File): Promise<Parsed> {
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
@@ -140,13 +130,11 @@ function parseXLSX(file: File): Promise<Parsed> {
   });
 }
 
-// 파일 확장자 판별
 function getExt(name: string): string {
   const i = name.lastIndexOf('.');
   return i === -1 ? '' : name.slice(i + 1).toLowerCase();
 }
 
-// 공통 파싱 (CSV/TXT/TSV/JSON/XLSX)
 async function parseFile(file: File): Promise<Parsed> {
   const ext = getExt(file.name);
   try {
@@ -168,7 +156,6 @@ async function parseFile(file: File): Promise<Parsed> {
   }
 }
 
-// 비교: 첫 번째 행의 첫 key 또는 DEFAULT_KEY
 function detectKey(rows: Parsed): string {
   if (!rows.length) return DEFAULT_KEY;
   const keys = Object.keys(rows[0]);
@@ -186,23 +173,16 @@ function indexBy(rows: Parsed, key: string): Map<string, Row> {
 
 // ======================= 메인 컴포넌트 =======================
 export default function ComparePage() {
-  // 파일 상태
   const [srcFile, setSrcFile] = useState<File | null>(null);
   const [dstFile, setDstFile] = useState<File | null>(null);
 
-  // 파싱/비교 결과
   const [result, setResult] = useState<CompareResult | null>(null);
 
-  // 진행 상태
   const [isComparing, setIsComparing] = useState(false);
-
-  // UI: 한 번에 표시할 “행 수” → 실제로는 컨테이너 높이만 제어
   const [rowsPerView, setRowsPerView] = useState<number>(30);
 
-  // 비교 중 여부(전역 리스너 on/off)
   const comparingRef = useRef(false);
 
-  // ========== 전역 에러 리스너(비교 중일 때만 alert) ==========
   useEffect(() => {
     const onUnhandled = (e: PromiseRejectionEvent) => {
       if (!comparingRef.current) return;
@@ -221,7 +201,6 @@ export default function ComparePage() {
     };
   }, []);
 
-  // ========== 파일 업로드 핸들러 ==========
   const onChangeSrc = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setSrcFile(e.target.files?.[0] ?? null);
   }, []);
@@ -229,7 +208,6 @@ export default function ComparePage() {
     setDstFile(e.target.files?.[0] ?? null);
   }, []);
 
-  // ========== 비교 실행 ==========
   const runCompare = useCallback(async () => {
     if (!srcFile || !dstFile) {
       window.alert('원본/변환 파일을 모두 선택해 주세요.');
@@ -240,13 +218,11 @@ export default function ComparePage() {
     comparingRef.current = true;
 
     try {
-      // 1) 파싱
       const [srcRows, dstRows] = await Promise.all([parseFile(srcFile), parseFile(dstFile)]);
       if (!srcRows.length && !dstRows.length) {
         throw new Error('두 파일 모두 빈 데이터입니다.');
       }
 
-      // 2) 비교 key 결정(첫 번째 key)
       const key = detectKey(srcRows.length ? srcRows : dstRows);
 
       const srcIdx = indexBy(srcRows, key);
@@ -257,21 +233,18 @@ export default function ComparePage() {
       const same: Row[] = [];
       const updated: Array<{ before: Row; after: Row }> = [];
 
-      // 원본 기준 비교
       srcIdx.forEach((sRow, k) => {
         const dRow = dstIdx.get(k);
         if (!dRow) {
           deleted.push(sRow);
           return;
         }
-        // 값 비교(얕은 비교)
         const sJson = JSON.stringify(sRow);
         const dJson = JSON.stringify(dRow);
         if (sJson === dJson) same.push(sRow);
         else updated.push({ before: sRow, after: dRow });
       });
 
-      // 변환본 기준 추가
       dstIdx.forEach((dRow, k) => {
         if (!srcIdx.has(k)) added.push(dRow);
       });
@@ -280,20 +253,17 @@ export default function ComparePage() {
       const next: CompareResult = { key, added, deleted, updated, same, total };
       setResult(next);
 
-      // 3) 1000건 초과 시 자동 엑셀 다운로드
       if (total >= 1000) {
         await exportExcel(next, `compare_${Date.now()}.xlsx`);
       }
     } catch (e) {
       reportCompareError(e, 'runCompare');
-      // 실패해도 UI는 유지
     } finally {
       setIsComparing(false);
       comparingRef.current = false;
     }
   }, [srcFile, dstFile]);
 
-  // ========== 통합 다운로드 버튼 ==========
   const onClickDownloadAll = useCallback(async () => {
     if (!result) {
       window.alert('다운로드할 비교 결과가 없습니다. 먼저 비교를 실행해 주세요.');
@@ -306,26 +276,22 @@ export default function ComparePage() {
     }
   }, [result]);
 
-  // ========== 엑셀 내보내기 ==========
   async function exportExcel(r: CompareResult, filename: string) {
     try {
       const wb = XLSX.utils.book_new();
 
-      // 시트1: Added
       const wsAdded = XLSX.utils.json_to_sheet(r.added);
       XLSX.utils.book_append_sheet(wb, wsAdded, 'Added');
 
-      // 시트2: Deleted
       const wsDeleted = XLSX.utils.json_to_sheet(r.deleted);
       XLSX.utils.book_append_sheet(wb, wsDeleted, 'Deleted');
 
-      // 시트3: Updated(before/after)
-      const updatedRows = r.updated.map(u => ({ __key: u.before?.[r.key] ?? '', __type: 'before', ...u.before }))
-        .concat(r.updated.map(u => ({ __key: u.after?.[r.key] ?? '', __type: 'after',  ...u.after })));
+      const updatedRows = r.updated
+        .map(u => ({ __key: u.before?.[r.key] ?? '', __type: 'before', ...u.before }))
+        .concat(r.updated.map(u => ({ __key: u.after?.[r.key] ?? '', __type: 'after', ...u.after })));
       const wsUpdated = XLSX.utils.json_to_sheet(updatedRows);
       XLSX.utils.book_append_sheet(wb, wsUpdated, 'Updated');
 
-      // 시트4: Same
       const wsSame = XLSX.utils.json_to_sheet(r.same);
       XLSX.utils.book_append_sheet(wb, wsSame, 'Same');
 
@@ -336,40 +302,30 @@ export default function ComparePage() {
     }
   }
 
-  // ========== 테이블 렌더(스크롤 전량 출력, 높이만 rowsPerView 기준) ==========
   const containerMaxHeight = useMemo(() => {
-    // 행당 32px + 헤더/여백 약간 → 대략치로 컨테이너 높이 제어
     const rowPx = 32;
     const pad = 96;
     return Math.max(240, rowsPerView * rowPx + pad);
   }, [rowsPerView]);
 
-  const flatRows = useMemo(() => {
+  // ✅ 테이블 표시용 flatRows를 DisplayRow[]로 명시
+  const flatRows: DisplayRow[] = useMemo(() => {
     if (!result) return [];
-    // 표시는 업데이트를 before/after 두 줄로 보여주는 대신 단순 구분 열 포함으로 한 줄씩
-    const updatedRows = result.updated.map(u => ({ __type: 'updated_before', ...u.before }))
-      .concat(result.updated.map(u => ({ __type: 'updated_after',  ...u.after })));
-
-    const addedRows   = result.added.map(r => ({ __type: 'added',   ...r }));
-    const deletedRows = result.deleted.map(r => ({ __type: 'deleted', ...r }));
-    const sameRows    = result.same.map(r => ({ __type: 'same',     ...r }));
-
-    return [
-      ...addedRows,
-      ...deletedRows,
-      ...updatedRows,
-      ...sameRows,
-    ];
+    const updatedRows: DisplayRow[] = result.updated
+      .map(u => ({ __type: 'updated_before', ...u.before }))
+      .concat(result.updated.map(u => ({ __type: 'updated_after', ...u.after })));
+    const addedRows: DisplayRow[] = result.added.map(r => ({ __type: 'added', ...r }));
+    const deletedRows: DisplayRow[] = result.deleted.map(r => ({ __type: 'deleted', ...r }));
+    const sameRows: DisplayRow[] = result.same.map(r => ({ __type: 'same', ...r }));
+    return [...addedRows, ...deletedRows, ...updatedRows, ...sameRows];
   }, [result]);
 
-  const allColumns = useMemo(() => {
-    // 모든 행의 키를 합쳐 컬럼 헤더 생성
+  const allColumns: string[] = useMemo(() => {
     const set = new Set<string>(['__type']);
     flatRows.forEach(r => Object.keys(r).forEach(k => set.add(k)));
     return Array.from(set);
   }, [flatRows]);
 
-  // 타입별 배경(가벼운 식별만)
   const typeClass = (t?: string) =>
     t === 'added' ? 'bg-green-50'
       : t === 'deleted' ? 'bg-red-50'
@@ -377,7 +333,6 @@ export default function ComparePage() {
       : t === 'same' ? 'bg-gray-50'
       : '';
 
-  // ======================= UI =======================
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
       <h1 className="text-2xl font-bold mb-2">Compare</h1>
@@ -385,7 +340,6 @@ export default function ComparePage() {
         두 파일을 선택해 비교하세요. 오류가 발생하면 즉시 알림창으로 안내됩니다.
       </p>
 
-      {/* 업로드 */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         <div className="p-4 border rounded-lg">
           <div className="mb-2 font-medium">원본 파일</div>
@@ -403,7 +357,6 @@ export default function ComparePage() {
         </div>
       </div>
 
-      {/* 실행/다운로드/행수 */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <button
           type="button"
@@ -437,7 +390,6 @@ export default function ComparePage() {
         </label>
       </div>
 
-      {/* 결과 테이블: 전체 행을 스크롤로 모두 출력. rowsPerView는 높이만 제어 */}
       <div
         className="border rounded-lg overflow-auto"
         style={{ maxHeight: containerMaxHeight }}
@@ -458,7 +410,8 @@ export default function ComparePage() {
                 <tr key={idx} className={typeClass(row.__type)}>
                   {allColumns.map((c) => (
                     <td key={c} className="border-b px-3 py-2 whitespace-nowrap">
-                      {String(row[c] ?? '')}
+                      {/* ✅ 동적 키 접근: DisplayRow로 인덱싱 */}
+                      {String((row as DisplayRow)[c] ?? '')}
                     </td>
                   ))}
                 </tr>
