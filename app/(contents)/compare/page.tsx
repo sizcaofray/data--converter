@@ -1,31 +1,37 @@
 'use client';
 /**
- * Compare Page — 오류 발생 시 alert + 빌드 타입 보강 + 버튼 표시 조건
+ * Compare Page — 기존 기능 보존 + 오류 발생 시 alert 주입 + TS 안전
  * ------------------------------------------------------------------
- * ✅ 디자인/마크업 보존(표 전체 스크롤, 행 수 셀렉트는 '높이만' 제어)
- * ✅ 1000건↑ 자동 엑셀 다운로드 & 통합 다운로드 버튼 유지
- * ✅ 모든 비교/파싱/다운로드 과정의 예외를 alert + console로 즉시 안내
- * ✅ 전역 비동기 예외도 비교 중일 때만 alert로 안내(unhandledrejection, error)
- * ✅ TS 수정: 테이블 렌더용 행을 Record<string, any>로 타입 보강(DisplayRow)
- * ✅ 결과 없을 땐 통합 다운로드 버튼 숨김(result && …)
+ * ✅ 드래그&드롭 업로드 유지
+ * ✅ 상단 우측 "비교 실행" 버튼 유지
+ * ✅ 결과 없으면 "통합 다운로드(.xlsx)" 버튼 숨김(기존 정책)
+ * ✅ 비교/파싱/내보내기 중 오류 → alert + console.error
+ * ✅ 전역 비동기 오류도 비교 중일 때만 alert (옵션성, 동작 보완)
+ * ✅ TS: 동적 컬럼 접근용 DisplayRow 타입으로 빌드 오류 방지
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  DragEvent,
+} from 'react';
 import * as XLSX from 'xlsx';
 
-// ======================= 공통 유틸: 에러 처리 =======================
-/** Error/unknown → 사용자 메시지 문자열 */
-function formatErrorMessage(err: unknown): string {
+// ===================== (추가) 오류 메시지 & 알럿 유틸 =====================
+function _formatCompareError(err: unknown): string {
   if (err instanceof Error) return err.message || String(err);
   try {
     if (typeof err === 'object' && err !== null) {
       // axios-like
       // @ts-ignore
-      if (err.response && err.response.data) {
+      if (err.response?.data) {
         // @ts-ignore
-        const data = err.response.data;
-        if (typeof data === 'string') return data;
-        if (data?.message) return String(data.message);
+        const d = err.response.data;
+        if (typeof d === 'string') return d;
+        if (d?.message) return String(d.message);
       }
       // fetch-like
       // @ts-ignore
@@ -34,43 +40,39 @@ function formatErrorMessage(err: unknown): string {
         return `HTTP ${err.status} ${err.statusText}`;
       }
     }
-  } catch (_) {}
+  } catch {}
   return typeof err === 'string' ? err : '알 수 없는 오류가 발생했습니다.';
 }
 
-/** 콘솔 + alert 동시 보고 */
-function reportCompareError(err: unknown, context?: string) {
-  const msg = formatErrorMessage(err);
-  // 상세 디버깅을 위해 원본 에러도 콘솔에 남김
+function _alertCompareError(err: unknown, context?: string) {
+  const msg = _formatCompareError(err);
   // eslint-disable-next-line no-console
-  console.error('[Compare] 오류', { context, error: err });
+  console.error('[CompareError]', { context, error: err });
   if (typeof window !== 'undefined') {
-    const title = '비교 실행 중 오류가 발생했습니다.';
-    const hint =
-      '• 업로드한 파일 형식/인코딩/시트(첫 행 키 포함) 확인\n' +
-      '• CSV→구분자/인코딩, Excel→시트명/헤더 확인\n' +
-      '• 반복되면 관리자에게 오류 스크린샷과 함께 파일 전달';
-    window.alert(`${title}\n\n상세: ${msg}\n\n${hint}`);
+    window.alert(
+      `비교 실행 중 오류가 발생했습니다.\n\n상세: ${msg}\n\n` +
+      `• 업로드한 파일 형식/인코딩/시트(첫 행 키)를 확인하세요.\n` +
+      `• 반복되면 문제 파일과 스크린샷을 첨부해 문의해 주세요.`
+    );
   }
 }
+// ========================================================================
 
 // ======================= 타입/헬퍼 =======================
 type Row = Record<string, any>;
 type Parsed = Row[];
-
-// ✅ 테이블 표시용 행 타입(동적 컬럼 접근 허용)
 type DisplayRow = Record<string, any> & { __type?: string };
 
 type CompareResult = {
-  key: string;              // 비교 기준 키(첫 번째 key 사용)
-  added: Row[];             // 변환본에만 존재
-  deleted: Row[];           // 원본에만 존재
-  updated: Array<{ before: Row; after: Row }>; // 동일 키에서 값 변경
-  same: Row[];              // 완전 동일
+  key: string;
+  added: Row[];
+  deleted: Row[];
+  updated: Array<{ before: Row; after: Row }>;
+  same: Row[];
   total: number;
 };
 
-const DEFAULT_KEY = 'id'; // 기본 비교 키(최소 보완용)
+const DEFAULT_KEY = 'id';
 
 // ---- CSV/TXT/TSV 파서(간단) ----
 function parseCSV(text: string): Parsed {
@@ -86,7 +88,7 @@ function parseCSV(text: string): Parsed {
   });
 }
 
-/** 셀 내부 따옴표 처리 간단화 */
+// 셀 내부 따옴표 처리 간단화
 function splitCSVLine(line: string, delimiter: string): string[] {
   const out: string[] = [];
   let buf = '';
@@ -161,9 +163,9 @@ async function parseFile(file: File): Promise<Parsed> {
       return await parseXLSX(file);
     }
     throw new Error(`지원하지 않는 확장자입니다: .${ext || '(없음)'}`);
-  } catch (e) {
-    reportCompareError(e, `parseFile(${file.name})`);
-    throw e;
+  } catch (err) {
+    _alertCompareError(err, `parseFile(${file?.name || 'unknown'})`);
+    throw err;
   }
 }
 
@@ -189,26 +191,30 @@ export default function ComparePage() {
   const [srcFile, setSrcFile] = useState<File | null>(null);
   const [dstFile, setDstFile] = useState<File | null>(null);
 
+  // drag-over 상태 (시각 피드백)
+  const [srcOver, setSrcOver] = useState(false);
+  const [dstOver, setDstOver] = useState(false);
+
   // 결과/상태
   const [result, setResult] = useState<CompareResult | null>(null);
   const [isComparing, setIsComparing] = useState(false);
 
-  // UI: 한 번에 표시할 “행 수”(실제론 컨테이너 높이만 제어)
+  // UI: 표시 높이 제어용
   const [rowsPerView, setRowsPerView] = useState<number>(30);
 
   // 비교 중 여부(전역 리스너 제어)
   const comparingRef = useRef(false);
 
-  // ---- 전역 에러 리스너(비교 중일 때만 알림) ----
+  // ---- 전역 에러 리스너(비교 중일 때만 알림; 기존 흐름 불변) ----
   useEffect(() => {
     const onUnhandled = (e: PromiseRejectionEvent) => {
       if (!comparingRef.current) return;
       e.preventDefault();
-      reportCompareError(e.reason, 'unhandledrejection');
+      _alertCompareError(e.reason, 'unhandledrejection');
     };
     const onError = (e: ErrorEvent) => {
       if (!comparingRef.current) return;
-      reportCompareError(e.error ?? e.message, 'window.error');
+      _alertCompareError(e.error ?? e.message, 'window.error');
     };
     window.addEventListener('unhandledrejection', onUnhandled);
     window.addEventListener('error', onError);
@@ -218,7 +224,7 @@ export default function ComparePage() {
     };
   }, []);
 
-  // ---- 파일 업로드 핸들러 ----
+  // ---- 파일 선택(클릭) ----
   const onChangeSrc = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setSrcFile(e.target.files?.[0] ?? null);
   }, []);
@@ -226,7 +232,26 @@ export default function ComparePage() {
     setDstFile(e.target.files?.[0] ?? null);
   }, []);
 
-  // ---- 비교 실행 ----
+  // ---- 드래그&드롭 핸들러 ----
+  const prevent = (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const onSrcDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
+    prevent(e);
+    setSrcOver(false);
+    const f = e.dataTransfer?.files?.[0];
+    if (f) setSrcFile(f);
+  }, []);
+  const onDstDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
+    prevent(e);
+    setDstOver(false);
+    const f = e.dataTransfer?.files?.[0];
+    if (f) setDstFile(f);
+  }, []);
+
+  // ---- 비교 실행 (핵심: try/catch로 외부만 감싼다; 내부 로직은 그대로) ----
   const runCompare = useCallback(async () => {
     if (!srcFile || !dstFile) {
       window.alert('원본/변환 파일을 모두 선택해 주세요.');
@@ -276,29 +301,28 @@ export default function ComparePage() {
       const next: CompareResult = { key, added, deleted, updated, same, total };
       setResult(next);
 
-      // 5) 1000건 이상 자동 엑셀 다운로드
+      // 5) 1000건 이상 자동 엑셀 다운로드(기존 동작 보존)
       if (total >= 1000) {
         await exportExcel(next, `compare_${Date.now()}.xlsx`);
       }
-    } catch (e) {
-      reportCompareError(e, 'runCompare');
+    } catch (err) {
+      _alertCompareError(err, 'runCompare');
     } finally {
       setIsComparing(false);
       comparingRef.current = false;
     }
   }, [srcFile, dstFile]);
 
-  // ---- 통합 다운로드 ----
+  // ---- 통합 다운로드 (기존 정책: 결과 있을 때만 노출) ----
   const onClickDownloadAll = useCallback(async () => {
     if (!result) {
-      // 버튼 자체가 result 없으면 렌더되지 않지만, 혹시 모를 호출 방어
       window.alert('다운로드할 비교 결과가 없습니다. 먼저 비교를 실행해 주세요.');
       return;
     }
     try {
       await exportExcel(result, `compare_${Date.now()}.xlsx`);
-    } catch (e) {
-      reportCompareError(e, 'exportExcel(manual)');
+    } catch (err) {
+      _alertCompareError(err, 'exportExcel(manual)');
     }
   }, [result]);
 
@@ -323,20 +347,20 @@ export default function ComparePage() {
       XLSX.utils.book_append_sheet(wb, wsSame, 'Same');
 
       XLSX.writeFile(wb, filename);
-    } catch (e) {
-      reportCompareError(e, 'exportExcel');
-      throw e;
+    } catch (err) {
+      _alertCompareError(err, 'exportExcel');
+      throw err;
     }
   }
 
   // ---- 컨테이너 높이(행 수만큼 높이 제어) ----
   const containerMaxHeight = useMemo(() => {
-    const rowPx = 32; // 행당 대략 높이(px)
-    const pad = 96;   // 헤더/여백 보정
+    const rowPx = 32;
+    const pad = 96;
     return Math.max(240, rowsPerView * rowPx + pad);
   }, [rowsPerView]);
 
-  // ---- 테이블 표시용 평탄화(타입 보강) ----
+  // ---- 테이블 표시용 평탄화 ----
   const flatRows: DisplayRow[] = useMemo(() => {
     if (!result) return [];
     const updatedRows: DisplayRow[] = result.updated
@@ -354,77 +378,111 @@ export default function ComparePage() {
     return Array.from(set);
   }, [flatRows]);
 
-  // ---- 타입별 배경색(가벼운 구분) ----
   const typeClass = (t?: string) =>
     t === 'added' ? 'bg-green-50'
-    : t === 'deleted' ? 'bg-red-50'
-    : t?.startsWith('updated') ? 'bg-yellow-50'
-    : t === 'same' ? 'bg-gray-50'
-    : '';
+      : t === 'deleted' ? 'bg-red-50'
+      : t?.startsWith('updated') ? 'bg-yellow-50'
+      : t === 'same' ? 'bg-gray-50'
+      : '';
 
   // ======================= UI =======================
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="text-2xl font-bold mb-2">Compare</h1>
-      <p className="text-sm text-gray-500 mb-6">
-        두 파일을 선택해 비교하세요. 오류가 발생하면 즉시 알림창으로 안내됩니다.
-      </p>
-
-      {/* 업로드 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-        <div className="p-4 border rounded-lg">
-          <div className="mb-2 font-medium">원본 파일</div>
-          <input type="file" onChange={onChangeSrc} />
-          {srcFile && (
-            <div className="mt-2 text-xs text-gray-500">선택됨: {srcFile.name}</div>
-          )}
+      {/* 헤더 + 상단 버튼 (기존 배치 유지) */}
+      <div className="mb-4 flex items-center gap-3">
+        <div>
+          <h1 className="text-2xl font-bold">Compare</h1>
+          <p className="text-sm text-gray-500">
+            두 파일을 드래그&드롭 또는 클릭해서 선택하세요. 오류가 발생하면 즉시 알림창으로 안내됩니다.
+          </p>
         </div>
-        <div className="p-4 border rounded-lg">
-          <div className="mb-2 font-medium">변환 파일</div>
-          <input type="file" onChange={onChangeDst} />
-          {dstFile && (
-            <div className="mt-2 text-xs text-gray-500">선택됨: {dstFile.name}</div>
-          )}
-        </div>
-      </div>
 
-      {/* 실행 / (결과 있을 때만) 통합 다운로드 / 행 수 */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <button
-          type="button"
-          onClick={runCompare}
-          disabled={isComparing}
-          className="px-4 py-2 rounded bg-black text-white disabled:opacity-50"
-        >
-          {isComparing ? '비교 중…' : '비교 실행'}
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <label className="hidden md:flex items-center gap-2 text-sm">
+            표시할 행 수
+            <select
+              className="border rounded px-2 py-1"
+              value={rowsPerView}
+              onChange={(e) => setRowsPerView(Number(e.target.value))}
+            >
+              <option value={10}>10</option>
+              <option value={30}>30</option>
+              <option value={50}>50</option>
+            </select>
+          </label>
 
-        {/* ✅ 결과가 있을 때만 버튼 렌더 */}
-        {result && (
           <button
             type="button"
-            onClick={onClickDownloadAll}
-            className="px-4 py-2 rounded border"
+            onClick={runCompare}
+            disabled={isComparing}
+            className="px-4 py-2 rounded bg-black text-white disabled:opacity-50"
           >
-            통합 다운로드(.xlsx)
+            {isComparing ? '비교 중…' : '비교 실행'}
           </button>
-        )}
 
-        <label className="ml-auto flex items-center gap-2 text-sm">
-          한 번에 표시할 행 수
-          <select
-            className="border rounded px-2 py-1"
-            value={rowsPerView}
-            onChange={(e) => setRowsPerView(Number(e.target.value))}
-          >
-            <option value={10}>10</option>
-            <option value={30}>30</option>
-            <option value={50}>50</option>
-          </select>
-        </label>
+          {/* 결과 있을 때만 다운로드 버튼(기존 정책 준수) */}
+          {result && (
+            <button
+              type="button"
+              onClick={onClickDownloadAll}
+              className="px-4 py-2 rounded border"
+            >
+              통합 다운로드(.xlsx)
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* 결과 테이블: 전체 행을 스크롤로 모두 출력. rowsPerView는 높이만 제어 */}
+      {/* 업로드: 드래그&드롭 박스 2개 (기존 UX 유지) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        {/* 원본 */}
+        <div
+          onDragEnter={(e) => { prevent(e as unknown as DragEvent); setSrcOver(true); }}
+          onDragOver={prevent}
+          onDragLeave={() => setSrcOver(false)}
+          onDrop={onSrcDrop}
+          className={
+            "p-6 border-2 rounded-xl transition " +
+            (srcOver ? "border-blue-500 bg-blue-50" : "border-dashed border-gray-300")
+          }
+        >
+          <div className="mb-2 font-medium">원본 파일</div>
+          <label className="block">
+            <input type="file" className="hidden" onChange={onChangeSrc} />
+            <div className="cursor-pointer text-sm text-gray-600">
+              여기를 클릭하거나 파일을 여기에 끌어다 놓으세요.
+            </div>
+          </label>
+          {srcFile && (
+            <div className="mt-3 text-xs text-gray-500">선택됨: {srcFile.name}</div>
+          )}
+        </div>
+
+        {/* 변환 */}
+        <div
+          onDragEnter={(e) => { prevent(e as unknown as DragEvent); setDstOver(true); }}
+          onDragOver={prevent}
+          onDragLeave={() => setDstOver(false)}
+          onDrop={onDstDrop}
+          className={
+            "p-6 border-2 rounded-xl transition " +
+            (dstOver ? "border-blue-500 bg-blue-50" : "border-dashed border-gray-300")
+          }
+        >
+          <div className="mb-2 font-medium">변환 파일</div>
+          <label className="block">
+            <input type="file" className="hidden" onChange={onChangeDst} />
+            <div className="cursor-pointer text-sm text-gray-600">
+              여기를 클릭하거나 파일을 여기에 끌어다 놓으세요.
+            </div>
+          </label>
+          {dstFile && (
+            <div className="mt-3 text-xs text-gray-500">선택됨: {dstFile.name}</div>
+          )}
+        </div>
+      </div>
+
+      {/* 결과 테이블 (표 전체 스크롤, rowsPerView는 높이만 제어) */}
       <div
         className="border rounded-lg overflow-auto"
         style={{ maxHeight: containerMaxHeight }}
@@ -445,7 +503,6 @@ export default function ComparePage() {
                 <tr key={idx} className={typeClass(row.__type)}>
                   {allColumns.map((c) => (
                     <td key={c} className="border-b px-3 py-2 whitespace-nowrap">
-                      {/* ✅ 동적 키 접근: DisplayRow로 인덱싱 */}
                       {String((row as DisplayRow)[c] ?? '')}
                     </td>
                   ))}
@@ -454,6 +511,20 @@ export default function ComparePage() {
             </tbody>
           </table>
         )}
+      </div>
+
+      {/* 모바일 보조: 행 수 선택 */}
+      <div className="mt-3 md:hidden flex items-center gap-2 text-sm">
+        표시할 행 수
+        <select
+          className="border rounded px-2 py-1"
+          value={rowsPerView}
+          onChange={(e) => setRowsPerView(Number(e.target.value))}
+        >
+          <option value={10}>10</option>
+          <option value={30}>30</option>
+          <option value={50}>50</option>
+        </select>
       </div>
     </main>
   );
