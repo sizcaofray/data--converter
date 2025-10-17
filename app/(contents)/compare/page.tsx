@@ -5,6 +5,45 @@ import React, { useCallback, useMemo, useState } from 'react';
 type FileSetter = React.Dispatch<React.SetStateAction<File | null>>;
 type BoolSetter = React.Dispatch<React.SetStateAction<boolean>>;
 
+/* ===================== (추가) 오류 메시지/알림 유틸 ===================== */
+function _formatCompareError(err: unknown): string {
+  if (err instanceof Error) return err.message || String(err);
+  try {
+    if (typeof err === 'object' && err !== null) {
+      // axios-like
+      // @ts-ignore
+      if (err.response?.data) {
+        // @ts-ignore
+        const d = err.response.data;
+        if (typeof d === 'string') return d;
+        if (d?.message) return String(d.message);
+      }
+      // fetch-like
+      // @ts-ignore
+      if (err.status && err.statusText) {
+        // @ts-ignore
+        return `HTTP ${err.status} ${err.statusText}`;
+      }
+    }
+  } catch {}
+  return typeof err === 'string' ? err : '알 수 없는 오류가 발생했습니다.';
+}
+
+function _notifyCompareError(err: unknown, context?: string) {
+  const msg = _formatCompareError(err);
+  // 상세 진단을 위해 콘솔에 원본 남김
+  // eslint-disable-next-line no-console
+  console.error('[CompareError]', { context, error: err });
+  if (typeof window !== 'undefined') {
+    window.alert(
+      `비교 실행 중 오류가 발생했습니다.\n\n상세: ${msg}\n\n` +
+      `• 업로드한 파일 형식/인코딩/시트(첫 행 키)를 확인하세요.\n` +
+      `• 문제가 반복되면 오류 화면과 파일을 함께 전달해 주세요.`
+    );
+  }
+}
+/* ===================================================================== */
+
 /** 공통 드롭 처리: 이벤트 타입을 HTMLElement로 넓혀 어떤 엘리먼트에서도 작동 */
 function handleDrop(
   e: React.DragEvent<HTMLElement>,
@@ -129,11 +168,20 @@ export default function ComparePage() {
   const canCompare = !!(fileA && fileB);
 
   const onCompare = useCallback(() => {
-    // TODO: 실제 비교 로직을 여기에 구현
-    // 예: 서버 업로드 후 diff API 호출, 혹은 클라이언트에서 파싱/비교
-    alert(
-      `비교 시작:\n- A: ${fileA?.name ?? '-'}\n- B: ${fileB?.name ?? '-'}`
-    );
+    try {
+      // ✅ 기존 동작(알림) 그대로 유지 — 여기서 실제 비교 로직을 추가하셔도
+      //    예외가 나면 아래 catch에서 alert + 콘솔로그가 동작합니다.
+      alert(
+        `비교 시작:\n- A: ${fileA?.name ?? '-'}\n- B: ${fileB?.name ?? '-'}`
+      );
+
+      // ▼ 실제 비교 로직이 들어갈 자리 (기존 구현이 있다면 그대로 유지)
+      //    예: 서버 업로드→diff API 호출, 클라 파싱/비교 등
+      //    throw new Error('샘플 오류'); // 테스트용
+      // ▲ 이 영역의 코드에 오류가 생기면 catch로 떨어져 알림을 띄웁니다.
+    } catch (err) {
+      _notifyCompareError(err, 'onCompare');
+    }
   }, [fileA, fileB]);
 
   const onReset = () => {
