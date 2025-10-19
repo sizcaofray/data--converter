@@ -1,8 +1,15 @@
 // 📄 app/(contents)/compare/page.tsx
 // -----------------------------------------------------------------------------
 // 변경 요약(2025-10-19):
-// 1) 비교 실행 시 자동 저장 로직 제거 → "결과 내보내기" 버튼 클릭 시에만 저장 창 표시
-// 2) 하단 테이블은 불일치(added/deleted/changed)만 리스트 출력, 동일(same)은 숨김
+// - "불일치만 표시" 유지
+// - 레코드(행) 단위가 아니라, "필드(열) 단위"로 차이를 분해하여 표시
+//   · 기준키(예: ID) 하나에 다른 필드가 2개면 표에 2행 생성
+//   · 각 행: [상태, 기준키, 필드명, A값, B값]
+// - "결과 내보내기" 버튼에서만 파일 저장(엑셀/CSV). 내보내기 또한 "필드 단위 불일치" 기준
+//
+// 주의:
+// - 디자인/마크업을 크게 바꾸지 않고, 표 헤더에 '필드' 열만 추가했습니다.
+// - 주석을 충분히 포함했습니다(요청 사항).
 // -----------------------------------------------------------------------------
 
 'use client';
@@ -40,6 +47,15 @@ type DiffResult = {
   rows: DiffItem[];
 };
 
+/** 필드 단위 불일치 행 타입 */
+type FieldMismatch = {
+  key: string | number;                    // 기준키 값
+  field: string;                           // 달라진 필드명
+  status: 'added' | 'deleted' | 'changed'; // added/deleted의 경우 해당 레코드의 각 필드가 모두 여기에 매핑
+  leftValue: any;                          // A 쪽 값(없으면 '')
+  rightValue: any;                         // B 쪽 값(없으면 '')
+};
+
 /** ------------------------------------------------------------------------
  * 알림/오류 패널
  * ---------------------------------------------------------------------- */
@@ -67,6 +83,7 @@ async function parseFile(file: File): Promise<ParsedData> {
   const name = file.name || 'file';
   const lower = name.toLowerCase();
 
+  // JSON
   if (lower.endsWith('.json')) {
     const text = await file.text();
     let data = JSON.parse(text);
@@ -80,6 +97,7 @@ async function parseFile(file: File): Promise<ParsedData> {
     return { rows, keys, sourceName: name };
   }
 
+  // CSV/TSV/TXT
   if (lower.endsWith('.csv') || lower.endsWith('.tsv') || lower.endsWith('.txt')) {
     const text = await file.text();
     const delimiter = lower.endsWith('.tsv') ? '\t' : detectDelimiter(text);
@@ -88,6 +106,7 @@ async function parseFile(file: File): Promise<ParsedData> {
     return { rows, keys, sourceName: name, meta: { delimiter } };
   }
 
+  // XLSX (가능하면)
   if (lower.endsWith('.xlsx') || lower.endsWith('.xls') || lower.endsWith('.xlsb')) {
     try {
       const XLSX = await import('xlsx');
@@ -104,6 +123,7 @@ async function parseFile(file: File): Promise<ParsedData> {
     }
   }
 
+  // 그 외: 텍스트로 시도
   const fallback = await file.text();
   const rows = parseCSV(fallback, detectDelimiter(fallback));
   const keys = collectKeys(rows);
@@ -176,7 +196,7 @@ function collectKeys(rows: Row[]): string[] {
 }
 
 /** ------------------------------------------------------------------------
- * Diff 계산
+ * Diff 계산(레코드 수준)
  * ---------------------------------------------------------------------- */
 function buildKeyMap(rows: Row[], keyField: string): Map<string | number, Row> {
   const m = new Map<string | number, Row>();
@@ -243,72 +263,137 @@ function diffRows(left: Row[], right: Row[], keyField: string): DiffResult {
 }
 
 /** ------------------------------------------------------------------------
- * 내보내기(엑셀 우선, 실패 시 CSV)
- *  - "결과 내보내기" 버튼에서만 호출됩니다.
- *  - 시트: added / deleted / changed / same
+ * "레코드 단위 Diff" → "필드 단위 불일치"로 전개
  * ---------------------------------------------------------------------- */
-async function exportDiff(result: DiffResult, baseName: string = 'compare_result') {
+/**
+ * 값 동등성 판정(문자열화 비교로 안전하게 처리)
+ * - 숫자/문자/불리언/널/언디파인드/객체 모두 대응
+ */
+function valueEqual(a: any, b: any): boolean {
+  if (a === b) return true;
+  // 객체/배열 등은 JSON 문자열 기준 비교(순서 차이 없다는 전제)
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return String(a) === String(b);
+  }
+}
+
+/**
+ * 레코드 수준 DiffResult를 받아 "필드 단위 불일치 리스트"로 변환
+ * - changed: 좌/우 레코드의 필드 합집합을 순회하며 값이 다른 필드만 행으로 생성
+ * - added : 오른쪽(B)에만 존재 → 오른쪽 레코드의 모든 필드 각각을 행으로 생성(A값은 '')
+ * - deleted: 왼쪽(A)에만 존재 → 왼쪽 레코드의 모든 필드 각각을 행으로 생성(B값은 '')
+ */
+function explodeToFieldMismatches(diff: DiffResult): FieldMismatch[] {
+  const out: FieldMismatch[] = [];
+
+  for (const item of diff.rows) {
+    const k = item.key;
+
+    if (item.status === 'changed') {
+      const left = item.left || {};
+      const right = item.right || {};
+      const fieldSet = new Set<string>([...Object.keys(left), ...Object.keys(right)]);
+      for (const f of fieldSet) {
+        const lv = left[f];
+        const rv = right[f];
+        if (!valueEqual(lv, rv)) {
+          out.push({
+            key: k,
+            field: f,
+            status: 'changed',
+            leftValue: lv,
+            rightValue: rv,
+          });
+        }
+      }
+    } else if (item.status === 'added') {
+      const right = item.right || {};
+      for (const f of Object.keys(right)) {
+        out.push({
+          key: k,
+          field: f,
+          status: 'added',
+          leftValue: '',
+          rightValue: right[f],
+        });
+      }
+    } else if (item.status === 'deleted') {
+      const left = item.left || {};
+      for (const f of Object.keys(left)) {
+        out.push({
+          key: k,
+          field: f,
+          status: 'deleted',
+          leftValue: left[f],
+          rightValue: '',
+        });
+      }
+    }
+    // 'same'은 생성하지 않음(불일치만)
+  }
+
+  return out;
+}
+
+/** ------------------------------------------------------------------------
+ * 내보내기(엑셀 우선, 실패 시 CSV)
+ *  - 필드 단위 불일치만 저장
+ * ---------------------------------------------------------------------- */
+async function exportFieldMismatches(rows: FieldMismatch[], keyField: string, baseName = 'compare_mismatches') {
+  // 1) XLSX 시도
   try {
     const XLSX = await import('xlsx');
-    const toSheet = (items: DiffItem[]) =>
-      XLSX.utils.json_to_sheet(
-        items.map((x) => ({
-          __status: x.status,
-          __key: x.key,
-          ...prefixKeys(x.left || {}, 'L.'),
-          ...prefixKeys(x.right || {}, 'R.'),
-        }))
-      );
-
+    const sheet = XLSX.utils.json_to_sheet(
+      rows.map((r) => ({
+        __keyField: keyField,
+        key: r.key,
+        field: r.field,
+        status: r.status,
+        A_value: printable(r.leftValue),
+        B_value: printable(r.rightValue),
+      }))
+    );
     const wb = XLSX.utils.book_new();
-    const { rows } = result;
-    const added = rows.filter((r) => r.status === 'added');
-    const deleted = rows.filter((r) => r.status === 'deleted');
-    const changed = rows.filter((r) => r.status === 'changed');
-    const same = rows.filter((r) => r.status === 'same');
-
-    XLSX.utils.book_append_sheet(wb, toSheet(added), 'added');
-    XLSX.utils.book_append_sheet(wb, toSheet(deleted), 'deleted');
-    XLSX.utils.book_append_sheet(wb, toSheet(changed), 'changed');
-    XLSX.utils.book_append_sheet(wb, toSheet(same), 'same');
-
+    XLSX.utils.book_append_sheet(wb, sheet, 'mismatches');
     const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     triggerDownload(blob, `${baseName}.xlsx`);
     return;
   } catch {
-    // 패키지 부재 또는 쓰기 실패 시 CSV로 대체
+    // 실패 시 CSV
   }
 
-  const csvParts: string[] = [];
-  const groups: Array<['added'|'deleted'|'changed'|'same', DiffItem[]]> = [
-    ['added', result.rows.filter((r) => r.status === 'added')],
-    ['deleted', result.rows.filter((r) => r.status === 'deleted')],
-    ['changed', result.rows.filter((r) => r.status === 'changed')],
-    ['same', result.rows.filter((r) => r.status === 'same')],
-  ];
-  csvParts.push(`# keyField: ${result.keyField}`);
-  for (const [name, items] of groups) {
-    csvParts.push('');
-    csvParts.push(`## ${name}`);
-    const rows = items.map((x) => ({
-      __status: x.status,
-      __key: x.key,
-      ...prefixKeys(x.left || {}, 'L.'),
-      ...prefixKeys(x.right || {}, 'R.'),
-    }));
-    csvParts.push(toCSV(rows));
-  }
-  const blob = new Blob([csvParts.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  // 2) CSV 대체
+  const csv = toCSV(
+    rows.map((r) => ({
+      __keyField: keyField,
+      key: r.key,
+      field: r.field,
+      status: r.status,
+      A_value: printable(r.leftValue),
+      B_value: printable(r.rightValue),
+    }))
+  );
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   triggerDownload(blob, `${baseName}.csv`);
 }
 
-function prefixKeys(obj: Row, prefix: string): Row {
-  const out: Row = {};
-  Object.keys(obj).forEach((k) => (out[`${prefix}${k}`] = obj[k]));
-  return out;
+/** 보조: 값 출력용 문자열 */
+function printable(v: any): string {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') {
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return String(v);
+    }
+  }
+  return String(v);
 }
 
+/** CSV로 직렬화 */
 function toCSV(rows: Row[]): string {
   if (rows.length === 0) return '';
   const headerSet: Set<string> = rows.reduce<Set<string>>((set, r) => {
@@ -331,6 +416,7 @@ function toCSV(rows: Row[]): string {
   return lines.join('\n');
 }
 
+/** 파일 저장 트리거 */
 function triggerDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -348,34 +434,40 @@ function triggerDownload(blob: Blob, filename: string) {
  * 메인 컴포넌트
  * ---------------------------------------------------------------------- */
 export default function ComparePage() {
-  // 파일
+  // 파일 상태
   const [fileA, setFileA] = useState<File | null>(null);
   const [fileB, setFileB] = useState<File | null>(null);
 
-  // 파싱
+  // 파싱 결과
   const [parsedA, setParsedA] = useState<ParsedData | null>(null);
   const [parsedB, setParsedB] = useState<ParsedData | null>(null);
 
   // 기준 키
   const [keyField, setKeyField] = useState<string>('');
 
-  // 상태
+  // 실행/오류 상태
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string>('');
 
-  // 결과
+  // 레코드 단위 Diff 결과
   const [diff, setDiff] = useState<DiffResult | null>(null);
+
+  // 필드 단위 불일치
+  const mismatchRows = useMemo<FieldMismatch[]>(
+    () => (diff ? explodeToFieldMismatches(diff) : []),
+    [diff]
+  );
 
   // 테이블 높이 제어
   const [rowsPerView, setRowsPerView] = useState<number>(30);
-  const rowHeight = 36;
+  const rowHeight = 36; // px
   const viewportMaxHeight = rowsPerView * rowHeight;
 
   // 파일 입력 ref
   const inputARef = useRef<HTMLInputElement>(null);
   const inputBRef = useRef<HTMLInputElement>(null);
 
-  // 드래그&드롭
+  /** 드래그&드롭 처리 */
   const onDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>, target: 'A' | 'B') => {
       e.preventDefault();
@@ -393,7 +485,7 @@ export default function ComparePage() {
     e.stopPropagation();
   };
 
-  // 파일 → 파싱
+  /** 파일 → 파싱 */
   useEffect(() => {
     let canceled = false;
     (async () => {
@@ -410,7 +502,9 @@ export default function ComparePage() {
         setError(`왼쪽 파일 파싱 실패: ${e?.message ?? e}`);
       }
     })();
-    return () => { canceled = true; };
+    return () => {
+      canceled = true;
+    };
   }, [fileA]);
 
   useEffect(() => {
@@ -429,10 +523,12 @@ export default function ComparePage() {
         setError(`오른쪽 파일 파싱 실패: ${e?.message ?? e}`);
       }
     })();
-    return () => { canceled = true; };
+    return () => {
+      canceled = true;
+    };
   }, [fileB]);
 
-  // 기본 key 자동 선택(첫 공통 키)
+  /** 기본 key 자동 선택(좌/우 공통 첫 키) */
   useEffect(() => {
     const aKeys = parsedA?.keys ?? [];
     const bKeys = parsedB?.keys ?? [];
@@ -440,15 +536,16 @@ export default function ComparePage() {
     if (first) setKeyField((prev) => prev || first);
   }, [parsedA?.keys?.join(','), parsedB?.keys?.join(',')]);
 
-  // 비교 가능 여부
+  /** 비교 가능 여부 */
   const canCompare = useMemo(() => {
     return !!parsedA && !!parsedB && !!keyField && !isRunning;
   }, [parsedA, parsedB, keyField, isRunning]);
 
-  // 비교 실행(자동 저장 없음)
+  /** 비교 실행(레코드 단위 Diff → 상태 저장) */
   const onCompare = useCallback(async () => {
     setError('');
     setDiff(null);
+
     if (!parsedA || !parsedB) {
       setError('좌/우 파일을 모두 선택해 주세요.');
       return;
@@ -461,7 +558,9 @@ export default function ComparePage() {
     setIsRunning(true);
     console.time('compare');
     try {
+      // 한 틱 양보(렌더 여유)
       await new Promise((res) => requestAnimationFrame(() => res(null)));
+
       const result = diffRows(parsedA.rows, parsedB.rows, keyField);
       setDiff(result);
     } catch (e: any) {
@@ -473,50 +572,44 @@ export default function ComparePage() {
     }
   }, [parsedA, parsedB, keyField]);
 
-  // 결과 내보내기(버튼에서만 호출)
+  /** "결과 내보내기": 필드 단위 불일치만 */
   const onExport = useCallback(async () => {
     if (!diff) return;
-    await exportDiff(
-      diff,
-      `compare_${safeName(parsedA?.sourceName || 'left')}_vs_${safeName(parsedB?.sourceName || 'right')}`
+    const rows = explodeToFieldMismatches(diff);
+    await exportFieldMismatches(
+      rows,
+      diff.keyField,
+      `mismatch_${safeName(parsedA?.sourceName || 'left')}_vs_${safeName(parsedB?.sourceName || 'right')}`
     );
   }, [diff, parsedA?.sourceName, parsedB?.sourceName]);
 
-  // 테이블 행 렌더(불일치만)
-  const renderRow = (item: DiffItem) => {
+  /** 테이블 행 렌더(필드 단위 불일치만) */
+  const renderMismatchRow = (item: FieldMismatch) => {
     return (
-      <tr key={String(item.key)} className="border-b last:border-b-0">
-        <td className="px-3 py-2 text-xs whitespace-nowrap font-semibold">
-          {badge(item.status)}
-        </td>
+      <tr key={`${String(item.key)}::${item.field}`} className="border-b last:border-b-0">
+        <td className="px-3 py-2 text-xs whitespace-nowrap font-semibold">{badge(item.status)}</td>
         <td className="px-3 py-2 text-xs whitespace-nowrap">{String(item.key)}</td>
+        <td className="px-3 py-2 text-xs whitespace-nowrap">{item.field}</td>
         <td className="px-3 py-2 text-xs">
-          <pre className="whitespace-pre-wrap break-all">{toPretty(item.left)}</pre>
+          <pre className="whitespace-pre-wrap break-all">{printable(item.leftValue)}</pre>
         </td>
         <td className="px-3 py-2 text-xs">
-          <pre className="whitespace-pre-wrap break-all">{toPretty(item.right)}</pre>
+          <pre className="whitespace-pre-wrap break-all">{printable(item.rightValue)}</pre>
         </td>
       </tr>
     );
   };
 
-  // 상태 배지
-  function badge(s: DiffItem['status']) {
+  /** 상태 배지 */
+  function badge(s: FieldMismatch['status']) {
     const base = 'inline-block rounded px-2 py-0.5 text-[10px] font-bold';
     const tone: Record<string, string> = {
       added: 'bg-emerald-100 text-emerald-700',
       deleted: 'bg-rose-100 text-rose-700',
       changed: 'bg-amber-100 text-amber-700',
-      same: 'bg-slate-100 text-slate-600',
     };
     return <span className={`${base} ${tone[s]}`}>{s}</span>;
   }
-
-  // 불일치만 필터
-  const mismatchRows = useMemo(
-    () => (diff ? diff.rows.filter((r) => r.status !== 'same') : []),
-    [diff]
-  );
 
   return (
     <main className="p-6">
@@ -524,7 +617,7 @@ export default function ComparePage() {
 
       {/* 파일 선택 영역 */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* 왼쪽 */}
+        {/* 왼쪽(A) */}
         <div
           onDragEnter={prevent}
           onDragOver={prevent}
@@ -560,7 +653,7 @@ export default function ComparePage() {
           </div>
         </div>
 
-        {/* 오른쪽 */}
+        {/* 오른쪽(B) */}
         <div
           onDragEnter={prevent}
           onDragOver={prevent}
@@ -597,7 +690,7 @@ export default function ComparePage() {
         </div>
       </div>
 
-      {/* 기준 키, 표시행수, 실행/내보내기 */}
+      {/* 기준 키, 행수, 실행/내보내기 */}
       <div className="mt-4 flex flex-col md:flex-row md:items-end gap-3">
         <div>
           <label className="block text-xs text-slate-600 mb-1">비교 기준 key</label>
@@ -655,29 +748,32 @@ export default function ComparePage() {
       {/* 오류 패널 */}
       <ErrorPanel message={error} />
 
-      {/* 안내(자동 저장 문구 제거) */}
+      {/* 안내 */}
       <InfoPanel>
         <div className="text-xs">
-          • JSON/CSV/TSV/TXT를 지원하며, <b>xlsx 패키지</b>가 설치되어 있으면 엑셀(.xlsx)도 자동 파싱합니다.
+          • 비교 결과 표는 <b>필드 단위 불일치</b>만 표시합니다(added / deleted / changed).
           <br />• “한 번에 표시할 행 수”는 테이블 <b>높이만</b> 조절하며, 전체 데이터는 스크롤로 확인합니다.
         </div>
       </InfoPanel>
 
-      {/* 결과 섹션: 불일치만 표시 */}
+      {/* 결과 섹션: 필드 단위 불일치만 표시 */}
       {diff && (
         <section className="mt-5">
           <div className="text-sm mb-3">
             <span className="font-semibold">기준키:</span> <span className="mr-3">{diff.keyField}</span>
-            <span className="mr-3">총 {diff.summary.total.toLocaleString()}건</span>
+            <span className="mr-3">레코드 총 {diff.summary.total.toLocaleString()}건</span>
             <span className="mr-2">추가 {diff.summary.added.toLocaleString()}</span>
             <span className="mr-2">삭제 {diff.summary.deleted.toLocaleString()}</span>
             <span className="mr-2">변경 {diff.summary.changed.toLocaleString()}</span>
             <span className="mr-2 text-slate-500">동일 {diff.summary.same.toLocaleString()} (표시 안함)</span>
+            <span className="ml-2 text-slate-700">
+              · 불일치(필드) {mismatchRows.length.toLocaleString()}건
+            </span>
           </div>
 
           {mismatchRows.length === 0 ? (
             <div className="rounded-lg border p-6 text-sm text-slate-600">
-              불일치 없음 (모든 레코드가 동일합니다)
+              불일치 없음 (모든 레코드/필드가 동일합니다)
             </div>
           ) : (
             <div
@@ -689,11 +785,12 @@ export default function ComparePage() {
                   <tr className="border-b">
                     <th className="px-3 py-2 text-xs w-[90px]">상태</th>
                     <th className="px-3 py-2 text-xs w-[200px]">키</th>
-                    <th className="px-3 py-2 text-xs">왼쪽(A)</th>
-                    <th className="px-3 py-2 text-xs">오른쪽(B)</th>
+                    <th className="px-3 py-2 text-xs w-[200px]">필드</th>
+                    <th className="px-3 py-2 text-xs">A 값</th>
+                    <th className="px-3 py-2 text-xs">B 값</th>
                   </tr>
                 </thead>
-                <tbody>{mismatchRows.map(renderRow)}</tbody>
+                <tbody>{mismatchRows.map(renderMismatchRow)}</tbody>
               </table>
             </div>
           )}
@@ -711,15 +808,6 @@ function mergeKeys(a?: string[], b?: string[]): string[] {
   (a || []).forEach((k) => s.add(k));
   (b || []).forEach((k) => s.add(k));
   return Array.from(s);
-}
-
-function toPretty(obj?: Row | null): string {
-  if (obj == null) return '';
-  try {
-    return JSON.stringify(obj, null, 2);
-  } catch {
-    return String(obj);
-  }
 }
 
 function safeName(s: string): string {
