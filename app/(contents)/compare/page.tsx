@@ -8,6 +8,9 @@
 //    전체 데이터는 스크롤로 모두 확인할 수 있게 합니다.
 // 5) 비교 기준 key는 기본적으로 "첫 번째 키"를 자동 선택하고, 드롭다운으로 변경 가능합니다.
 //
+// 변경 이력:
+// - 2025-10-19: toCSV() 제네릭 추론 오류 수정 (headerSet을 분리하고 Reduce의 누산기 타입을 Set<string>으로 명시)
+//
 // 적용 방법:
 // - 본 파일 전체를 기존 compare 페이지에 그대로 덮어쓰세요.
 // - 추가 의존성 없이 동작하며, 'xlsx' 패키지가 설치되어 있다면 자동으로 XLSX 내보내기를 시도합니다.
@@ -74,7 +77,6 @@ function InfoPanel({ children }: { children: React.ReactNode }) {
  *  - 'xlsx' 패키지가 설치되어 있으면 동적 import로 1시트 파싱
  * ---------------------------------------------------------------------- */
 async function parseFile(file: File): Promise<ParsedData> {
-  // 확장자 확인
   const name = file.name || 'file';
   const lower = name.toLowerCase();
 
@@ -82,7 +84,6 @@ async function parseFile(file: File): Promise<ParsedData> {
     const text = await file.text();
     let data = JSON.parse(text);
     if (!Array.isArray(data)) {
-      // 객체의 특정 속성에 배열이 들어있는 경우를 보정
       const arrKey = Object.keys(data).find((k) => Array.isArray((data as any)[k]));
       if (arrKey) data = (data as any)[arrKey];
     }
@@ -100,10 +101,8 @@ async function parseFile(file: File): Promise<ParsedData> {
     return { rows, keys, sourceName: name, meta: { delimiter } };
   }
 
-  // 가능하면 XLSX 시도
   if (lower.endsWith('.xlsx') || lower.endsWith('.xls') || lower.endsWith('.xlsb')) {
     try {
-      // 'xlsx' 설치가 안 되어 있으면 실패 → 아래 catch에서 txt로 안내
       const XLSX = await import('xlsx');
       const data = new Uint8Array(await file.arrayBuffer());
       const wb = XLSX.read(data, { type: 'array' });
@@ -114,14 +113,12 @@ async function parseFile(file: File): Promise<ParsedData> {
       const keys = collectKeys(rows);
       return { rows, keys, sourceName: `${name}:${firstSheetName}` };
     } catch (e) {
-      // XLSX 실패 시 TXT 처리 권고
       throw new Error(
         '엑셀 파싱에 실패했습니다. 패키지(xlsx)가 없거나 파일이 손상되었을 수 있습니다. CSV로 저장 후 다시 시도해 주세요.'
       );
     }
   }
 
-  // 기타 포맷은 텍스트로 시도
   const fallback = await file.text();
   const rows = parseCSV(fallback, detectDelimiter(fallback));
   const keys = collectKeys(rows);
@@ -130,13 +127,10 @@ async function parseFile(file: File): Promise<ParsedData> {
 
 /** CSV 파싱 (간단/안전) */
 function parseCSV(text: string, delimiter: string = ','): Row[] {
-  // 줄 단위 분리(윈도우/유닉스 개행 모두 대응)
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-  // 빈 줄 제거
   const filtered = lines.filter((l) => l.trim().length > 0);
   if (filtered.length === 0) return [];
 
-  // 헤더 추정(첫 줄)
   const header = splitCSVLine(filtered[0], delimiter);
   const rows: Row[] = [];
 
@@ -161,7 +155,6 @@ function splitCSVLine(line: string, delimiter: string): string[] {
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') {
-      // 연속 쌍따옴표("") → 실제 따옴표
       if (inQuote && line[i + 1] === '"') {
         cur += '"';
         i++;
@@ -199,9 +192,6 @@ function collectKeys(rows: Row[]): string[] {
 
 /** ------------------------------------------------------------------------
  * 유틸: Diff 계산
- *  - keyField 기준으로 map 구성
- *  - 왼쪽에만 있으면 deleted, 오른쪽에만 있으면 added,
- *    둘 다 있고 내용 다르면 changed, 같으면 same
  * ---------------------------------------------------------------------- */
 function buildKeyMap(rows: Row[], keyField: string): Map<string | number, Row> {
   const m = new Map<string | number, Row>();
@@ -250,7 +240,6 @@ function diffRows(left: Row[], right: Row[], keyField: string): DiffResult {
       added++;
       rows.push({ key: k, status: 'added', left: null, right: r });
     } else {
-      // 둘 다 존재
       if (shallowEqual(l!, r!)) {
         same++;
         rows.push({ key: k, status: 'same', left: l!, right: r! });
@@ -278,7 +267,6 @@ function diffRows(left: Row[], right: Row[], keyField: string): DiffResult {
  * 내보내기(엑셀 우선, 없으면 CSV 대체)
  * ---------------------------------------------------------------------- */
 async function exportDiff(result: DiffResult, baseName: string = 'compare_result') {
-  // 시도 1: XLSX (동적 import)
   try {
     const XLSX = await import('xlsx');
     const toSheet = (items: DiffItem[]) =>
@@ -308,10 +296,9 @@ async function exportDiff(result: DiffResult, baseName: string = 'compare_result
     triggerDownload(blob, `${baseName}.xlsx`);
     return;
   } catch {
-    // pass
+    // 패키지 부재 또는 쓰기 실패 시 CSV로 대체
   }
 
-  // 시도 2: CSV (added / deleted / changed / same 시트별)
   const csvParts: string[] = [];
   const groups: Array<['added'|'deleted'|'changed'|'same', DiffItem[]]> = [
     ['added', result.rows.filter((r) => r.status === 'added')],
@@ -341,20 +328,22 @@ function prefixKeys(obj: Row, prefix: string): Row {
   return out;
 }
 
+/** ✅ 타입 오류 수정: headerSet을 분리하고 누산기 타입을 명시(Set<string>) */
 function toCSV(rows: Row[]): string {
   if (rows.length === 0) return '';
-  const headers = Array.from(
-    rows.reduce((set, r) => {
-      Object.keys(r).forEach((k) => set.add(k));
-      return set;
-    }, new Set<string>())
-  );
+  const headerSet: Set<string> = rows.reduce<Set<string>>((set, r) => {
+    Object.keys(r).forEach((k) => set.add(k));
+    return set;
+  }, new Set<string>());
+  const headers = Array.from(headerSet);
+
   const escape = (v: any) => {
     if (v == null) return '';
     const s = String(v);
     if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
     return s;
   };
+
   const lines = [headers.join(',')];
   for (const r of rows) {
     lines.push(headers.map((h) => escape(r[h])).join(','));
@@ -379,34 +368,26 @@ function triggerDownload(blob: Blob, filename: string) {
  * 메인 컴포넌트
  * ---------------------------------------------------------------------- */
 export default function ComparePage() {
-  // 파일 상태
   const [fileA, setFileA] = useState<File | null>(null);
   const [fileB, setFileB] = useState<File | null>(null);
 
-  // 파싱 결과
   const [parsedA, setParsedA] = useState<ParsedData | null>(null);
   const [parsedB, setParsedB] = useState<ParsedData | null>(null);
 
-  // 기준 키
   const [keyField, setKeyField] = useState<string>('');
 
-  // 실행 상태/오류
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string>('');
 
-  // 결과
   const [diff, setDiff] = useState<DiffResult | null>(null);
 
-  // 표시 높이 제어용(한 번에 보여줄 행 수)
   const [rowsPerView, setRowsPerView] = useState<number>(30);
-  const rowHeight = 36; // px 단위(테이블 tr 높이 가정)
+  const rowHeight = 36; // px
   const viewportMaxHeight = rowsPerView * rowHeight;
 
-  // 파일 입력 ref (클릭으로 열기)
   const inputARef = useRef<HTMLInputElement>(null);
   const inputBRef = useRef<HTMLInputElement>(null);
 
-  /** 드롭존 핸들러 (최소 구현: 드래그 드롭) */
   const onDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>, target: 'A' | 'B') => {
       e.preventDefault();
@@ -425,7 +406,6 @@ export default function ComparePage() {
     e.stopPropagation();
   };
 
-  /** 파일 선택 → 파싱 */
   useEffect(() => {
     let canceled = false;
     (async () => {
@@ -468,7 +448,6 @@ export default function ComparePage() {
     };
   }, [fileB]);
 
-  /** 기본 key 자동 선택(첫 번째 키) */
   useEffect(() => {
     const aKeys = parsedA?.keys ?? [];
     const bKeys = parsedB?.keys ?? [];
@@ -476,12 +455,10 @@ export default function ComparePage() {
     if (first) setKeyField((prev) => prev || first);
   }, [parsedA?.keys?.join(','), parsedB?.keys?.join(',')]);
 
-  /** 비교 가능 여부 */
   const canCompare = useMemo(() => {
     return !!parsedA && !!parsedB && !!keyField && !isRunning;
   }, [parsedA, parsedB, keyField, isRunning]);
 
-  /** 비교 실행 */
   const onCompare = useCallback(async () => {
     setError('');
     setDiff(null);
@@ -498,13 +475,11 @@ export default function ComparePage() {
     console.time('compare');
 
     try {
-      // 한 틱 양보(렌더 여유)
       await new Promise((res) => requestAnimationFrame(() => res(null)));
 
       const result = diffRows(parsedA.rows, parsedB.rows, keyField);
       setDiff(result);
 
-      // 1000행 이상 자동 내보내기(엑셀 또는 CSV)
       if (result.summary.total >= 1000) {
         setTimeout(() => {
           exportDiff(result, `compare_${safeName(parsedA.sourceName)}_vs_${safeName(parsedB.sourceName)}`);
@@ -519,7 +494,6 @@ export default function ComparePage() {
     }
   }, [parsedA, parsedB, keyField]);
 
-  /** 수동 내보내기 버튼 */
   const onExport = useCallback(async () => {
     if (!diff) return;
     await exportDiff(
@@ -528,7 +502,6 @@ export default function ComparePage() {
     );
   }, [diff, parsedA?.sourceName, parsedB?.sourceName]);
 
-  /** 테이블 행(상태 + key + 좌/우 JSON) */
   const renderRow = (item: DiffItem) => {
     return (
       <tr key={String(item.key)} className="border-b last:border-b-0">
@@ -546,7 +519,6 @@ export default function ComparePage() {
     );
   };
 
-  /** 상태 배지(최소 스타일) */
   function badge(s: DiffItem['status']) {
     const base = 'inline-block rounded px-2 py-0.5 text-[10px] font-bold';
     const tone: Record<string, string> = {
@@ -562,9 +534,7 @@ export default function ComparePage() {
     <main className="p-6">
       <h1 className="text-xl font-bold mb-4">📊 파일 비교</h1>
 
-      {/* 파일 선택 영역: 드래그&드롭 + 클릭 선택 */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* 왼쪽 파일 */}
         <div
           onDragEnter={prevent}
           onDragOver={prevent}
@@ -604,7 +574,6 @@ export default function ComparePage() {
           </div>
         </div>
 
-        {/* 오른쪽 파일 */}
         <div
           onDragEnter={prevent}
           onDragOver={prevent}
@@ -645,7 +614,6 @@ export default function ComparePage() {
         </div>
       </div>
 
-      {/* 기준 key, 표시행수, 실행 버튼 */}
       <div className="mt-4 flex flex-col md:flex-row md:items-end gap-3">
         <div>
           <label className="block text-xs text-slate-600 mb-1">비교 기준 key</label>
@@ -702,10 +670,8 @@ export default function ComparePage() {
         </div>
       </div>
 
-      {/* 오류 패널: 항상 DOM에 두기 */}
       <ErrorPanel message={error} />
 
-      {/* 안내 패널 */}
       <InfoPanel>
         <div className="text-xs">
           • JSON/CSV/TSV/TXT를 지원하며, <b>xlsx 패키지</b>가 설치되어 있으면 엑셀(.xlsx)도 자동 파싱합니다.
@@ -715,10 +681,8 @@ export default function ComparePage() {
         </div>
       </InfoPanel>
 
-      {/* 결과 섹션 */}
       {diff && (
         <section className="mt-5">
-          {/* 요약 */}
           <div className="text-sm mb-3">
             <span className="font-semibold">기준키:</span> <span className="mr-3">{diff.keyField}</span>
             <span className="mr-3">총 {diff.summary.total.toLocaleString()}건</span>
@@ -728,7 +692,6 @@ export default function ComparePage() {
             <span className="mr-2">동일 {diff.summary.same.toLocaleString()}</span>
           </div>
 
-          {/* 스크롤 테이블: 높이만 제한하고 전체 데이터는 스크롤 */}
           <div
             className="rounded-lg border overflow-y-auto"
             style={{ maxHeight: `${viewportMaxHeight}px` }}
