@@ -9,6 +9,9 @@
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useMemo } from 'react';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export default function TermsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();

@@ -7,6 +7,9 @@
  * - 문의 이메일: zoochildfam@gmail.com
  */
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useMemo } from 'react';
 
