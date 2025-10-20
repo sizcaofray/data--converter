@@ -1,56 +1,38 @@
-'use client';
-/**
- * 개인정보 처리방침 — 개인(미등록/비법인) 운영 기준의 최소 구성
- * - 필수 안내 항목만 유지(수집 항목, 목적, 보유/파기, 제3자 제공/위탁, 권리, 문의처)
- * - 주소/성명/직책 등 식별 정보는 제거, 이메일만 고지
- * - 우측 상단 고정형 X(닫기) 버튼 유지
- * - 문의 이메일: zoochildfam@gmail.com
- */
-
+// 서버 함수 강제: 동적 + 캐시 끔 + Node 런타임
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
-import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useMemo } from 'react';
+import { headers } from 'next/headers';
+import Link from 'next/link';
+
+/**
+ * 개인정보 처리방침 — 개인(미등록/비법인) 운영 기준의 최소 구성
+ * - 문의 이메일: zoochildfam@gmail.com
+ * - 페이지는 서버에서 렌더링되도록 강제(λ 생성)
+ */
 
 export default function PrivacyPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  headers();
 
-  // ✅ 표기용 시행일 (필요 시 수정)
   const effectiveDate = '2025-10-14';
-
-  // ✅ 문의 이메일(필수 연락처)
-  const contactEmail = useMemo(() => 'zoochildfam@gmail.com', []);
-
-  // ✅ 닫기 동작: 히스토리가 있으면 뒤로, 없으면 ?from 또는 홈(/)
-  const handleClose = useCallback(() => {
-    if (typeof window !== 'undefined' && window.history.length > 1) {
-      window.history.back();
-      return;
-    }
-    const from = searchParams?.get('from') || '/';
-    router.replace(from);
-  }, [router, searchParams]);
+  const contactEmail = 'zoochildfam@gmail.com';
 
   return (
     <main className="relative max-w-3xl mx-auto px-4 py-10">
-      {/* ===== 우측 상단 X(닫기) 버튼 — 스크롤과 무관하게 고정 ===== */}
-      <button
-        type="button"
-        onClick={handleClose}
-        aria-label="닫기"
-        title="닫기"
-        className="fixed top-3 right-3 md:top-6 md:right-6 z-50 inline-flex items-center justify-center rounded-full border border-black/10 bg-white/80 dark:bg-neutral-900/70 backdrop-blur w-9 h-9 md:w-10 md:h-10 text-lg font-bold shadow-lg hover:shadow-xl transition"
-      >
-        ×
-      </button>
+      <div className="fixed top-3 right-3 md:top-6 md:right-6 z-50">
+        <Link
+          href="/"
+          aria-label="닫기"
+          className="inline-flex items-center justify-center rounded-full border border-black/10 bg-white/80 dark:bg-neutral-900/70 backdrop-blur w-9 h-9 md:w-10 md:h-10 text-lg font-bold shadow-lg hover:shadow-xl transition"
+        >
+          ×
+        </Link>
+      </div>
 
-      {/* ===== 본문 ===== */}
       <h1 className="text-2xl font-bold mb-6">개인정보 처리방침</h1>
       <p className="text-sm text-gray-500 mb-8">시행일: {effectiveDate}</p>
 
-      {/* 1) 수집하는 항목 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">1. 수집하는 항목</h2>
         <p className="leading-7">
@@ -59,7 +41,6 @@ export default function PrivacyPage() {
         </p>
       </section>
 
-      {/* 2) 이용 목적 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">2. 이용 목적</h2>
         <p className="leading-7">
@@ -67,7 +48,6 @@ export default function PrivacyPage() {
         </p>
       </section>
 
-      {/* 3) 보유 및 파기 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">3. 보유 및 파기</h2>
         <p className="leading-7">
@@ -76,7 +56,6 @@ export default function PrivacyPage() {
         </p>
       </section>
 
-      {/* 4) 제3자 제공 및 위탁 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">4. 제3자 제공 및 위탁</h2>
         <p className="leading-7">
@@ -85,7 +64,6 @@ export default function PrivacyPage() {
         </p>
       </section>
 
-      {/* 5) 이용자의 권리 */}
       <section className="mb-6">
         <h2 className="text-lg font-semibold mb-2">5. 이용자의 권리</h2>
         <p className="leading-7">
@@ -93,14 +71,11 @@ export default function PrivacyPage() {
         </p>
       </section>
 
-      {/* 6) 문의처(필수 연락처) */}
       <section>
         <h2 className="text-lg font-semibold mb-2">6. 문의처</h2>
         <p className="leading-7">
           개인정보 관련 문의:{' '}
-          <a href={`mailto:${contactEmail}`} className="underline">
-            {contactEmail}
-          </a>
+          <a href={`mailto:${contactEmail}`} className="underline">{contactEmail}</a>
         </p>
       </section>
     </main>
