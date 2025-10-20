@@ -5,7 +5,7 @@ export const revalidate = 0;
 
 import { headers } from 'next/headers';
 import Link from 'next/link';
-
+ 
 /**
  * 개인정보 처리방침 — 개인(미등록/비법인) 운영 기준의 최소 구성
  * - 문의 이메일: zoochildfam@gmail.com
