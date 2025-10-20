@@ -1,5 +1,12 @@
-// components/admin/NavigationToggle.tsx
 'use client';
+
+/**
+ * settings/uploadPolicy 문서의 navigation.disabled(string[])을
+ * 토글로 편집하는 "메뉴 관리" 섹션 컴포넌트.
+ *
+ * ✅ 기존 업로드 정책(uploadPolicy) 필드들은 setDoc(..., { merge: true })로 보존됩니다.
+ * ✅ 역할/구독에 따른 사이드바 노출 로직에는 영향 없습니다(사이드바에서 disabled면 '보여주되 클릭 불가').
+ */
 
 import { useEffect, useMemo, useState } from 'react';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
@@ -7,10 +14,13 @@ import { db } from '@/lib/firebase/firebase';
 
 type MenuConfig = { slug: string; label: string };
 
-// 프로젝트 사이드바의 실제 메뉴 slug/href에 맞춰 필요시 수정
+/**
+ * 프로젝트에 존재하는 실제 메뉴 slug로 구성하세요.
+ * (Sidebar의 href 첫 세그먼트와 동일해야 함)
+ */
 const ALL_MENUS: MenuConfig[] = [
   { slug: 'convert', label: 'Data Convert' },
-  { slug: 'compare', label: 'Data Compare' },
+  { slug: 'compare', label: 'Compare' },
   { slug: 'random',  label: 'Random' },
   { slug: 'admin',   label: 'Admin' },
 ];
@@ -19,6 +29,7 @@ export default function NavigationToggle() {
   const [disabled, setDisabled] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
+  // settings/uploadPolicy.navigation.disabled 구독
   useEffect(() => {
     const ref = doc(db, 'settings', 'uploadPolicy');
     return onSnapshot(ref, (snap) => {
@@ -31,7 +42,7 @@ export default function NavigationToggle() {
   const disabledSet = useMemo(() => new Set(disabled), [disabled]);
 
   const toggle = (slug: string) => {
-    setDisabled((prev) => {
+    setDisabled(prev => {
       const s = new Set(prev);
       s.has(slug) ? s.delete(slug) : s.add(slug);
       return Array.from(s);
@@ -50,10 +61,10 @@ export default function NavigationToggle() {
 
   return (
     <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
-      <h2 className="text-lg font-bold mb-2">사이드바 메뉴 비활성화</h2>
+      <h2 className="text-lg font-bold mb-2">메뉴 관리 (비활성화)</h2>
       <p className="text-sm text-slate-600 mb-4">
-        체크된 메뉴는 좌측 사이드바에서 흐림 처리되며 클릭이 차단됩니다.
-        (<code>settings/uploadPolicy.navigation.disabled</code> 저장)
+        체크된 메뉴는 사이드바에서 <b>보여지되 클릭이 차단</b>됩니다.
+        (<code>settings/uploadPolicy.navigation.disabled</code>에 저장)
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
@@ -91,7 +102,7 @@ export default function NavigationToggle() {
           {saving ? '저장 중…' : '저장'}
         </button>
         <div className="text-xs text-slate-500 self-center">
-          문서: <code>settings/uploadPolicy</code> / 필드: <code>navigation.disabled</code>
+          문서: <code>settings/uploadPolicy</code> / 필드: <code>navigation.disabled: string[]</code> (merge 저장)
         </div>
       </div>
     </section>

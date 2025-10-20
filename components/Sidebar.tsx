@@ -1,12 +1,9 @@
+// components/Sidebar.tsx
 'use client'
 /**
- * components/Sidebar.tsx
- *
  * 변경 요약
- *  - ✅ 기존 "역할/구독"에 따른 노출 로직은 그대로 유지 (adminOnly / requiresSub)
- *  - ➕ settings/uploadPolicy.navigation.disabled 구독 추가
- *      · 배열에 포함된 slug(첫 세그먼트)는 "보여주되 비활성화" (클릭 차단 + 흐림)
- *  - UI 스타일/동작은 최대한 기존과 동일하게 유지
+ *  - ✅ 기존 '역할/구독' 노출 로직 유지 (adminOnly / requiresSub)
+ *  - ➕ settings/uploadPolicy.navigation.disabled 구독 → 포함된 slug는 "보여주되 비활성화"
  */
 
 import Link from 'next/link'
@@ -20,7 +17,6 @@ import { doc, onSnapshot } from 'firebase/firestore'
 
 type RoleNorm = 'admin' | 'user'
 
-// 기존 메뉴 정의 유지
 const MENU_ITEMS = [
   { href: '/convert', label: 'Data Convert', requiresSub: false, adminOnly: false },
   { href: '/compare', label: 'Compare',      requiresSub: true,  adminOnly: false },
@@ -28,60 +24,44 @@ const MENU_ITEMS = [
   { href: '/admin',   label: 'Admin',        requiresSub: false, adminOnly: true  },
 ] as const
 
-// href의 첫 세그먼트를 slug로 사용 (예: /compare → 'compare')
 const hrefToSlug = (href: string) => (href.split('/').filter(Boolean)[0] || '')
 
 export default function Sidebar() {
   const pathname = usePathname()
 
-  // 상태: 로딩/역할/구독 (기존 로직 유지)
+  // --- 기존: 역할/구독 구독
   const [loading, setLoading] = useState(true)
   const [role, setRole] = useState<RoleNorm>('user')
   const [isSubscribed, setIsSubscribed] = useState(false)
 
   useEffect(() => {
     let unsubUser: (() => void) | null = null
-
     const unsubAuth = onAuthStateChanged(auth, (u) => {
       if (!u) {
-        // 비로그인 → 기본값
-        setRole('user')
-        setIsSubscribed(false)
-        setLoading(false)
+        setRole('user'); setIsSubscribed(false); setLoading(false)
         if (unsubUser) { unsubUser(); unsubUser = null }
         return
       }
-
-      // 로그인 → users/{uid} 실시간 구독
       const userRef = doc(db, 'users', u.uid)
       if (unsubUser) { unsubUser(); unsubUser = null }
       unsubUser = onSnapshot(
         userRef,
         (snap) => {
-          const data = snap.exists() ? (snap.data() as any) : {}
-          const roleNorm = String(data.role ?? 'user').toLowerCase()
-          setRole(roleNorm === 'admin' ? 'admin' : 'user')
-          setIsSubscribed(Boolean(data.isSubscribed))
+          const d = snap.exists() ? (snap.data() as any) : {}
+          setRole(String(d.role ?? 'user').toLowerCase() === 'admin' ? 'admin' : 'user')
+          setIsSubscribed(Boolean(d.isSubscribed))
           setLoading(false)
         },
-        () => {
-          setRole('user')
-          setIsSubscribed(false)
-          setLoading(false)
-        }
+        () => { setRole('user'); setIsSubscribed(false); setLoading(false) }
       )
     })
-
-    return () => {
-      unsubAuth()
-      if (unsubUser) unsubUser()
-    }
+    return () => { unsubAuth(); if (unsubUser) unsubUser() }
   }, [])
 
   const isAdmin = role === 'admin'
   const isPaid = !!isSubscribed
 
-  // 🆕 settings/uploadPolicy.navigation.disabled 구독
+  // --- 추가: settings/uploadPolicy.navigation.disabled 구독
   const [disabledSlugs, setDisabledSlugs] = useState<string[]>([])
   useEffect(() => {
     const ref = doc(db, 'settings', 'uploadPolicy')
@@ -92,20 +72,16 @@ export default function Sidebar() {
         const arr = data?.navigation?.disabled
         setDisabledSlugs(Array.isArray(arr) ? arr : [])
       },
-      () => setDisabledSlugs([]) // 에러 시 기본값
+      () => setDisabledSlugs([])
     )
     return () => unsub()
   }, [])
   const disabledSet = useMemo(() => new Set(disabledSlugs), [disabledSlugs])
 
-  // 로딩 중엔 깜빡임 최소화(임시로 convert만) — 기존 동작 유지
+  // --- 노출 판단(기존 로직 그대로)
   const visible = loading
     ? MENU_ITEMS.filter(m => m.href === '/convert')
-    : MENU_ITEMS.filter(m => {
-        if (m.adminOnly) return isAdmin                 // Admin은 오직 관리자
-        if (m.requiresSub) return isAdmin || isPaid     // 유료 메뉴는 관리자 또는 구독자
-        return true                                     // 그 외 모두
-      })
+    : MENU_ITEMS.filter(m => (m.adminOnly ? isAdmin : m.requiresSub ? (isAdmin || isPaid) : true))
 
   return (
     <aside className="w-64 shrink-0 border-r bg-gray-50 dark:bg-gray-900 min-h-screen">
@@ -115,7 +91,6 @@ export default function Sidebar() {
             const active = pathname === m.href || pathname.startsWith(m.href + '/')
             const slug = hrefToSlug(m.href)
             const isDisabled = disabledSet.has(slug)
-
             return (
               <li key={m.href}>
                 <Link
