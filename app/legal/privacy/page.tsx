@@ -97,7 +97,7 @@ export default function PrivacyPage() {
       <section>
         <h2 className="text-lg font-semibold mb-2">6. 문의처</h2>
         <p className="leading-7">
-          개인정보 관련 문의:{" "}
+          개인정보 관련 문의:{' '}
           <a href={`mailto:${contactEmail}`} className="underline">
             {contactEmail}
           </a>
