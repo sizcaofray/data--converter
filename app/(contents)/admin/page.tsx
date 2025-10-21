@@ -1,33 +1,43 @@
 'use client';
 
 /**
- * 관리자 - 사용자 관리 + 메뉴 비활성화 관리 (디버그 로그 강화판)
- * - 어디서 막히는지 단계별로 확인할 수 있도록 콘솔 로그를 추가했습니다.
- * - 저장 직전 사용자 권한(UID/이메일/클레임), users/{uid}.role, payload, 경로, Firestore SDK 상세 에러를 모두 출력합니다.
+ * 관리자 페이지 (메뉴 비활성화 + 사용자 관리)
+ * - 기존 UI는 유지
+ * - "저장 중 permission-denied" 원인 파악을 위해 화면 디버그 패널 추가
+ * - 저장 직전 권한/문서/페이로드를 가시화
  */
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useUser } from '@/contexts/UserContext';
 import { db } from '@/lib/firebase/firebase';
 import {
-  collection, getDocs, updateDoc, doc, Timestamp,
-  onSnapshot, setDoc, serverTimestamp, getDoc,
-  setLogLevel
+  collection,
+  getDocs,
+  updateDoc,
+  doc,
+  Timestamp,
+  onSnapshot,
+  setDoc,
+  serverTimestamp,
+  getDoc,
+  setLogLevel,
 } from 'firebase/firestore';
 import { getAuth, getIdTokenResult } from 'firebase/auth';
 
-// 🔎 Firestore 내부 로그까지 보고 싶다면 주석 해제
-setLogLevel('debug');
+// 필요 시 Firestore 내부 로그를 보려면 주석 해제
+// setLogLevel('debug');
 
-/** =========================
- *  기존 타입/유틸 (원본 유지)
- * ========================= */
 type Role = 'free' | 'basic' | 'premium' | 'admin';
 
 interface UserRow {
-  uid: string; email: string; role: Role;
-  uniqueId?: string | null; joinedAt?: Timestamp | null;
-  isSubscribed?: boolean; subscriptionStartAt?: Timestamp | null; subscriptionEndAt?: Timestamp | null;
+  uid: string;
+  email: string;
+  role: Role;
+  uniqueId?: string | null;
+  joinedAt?: Timestamp | null;
+  isSubscribed?: boolean;
+  subscriptionStartAt?: Timestamp | null;
+  subscriptionEndAt?: Timestamp | null;
   remainingDays?: number | null;
 }
 
@@ -73,25 +83,20 @@ function clampEndAfterStart(start: Date | null, end: Date | null) {
 
 const DEFAULT_SUBSCRIPTION_DAYS = 30;
 
-/** =========================
- *  사이드바 메뉴 목록 (필요 시 slug만 맞추세요)
- * ========================= */
 type MenuConfig = { slug: string; label: string };
 const ALL_MENUS: MenuConfig[] = [
   { slug: 'convert', label: 'Data Convert' },
   { slug: 'compare', label: 'Compare' },
-  { slug: 'random',  label: 'Random' },
-  { slug: 'admin',   label: 'Admin' },
+  { slug: 'random', label: 'Random' },
+  { slug: 'admin', label: 'Admin' },
 ];
 
-/** =========================
- *  안전 유틸: Firestore 400 방지
- * ========================= */
+// 안전 유틸들
 function sanitizeSlugArray(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   return input
-    .map(v => (typeof v === 'string' ? v : String(v ?? '').trim()))
-    .filter(v => v.length > 0);
+    .map((v) => (typeof v === 'string' ? v : String(v ?? '').trim()))
+    .filter((v) => v.length > 0);
 }
 function pruneUndefined<T extends Record<string, any>>(obj: T): T {
   const walk = (v: any): any => {
@@ -108,108 +113,148 @@ function pruneUndefined<T extends Record<string, any>>(obj: T): T {
   };
   return walk(obj);
 }
-
-// 안전 stringify (순환참조 방지)
 function safeStringify(o: any) {
-  const seen = new WeakSet();
-  return JSON.stringify(o, (k, v) => {
-    if (typeof v === 'object' && v !== null) {
-      if (seen.has(v)) return '[Circular]';
-      seen.add(v);
-    }
-    return v;
-  }, 2);
+  try {
+    const seen = new WeakSet();
+    return JSON.stringify(
+      o,
+      (k, v) => {
+        if (typeof v === 'object' && v !== null) {
+          if (seen.has(v)) return '[Circular]';
+          seen.add(v);
+        }
+        return v;
+      },
+      2
+    );
+  } catch {
+    return String(o);
+  }
 }
 
 export default function AdminPage() {
   const { role: myRole, loading } = useUser();
 
-  // ===== [A] 메뉴 관리 상태 =====
+  // ── [A] 메뉴 관리 상태
   const [navDisabled, setNavDisabled] = useState<string[]>([]);
   const [savingNav, setSavingNav] = useState(false);
 
+  // 디버그 패널 상태
+  const [showDebug, setShowDebug] = useState(true);
+  const [dbg, setDbg] = useState<{
+    myRole?: any;
+    authUid?: string | null;
+    authEmail?: string | null;
+    tokenClaims?: any;
+    usersDocRole?: any;
+    uploadPolicyPath?: string;
+    uploadPolicyPayload?: any;
+    lastError?: { code?: any; message?: any; customData?: any } | null;
+  }>({});
+
+  // uploadPolicy 구독
   useEffect(() => {
     if (loading || myRole !== 'admin') return;
     const ref = doc(db, 'settings', 'uploadPolicy');
-    const unsub = onSnapshot(ref, (snap) => {
-      const data = snap.data() as any | undefined;
-      const arr = Array.isArray(data?.navigation?.disabled) ? data?.navigation?.disabled : data?.navigation?.disabled === true ? ['__all__'] : [];
-      // ↑ 규칙이 bool/array 둘 다 허용되므로 bool(true)이면 임시로 ['__all__']로 가정표시
-      const cleaned = sanitizeSlugArray(arr);
-      console.log('[ADMIN DEBUG] onSnapshot uploadPolicy:', data);
-      setNavDisabled(cleaned);
-    }, (err) => {
-      console.error('[ADMIN DEBUG] onSnapshot(uploadPolicy) ERROR:', err);
-    });
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        const data = snap.data() as any | undefined;
+        // 규칙이 bool/list 혼용 허용될 수 있으므로 list만 수용
+        const arr = Array.isArray(data?.navigation?.disabled) ? data?.navigation?.disabled : [];
+        setNavDisabled(sanitizeSlugArray(arr));
+      },
+      (err) => {
+        setDbg((d) => ({ ...d, lastError: { code: err?.code, message: err?.message, customData: err?.customData } }));
+      }
+    );
     return () => unsub();
   }, [loading, myRole]);
 
   const disabledSet = useMemo(() => new Set(navDisabled), [navDisabled]);
-
   const toggleMenu = (slug: string) => {
-    setNavDisabled(prev => {
+    setNavDisabled((prev) => {
       const s = new Set(prev);
       s.has(slug) ? s.delete(slug) : s.add(slug);
       return Array.from(s);
     });
   };
 
-  // ✅ 핵심: 저장 직전/직후 모든 상태를 기록
+  // 권한/문서/페이로드 실시간 덤프 함수
+  const dumpContext = async () => {
+    const auth = getAuth();
+    const user = auth.currentUser;
+    let authUid: string | null = null;
+    let authEmail: string | null = null;
+    let tokenClaims: any = null;
+    let usersDocRole: any = null;
+
+    if (user) {
+      authUid = user.uid;
+      authEmail = user.email ?? null;
+      try {
+        const tokenRes = await getIdTokenResult(user, true);
+        tokenClaims = tokenRes?.claims ?? null;
+      } catch (e: any) {
+        tokenClaims = { error: e?.message || 'token error' };
+      }
+      try {
+        const uref = doc(db, 'users', user.uid);
+        const usnap = await getDoc(uref);
+        usersDocRole = usnap.exists() ? (usnap.data() as any)?.role : '(users/{uid} 문서 없음)';
+      } catch (e: any) {
+        usersDocRole = { error: e?.message || 'users doc read error' };
+      }
+    }
+
+    const cleaned = sanitizeSlugArray(navDisabled);
+    const payload = pruneUndefined({
+      navigation: { disabled: cleaned },
+      updatedAt: serverTimestamp(),
+    });
+
+    setDbg((d) => ({
+      ...d,
+      myRole,
+      authUid,
+      authEmail,
+      tokenClaims,
+      usersDocRole,
+      uploadPolicyPath: 'settings/uploadPolicy',
+      uploadPolicyPayload: payload,
+    }));
+  };
+
+  // 저장
   const saveMenuDisabled = async () => {
     setSavingNav(true);
+    await dumpContext(); // 저장 직전에 현재 상태를 디버그 패널에 반영
     try {
-      const auth = getAuth();
-      const user = auth.currentUser;
-      console.log('[ADMIN DEBUG] saveMenuDisabled: START');
-      console.log('[ADMIN DEBUG] myRole(from context):', myRole);
-
-      if (!user) {
-        console.warn('[ADMIN DEBUG] No currentUser (미로그인)');
-        alert('로그인이 필요합니다.');
-        return;
-      }
-
-      const tokenRes = await getIdTokenResult(user, true);
-      console.log('[ADMIN DEBUG] auth uid/email:', user.uid, user.email);
-      console.log('[ADMIN DEBUG] token claims:', safeStringify(tokenRes.claims));
-
-      // rules에서 isAdmin()은 users/{uid}.role == 'admin' 만 봅니다.
-      const userDocRef = doc(db, 'users', user.uid);
-      const userDoc = await getDoc(userDocRef);
-      console.log('[ADMIN DEBUG] users/{uid} exists?:', userDoc.exists());
-      console.log('[ADMIN DEBUG] users/{uid}.data():', userDoc.data());
-      const roleOnDoc = userDoc.data()?.role;
-      console.log('[ADMIN DEBUG] users/{uid}.role:', roleOnDoc);
-
-      // payload 구성 & 로그
-      const cleaned = sanitizeSlugArray(navDisabled);
-      const payload = pruneUndefined({
-        navigation: { disabled: cleaned },   // 문자열 배열 기준
-        updatedAt: serverTimestamp(),
-      });
-      console.log('[ADMIN DEBUG] uploadPolicy PATH:', 'settings/uploadPolicy');
-      console.log('[ADMIN DEBUG] payload before setDoc:', payload);
-
-      // 실제 쓰기
       const ref = doc(db, 'settings', 'uploadPolicy');
-      await setDoc(ref, payload, { merge: true });
+      // 디버그 패널에 표시된 payload 그대로 사용
+      const payload = ((): any => {
+        const cleaned = sanitizeSlugArray(navDisabled);
+        return pruneUndefined({
+          navigation: { disabled: cleaned },
+          updatedAt: serverTimestamp(),
+        });
+      })();
 
-      console.log('[ADMIN DEBUG] setDoc OK');
+      await setDoc(ref, payload, { merge: true });
+      setDbg((d) => ({ ...d, lastError: null }));
       alert('메뉴 설정이 저장되었습니다.');
     } catch (e: any) {
-      // Firestore SDK 에러 상세 출력
-      console.error('[ADMIN NAV SAVE][ERR] code:', e?.code, 'name:', e?.name);
-      console.error('[ADMIN NAV SAVE][ERR] message:', e?.message);
-      console.error('[ADMIN NAV SAVE][ERR] customData:', safeStringify(e?.customData));
-      console.error('[ADMIN NAV SAVE][ERR] full:', e);
+      setDbg((d) => ({
+        ...d,
+        lastError: { code: e?.code, message: e?.message, customData: e?.customData },
+      }));
       alert(`메뉴 저장 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
     } finally {
       setSavingNav(false);
-      console.log('[ADMIN DEBUG] saveMenuDisabled: END');
     }
   };
 
-  // ===== [B] 기존 유저관리 =====
+  // ── [B] 기존 사용자 관리
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
@@ -238,7 +283,9 @@ export default function AdminPage() {
         });
         list.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
         setRows(list);
-      } finally { setFetching(false); }
+      } finally {
+        setFetching(false);
+      }
     })();
   }, [loading, myRole]);
 
@@ -251,7 +298,7 @@ export default function AdminPage() {
         isSubscribed: false,
         subscriptionStartAt: null,
         subscriptionEndAt: null,
-        remainingDays: null
+        remainingDays: null,
       });
       return;
     }
@@ -259,10 +306,10 @@ export default function AdminPage() {
     const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS);
     const endTs = clampEndAfterStart(startDate, endDate);
     patchRow(r.uid, {
-        isSubscribed: true,
-        subscriptionStartAt: Timestamp.fromDate(startDate),
-        subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
-        remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
+      isSubscribed: true,
+      subscriptionStartAt: Timestamp.fromDate(startDate),
+      subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
+      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
     });
   };
 
@@ -280,7 +327,7 @@ export default function AdminPage() {
     patchRow(r.uid, {
       subscriptionStartAt: newStart ? Timestamp.fromDate(newStart) : null,
       subscriptionEndAt: endTs,
-      remainingDays: calcRemainingDaysFromEnd(endTs)
+      remainingDays: calcRemainingDaysFromEnd(endTs),
     });
   };
 
@@ -291,7 +338,7 @@ export default function AdminPage() {
     const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
     patchRow(r.uid, {
       subscriptionEndAt: endTs,
-      remainingDays: calcRemainingDaysFromEnd(endTs)
+      remainingDays: calcRemainingDaysFromEnd(endTs),
     });
   };
 
@@ -304,7 +351,8 @@ export default function AdminPage() {
       let isSubscribed = !!row.isSubscribed;
 
       if (!isSubscribed) {
-        startTs = null; endTs = null;
+        startTs = null;
+        endTs = null;
       } else {
         const startD = startTs?.toDate() ?? null;
         const endD = endTs?.toDate() ?? null;
@@ -320,18 +368,21 @@ export default function AdminPage() {
       });
       alert('저장되었습니다.');
     } catch (e: any) {
-      console.error('[ADMIN SAVE][ERR]', e?.code, e?.message, e);
       alert(`저장 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
-    } finally { setSaving(null); }
+    } finally {
+      setSaving(null);
+    }
   };
 
-  if (loading) return <main className="p-6 text-sm text-gray-500">로딩 중...</main>;
-  if (myRole !== 'admin') return (
-    <main className="p-6">
-      <h1 className="text-xl font-semibold mb-4">관리자 페이지</h1>
-      <p className="text-red-600 dark:text-red-400">⛔ 관리자 권한이 없습니다.</p>
-    </main>
-  );
+  if (loading)
+    return <main className="p-6 text-sm text-gray-500">로딩 중...</main>;
+  if (myRole !== 'admin')
+    return (
+      <main className="p-6">
+        <h1 className="text-xl font-semibold mb-4">관리자 페이지</h1>
+        <p className="text-red-600 dark:text-red-400">⛔ 관리자 권한이 없습니다.</p>
+      </main>
+    );
 
   return (
     <main className="p-6 space-y-6">
@@ -376,9 +427,15 @@ export default function AdminPage() {
           >
             {savingNav ? '저장 중…' : '저장'}
           </button>
-          <div className="text-xs text-slate-500 self-center">
-            문서: <code>settings/uploadPolicy</code> / 필드: <code>navigation.disabled: string[]</code>
-          </div>
+
+          <label className="ml-4 inline-flex items-center gap-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={showDebug}
+              onChange={(e) => setShowDebug(e.target.checked)}
+            />
+            디버그 패널 표시
+          </label>
         </div>
       </section>
 
@@ -471,6 +528,49 @@ export default function AdminPage() {
           </table>
         )}
       </section>
+
+      {/* ── 디버그 패널: 화면 표시용 (콘솔 무시/차단 상황 대비) ── */}
+      {showDebug && (
+        <section className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-slate-800 dark:bg-amber-100/30 dark:text-amber-50">
+          <div className="mb-2 font-semibold">디버그 패널</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 whitespace-pre-wrap">
+            <div>
+              <div>myRole(from context): {String(dbg.myRole ?? myRole)}</div>
+              <div>authUid: {dbg.authUid ?? '-'}</div>
+              <div>authEmail: {dbg.authEmail ?? '-'}</div>
+              <div>users/{{uid}}.role: {String(dbg.usersDocRole ?? '-')}</div>
+              <div>uploadPolicy path: {dbg.uploadPolicyPath ?? 'settings/uploadPolicy'}</div>
+            </div>
+            <div className="overflow-auto max-h-56">
+              <div className="font-semibold">tokenClaims</div>
+              <pre>{safeStringify(dbg.tokenClaims ?? {})}</pre>
+            </div>
+            <div className="overflow-auto max-h-56 md:col-span-2">
+              <div className="font-semibold">payload</div>
+              <pre>{safeStringify(dbg.uploadPolicyPayload ?? {
+                navigation: { disabled: navDisabled },
+                updatedAt: '(serverTimestamp)',
+              })}</pre>
+            </div>
+            {dbg.lastError && (
+              <div className="overflow-auto max-h-56 md:col-span-2 text-red-700">
+                <div className="font-semibold">lastError</div>
+                <pre>{safeStringify(dbg.lastError)}</pre>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 flex gap-2">
+            <button
+              className="px-3 py-1 rounded border"
+              onClick={dumpContext}
+              title="현재 로그인/권한/문서 상태를 패널에 갱신"
+            >
+              상태 새로고침
+            </button>
+          </div>
+        </section>
+      )}
     </main>
   );
 }
