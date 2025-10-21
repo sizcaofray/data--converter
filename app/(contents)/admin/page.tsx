@@ -1,12 +1,20 @@
 'use client';
 
+/**
+ * 관리자 - 사용자 관리 + 메뉴 비활성화 관리
+ * - UI는 그대로 유지하고, 저장 로직만 안전하게 보강
+ * - Firestore 400(Bad Request) 방지: undefined 제거, 타입 강제, payload 로그 추가
+ */
+
 import { useEffect, useState, useMemo } from 'react';
 import { useUser } from '@/contexts/UserContext';
 import { db } from '@/lib/firebase/firebase';
 import {
   collection, getDocs, updateDoc, doc, Timestamp,
-  onSnapshot, setDoc, // ✅ 메뉴관리용으로 추가
+  onSnapshot, setDoc, serverTimestamp, // ✅ timestamp 추가
 } from 'firebase/firestore';
+// 개발 중 일시적으로 상세 로그가 필요하면 활성화하세요.
+// import { setLogLevel } from 'firebase/firestore'; setLogLevel('debug');
 
 /** =========================
  *  기존 타입/유틸 (원본 유지)
@@ -20,25 +28,54 @@ interface UserRow {
   remainingDays?: number | null;
 }
 
-function todayKST(): Date { const now = new Date(); const kst = new Date(now.getTime() + 9*3600*1000);
-  return new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate())); }
-function dateToInput(d: Date | null){ if(!d) return ''; const y=d.getUTCFullYear(); const m=String(d.getUTCMonth()+1).padStart(2,'0'); const dd=String(d.getUTCDate()).padStart(2,'0'); return `${y}-${m}-${dd}`; }
-function tsToInputDate(ts: Timestamp | null | undefined){ if(!ts) return ''; const d=ts.toDate(); return dateToInput(new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()))); }
-function inputDateToDate(s: string){ if(!s) return null; const d=new Date(s+'T00:00:00Z'); return isNaN(d.getTime())?null:d; }
-function calcRemainingDaysFromEnd(end: Timestamp | null | undefined){ if(!end) return null; const e=end.toDate();
-  const eu=new Date(Date.UTC(e.getFullYear(),e.getMonth(),e.getDate())); const base=todayKST();
-  const diff=eu.getTime()-base.getTime(); const n=Math.ceil(diff/86400000); return n<0?0:n; }
-function kstTodayPlusDays(n:number){ const base=todayKST(); return new Date(base.getTime()+n*86400000); }
-function clampEndAfterStart(start: Date | null, end: Date | null){ if(!start||!end) return end; return end.getTime()<start.getTime()?start:end; }
+function todayKST(): Date {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 3600 * 1000);
+  return new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()));
+}
+function dateToInput(d: Date | null) {
+  if (!d) return '';
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+function tsToInputDate(ts: Timestamp | null | undefined) {
+  if (!ts) return '';
+  const d = ts.toDate();
+  return dateToInput(new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())));
+}
+function inputDateToDate(s: string) {
+  if (!s) return null;
+  const d = new Date(s + 'T00:00:00Z');
+  return isNaN(d.getTime()) ? null : d;
+}
+function calcRemainingDaysFromEnd(end: Timestamp | null | undefined) {
+  if (!end) return null;
+  const e = end.toDate();
+  const eu = new Date(Date.UTC(e.getFullYear(), e.getMonth(), e.getDate()));
+  const base = todayKST();
+  const diff = eu.getTime() - base.getTime();
+  const n = Math.ceil(diff / 86400000);
+  return n < 0 ? 0 : n;
+}
+function kstTodayPlusDays(n: number) {
+  const base = todayKST();
+  return new Date(base.getTime() + n * 86400000);
+}
+function clampEndAfterStart(start: Date | null, end: Date | null) {
+  if (!start || !end) return end;
+  return end.getTime() < start.getTime() ? start : end;
+}
 
 const DEFAULT_SUBSCRIPTION_DAYS = 30;
 
 /** =========================
  *  ⬆ 기존 부분 유지
- *  ⬇ 상단에 '메뉴 관리' 섹션 추가
+ *  ⬇ 상단에 '메뉴 관리' 섹션 (로직 보강)
  * ========================= */
 
-// 프로젝트 실제 사이드바 slug 목록에 맞춰 필요 시 조정
+// 실제 사이드바 slug 목록에 맞게 필요 시 조정
 type MenuConfig = { slug: string; label: string };
 const ALL_MENUS: MenuConfig[] = [
   { slug: 'convert', label: 'Data Convert' },
@@ -46,6 +83,35 @@ const ALL_MENUS: MenuConfig[] = [
   { slug: 'random',  label: 'Random' },
   { slug: 'admin',   label: 'Admin' },
 ];
+
+/** =========================
+ *  안전 유틸: Firestore 400 방지
+ * ========================= */
+
+/** 배열에서 undefined/null/공백 제거 + 문자열로 강제 */
+function sanitizeSlugArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map(v => (typeof v === 'string' ? v : String(v ?? '').trim()))
+    .filter(v => v.length > 0);
+}
+
+/** 객체 트리에서 undefined 필드를 제거(배열은 요소 단위로만 정제) */
+function pruneUndefined<T extends Record<string, any>>(obj: T): T {
+  const walk = (v: any): any => {
+    if (v === undefined) return undefined;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const out: any = {};
+      for (const k of Object.keys(v)) {
+        const w = walk(v[k]);
+        if (w !== undefined) out[k] = w; // undefined 키는 제거
+      }
+      return out;
+    }
+    return v;
+  };
+  return walk(obj);
+}
 
 export default function AdminPage() {
   const { role: myRole, loading } = useUser();
@@ -60,14 +126,16 @@ export default function AdminPage() {
     const ref = doc(db, 'settings', 'uploadPolicy');
     const unsub = onSnapshot(ref, (snap) => {
       const data = snap.data() as any | undefined;
-      const arr = data?.navigation?.disabled;
-      setNavDisabled(Array.isArray(arr) ? arr : []);
+      // 서버 스키마: { navigation: { disabled: string[] }, updatedAt?: Timestamp }
+      const arr = Array.isArray(data?.navigation?.disabled) ? data?.navigation?.disabled : [];
+      setNavDisabled(sanitizeSlugArray(arr));
     });
     return () => unsub();
   }, [loading, myRole]);
 
   const disabledSet = useMemo(() => new Set(navDisabled), [navDisabled]);
 
+  // 개별 메뉴 ON/OFF 토글
   const toggleMenu = (slug: string) => {
     setNavDisabled(prev => {
       const s = new Set(prev);
@@ -76,11 +144,26 @@ export default function AdminPage() {
     });
   };
 
+  // ✅ 저장: undefined/잘못된 타입 제거 + serverTimestamp 포함
   const saveMenuDisabled = async () => {
     setSavingNav(true);
     try {
+      // 1) 최종 배열 정제(문자열 강제, 공백 제거)
+      const cleaned = sanitizeSlugArray(navDisabled);
+
+      // 2) Firestore 규칙과 맞춘 payload 구성 (undefined 제거)
+      const payload = pruneUndefined({
+        navigation: { disabled: cleaned },  // string[] 보장
+        updatedAt: serverTimestamp(),       // Timestamp (규칙에서 허용)
+      });
+
+      // 3) 사전 로그(네트워크 탭에서 400 발생 시 payload 확인용)
+      console.log('[ADMIN][uploadPolicy] payload:', payload);
+
+      // 4) merge 저장
       const ref = doc(db, 'settings', 'uploadPolicy');
-      await setDoc(ref, { navigation: { disabled: navDisabled } }, { merge: true });
+      await setDoc(ref, payload, { merge: true });
+
       alert('메뉴 설정이 저장되었습니다.');
     } catch (e: any) {
       console.error('[ADMIN NAV SAVE][ERR]', e?.code, e?.message, e);
@@ -128,7 +211,12 @@ export default function AdminPage() {
 
   const toggleSubscribed = (r: UserRow, checked: boolean) => {
     if (!checked) {
-      patchRow(r.uid, { isSubscribed: false, subscriptionStartAt: null, subscriptionEndAt: null, remainingDays: null });
+      patchRow(r.uid, {
+        isSubscribed: false,
+        subscriptionStartAt: null,
+        subscriptionEndAt: null,
+        remainingDays: null
+      });
       return;
     }
     const startDate = r.subscriptionStartAt?.toDate() ?? todayKST();
@@ -153,7 +241,11 @@ export default function AdminPage() {
     const currEnd = r.subscriptionEndAt?.toDate() ?? null;
     const clampedEnd = clampEndAfterStart(newStart, currEnd);
     const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-    patchRow(r.uid, { subscriptionStartAt: newStart ? Timestamp.fromDate(newStart) : null, subscriptionEndAt: endTs, remainingDays: calcRemainingDaysFromEnd(endTs) });
+    patchRow(r.uid, {
+      subscriptionStartAt: newStart ? Timestamp.fromDate(newStart) : null,
+      subscriptionEndAt: endTs,
+      remainingDays: calcRemainingDaysFromEnd(endTs)
+    });
   };
 
   const changeEndDate = (r: UserRow, input: string) => {
@@ -161,7 +253,10 @@ export default function AdminPage() {
     const start = r.subscriptionStartAt?.toDate() ?? null;
     const clampedEnd = clampEndAfterStart(start, newEnd);
     const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-    patchRow(r.uid, { subscriptionEndAt: endTs, remainingDays: calcRemainingDaysFromEnd(endTs) });
+    patchRow(r.uid, {
+      subscriptionEndAt: endTs,
+      remainingDays: calcRemainingDaysFromEnd(endTs)
+    });
   };
 
   const handleSave = async (row: UserRow) => {
@@ -172,8 +267,9 @@ export default function AdminPage() {
       let endTs: Timestamp | null = row.subscriptionEndAt ?? null;
       let isSubscribed = !!row.isSubscribed;
 
-      if (!isSubscribed) { startTs = null; endTs = null; }
-      else {
+      if (!isSubscribed) {
+        startTs = null; endTs = null;
+      } else {
         const startD = startTs?.toDate() ?? null;
         const endD = endTs?.toDate() ?? null;
         const clampedEnd = clampEndAfterStart(startD, endD);
@@ -213,7 +309,7 @@ export default function AdminPage() {
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
         <h2 className="text-lg font-bold mb-2">메뉴 관리 (비활성화)</h2>
         <p className="text-sm text-slate-600 mb-4">
-          체크된 메뉴는 사이드바에서 <b>보여지되 클릭이 차단</b>됩니다. (<code>settings/uploadPolicy.navigation.disabled</code>)
+          체크된 메뉴는 사이드바에서 <b>보여지되 클릭이 차단</b>됩니다. (<code>settings/uploadPolicy.navigation.disabled: string[]</code>)
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
@@ -293,21 +389,49 @@ export default function AdminPage() {
                     </select>
                   </td>
                   <td className="py-2 pr-4 align-top">
-                    <input type="checkbox" className="w-4 h-4" checked={!!r.isSubscribed} onChange={(e) => toggleSubscribed(r, e.target.checked)} />
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4"
+                      checked={!!r.isSubscribed}
+                      onChange={(e) => toggleSubscribed(r, e.target.checked)}
+                    />
                   </td>
                   <td className="py-2 pr-4 align-top">
-                    <input type="date" className="border rounded px-2 py-1 bg-transparent" value={tsToInputDate(r.subscriptionStartAt)} onChange={(e) => changeStartDate(r, e.target.value)} disabled={!r.isSubscribed} />
+                    <input
+                      type="date"
+                      className="border rounded px-2 py-1 bg-transparent"
+                      value={tsToInputDate(r.subscriptionStartAt)}
+                      onChange={(e) => changeStartDate(r, e.target.value)}
+                      disabled={!r.isSubscribed}
+                    />
                   </td>
                   <td className="py-2 pr-4 align-top">
-                    <input type="date" className="border rounded px-2 py-1 bg-transparent" value={tsToInputDate(r.subscriptionEndAt)} onChange={(e) => changeEndDate(r, e.target.value)} disabled={!r.isSubscribed} />
+                    <input
+                      type="date"
+                      className="border rounded px-2 py-1 bg-transparent"
+                      value={tsToInputDate(r.subscriptionEndAt)}
+                      onChange={(e) => changeEndDate(r, e.target.value)}
+                      disabled={!r.isSubscribed}
+                    />
                   </td>
                   <td className="py-2 pr-4 align-top">
-                    <input type="number" min={0} className="w-24 border rounded px-2 py-1 bg-transparent" value={r.remainingDays ?? ''} onChange={(e) => changeRemainingDays(r, e.target.value)} disabled={!r.isSubscribed} />
+                    <input
+                      type="number"
+                      min={0}
+                      className="w-24 border rounded px-2 py-1 bg-transparent"
+                      value={r.remainingDays ?? ''}
+                      onChange={(e) => changeRemainingDays(r, e.target.value)}
+                      disabled={!r.isSubscribed}
+                    />
                   </td>
                   <td className="py-2 pr-4 align-top">{r.uniqueId ?? '-'}</td>
                   <td className="py-2 pr-4 align-top">{r.joinedAt ? tsToInputDate(r.joinedAt) : '-'}</td>
                   <td className="py-2 pr-4 align-top">
-                    <button onClick={() => handleSave(r)} className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-50" disabled={saving === r.uid}>
+                    <button
+                      onClick={() => handleSave(r)}
+                      className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
+                      disabled={saving === r.uid}
+                    >
                       {saving === r.uid ? '저장 중…' : '저장'}
                     </button>
                   </td>
