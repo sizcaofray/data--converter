@@ -538,7 +538,7 @@ export default function AdminPage() {
               <div>myRole(from context): {String(dbg.myRole ?? myRole)}</div>
               <div>authUid: {dbg.authUid ?? '-'}</div>
               <div>authEmail: {dbg.authEmail ?? '-'}</div>
-              <div>users/{uid}.role: {String(dbg.usersDocRole ?? '-')}</div>
+              <div>{'users/{uid}.role'}: {String(dbg.usersDocRole ?? '-')}</div>
               <div>uploadPolicy path: {dbg.uploadPolicyPath ?? 'settings/uploadPolicy'}</div>
             </div>
             <div className="overflow-auto max-h-56">
