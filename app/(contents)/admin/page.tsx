@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * 관리자 - 사용자 관리 + 메뉴 비활성화 관리
- * - UI는 그대로 유지하고, 저장 로직만 안전하게 보강
- * - Firestore 400(Bad Request) 방지: undefined 제거, 타입 강제, payload 로그 추가
+ * 관리자 - 사용자 관리 + 메뉴 비활성화 관리 (디버그 로그 강화판)
+ * - 어디서 막히는지 단계별로 확인할 수 있도록 콘솔 로그를 추가했습니다.
+ * - 저장 직전 사용자 권한(UID/이메일/클레임), users/{uid}.role, payload, 경로, Firestore SDK 상세 에러를 모두 출력합니다.
  */
 
 import { useEffect, useState, useMemo } from 'react';
@@ -11,10 +11,13 @@ import { useUser } from '@/contexts/UserContext';
 import { db } from '@/lib/firebase/firebase';
 import {
   collection, getDocs, updateDoc, doc, Timestamp,
-  onSnapshot, setDoc, serverTimestamp, // ✅ timestamp 추가
+  onSnapshot, setDoc, serverTimestamp, getDoc,
+  setLogLevel
 } from 'firebase/firestore';
-// 개발 중 일시적으로 상세 로그가 필요하면 활성화하세요.
-// import { setLogLevel } from 'firebase/firestore'; setLogLevel('debug');
+import { getAuth, getIdTokenResult } from 'firebase/auth';
+
+// 🔎 Firestore 내부 로그까지 보고 싶다면 주석 해제
+setLogLevel('debug');
 
 /** =========================
  *  기존 타입/유틸 (원본 유지)
@@ -71,11 +74,8 @@ function clampEndAfterStart(start: Date | null, end: Date | null) {
 const DEFAULT_SUBSCRIPTION_DAYS = 30;
 
 /** =========================
- *  ⬆ 기존 부분 유지
- *  ⬇ 상단에 '메뉴 관리' 섹션 (로직 보강)
+ *  사이드바 메뉴 목록 (필요 시 slug만 맞추세요)
  * ========================= */
-
-// 실제 사이드바 slug 목록에 맞게 필요 시 조정
 type MenuConfig = { slug: string; label: string };
 const ALL_MENUS: MenuConfig[] = [
   { slug: 'convert', label: 'Data Convert' },
@@ -87,16 +87,12 @@ const ALL_MENUS: MenuConfig[] = [
 /** =========================
  *  안전 유틸: Firestore 400 방지
  * ========================= */
-
-/** 배열에서 undefined/null/공백 제거 + 문자열로 강제 */
 function sanitizeSlugArray(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   return input
     .map(v => (typeof v === 'string' ? v : String(v ?? '').trim()))
     .filter(v => v.length > 0);
 }
-
-/** 객체 트리에서 undefined 필드를 제거(배열은 요소 단위로만 정제) */
 function pruneUndefined<T extends Record<string, any>>(obj: T): T {
   const walk = (v: any): any => {
     if (v === undefined) return undefined;
@@ -104,7 +100,7 @@ function pruneUndefined<T extends Record<string, any>>(obj: T): T {
       const out: any = {};
       for (const k of Object.keys(v)) {
         const w = walk(v[k]);
-        if (w !== undefined) out[k] = w; // undefined 키는 제거
+        if (w !== undefined) out[k] = w;
       }
       return out;
     }
@@ -113,29 +109,43 @@ function pruneUndefined<T extends Record<string, any>>(obj: T): T {
   return walk(obj);
 }
 
+// 안전 stringify (순환참조 방지)
+function safeStringify(o: any) {
+  const seen = new WeakSet();
+  return JSON.stringify(o, (k, v) => {
+    if (typeof v === 'object' && v !== null) {
+      if (seen.has(v)) return '[Circular]';
+      seen.add(v);
+    }
+    return v;
+  }, 2);
+}
+
 export default function AdminPage() {
   const { role: myRole, loading } = useUser();
 
-  // ===== [A] 메뉴 관리(비활성화 토글) 상태 =====
+  // ===== [A] 메뉴 관리 상태 =====
   const [navDisabled, setNavDisabled] = useState<string[]>([]);
   const [savingNav, setSavingNav] = useState(false);
 
-  // settings/uploadPolicy.navigation.disabled 구독
   useEffect(() => {
     if (loading || myRole !== 'admin') return;
     const ref = doc(db, 'settings', 'uploadPolicy');
     const unsub = onSnapshot(ref, (snap) => {
       const data = snap.data() as any | undefined;
-      // 서버 스키마: { navigation: { disabled: string[] }, updatedAt?: Timestamp }
-      const arr = Array.isArray(data?.navigation?.disabled) ? data?.navigation?.disabled : [];
-      setNavDisabled(sanitizeSlugArray(arr));
+      const arr = Array.isArray(data?.navigation?.disabled) ? data?.navigation?.disabled : data?.navigation?.disabled === true ? ['__all__'] : [];
+      // ↑ 규칙이 bool/array 둘 다 허용되므로 bool(true)이면 임시로 ['__all__']로 가정표시
+      const cleaned = sanitizeSlugArray(arr);
+      console.log('[ADMIN DEBUG] onSnapshot uploadPolicy:', data);
+      setNavDisabled(cleaned);
+    }, (err) => {
+      console.error('[ADMIN DEBUG] onSnapshot(uploadPolicy) ERROR:', err);
     });
     return () => unsub();
   }, [loading, myRole]);
 
   const disabledSet = useMemo(() => new Set(navDisabled), [navDisabled]);
 
-  // 개별 메뉴 ON/OFF 토글
   const toggleMenu = (slug: string) => {
     setNavDisabled(prev => {
       const s = new Set(prev);
@@ -144,36 +154,62 @@ export default function AdminPage() {
     });
   };
 
-  // ✅ 저장: undefined/잘못된 타입 제거 + serverTimestamp 포함
+  // ✅ 핵심: 저장 직전/직후 모든 상태를 기록
   const saveMenuDisabled = async () => {
     setSavingNav(true);
     try {
-      // 1) 최종 배열 정제(문자열 강제, 공백 제거)
+      const auth = getAuth();
+      const user = auth.currentUser;
+      console.log('[ADMIN DEBUG] saveMenuDisabled: START');
+      console.log('[ADMIN DEBUG] myRole(from context):', myRole);
+
+      if (!user) {
+        console.warn('[ADMIN DEBUG] No currentUser (미로그인)');
+        alert('로그인이 필요합니다.');
+        return;
+      }
+
+      const tokenRes = await getIdTokenResult(user, true);
+      console.log('[ADMIN DEBUG] auth uid/email:', user.uid, user.email);
+      console.log('[ADMIN DEBUG] token claims:', safeStringify(tokenRes.claims));
+
+      // rules에서 isAdmin()은 users/{uid}.role == 'admin' 만 봅니다.
+      const userDocRef = doc(db, 'users', user.uid);
+      const userDoc = await getDoc(userDocRef);
+      console.log('[ADMIN DEBUG] users/{uid} exists?:', userDoc.exists());
+      console.log('[ADMIN DEBUG] users/{uid}.data():', userDoc.data());
+      const roleOnDoc = userDoc.data()?.role;
+      console.log('[ADMIN DEBUG] users/{uid}.role:', roleOnDoc);
+
+      // payload 구성 & 로그
       const cleaned = sanitizeSlugArray(navDisabled);
-
-      // 2) Firestore 규칙과 맞춘 payload 구성 (undefined 제거)
       const payload = pruneUndefined({
-        navigation: { disabled: cleaned },  // string[] 보장
-        updatedAt: serverTimestamp(),       // Timestamp (규칙에서 허용)
+        navigation: { disabled: cleaned },   // 문자열 배열 기준
+        updatedAt: serverTimestamp(),
       });
+      console.log('[ADMIN DEBUG] uploadPolicy PATH:', 'settings/uploadPolicy');
+      console.log('[ADMIN DEBUG] payload before setDoc:', payload);
 
-      // 3) 사전 로그(네트워크 탭에서 400 발생 시 payload 확인용)
-      console.log('[ADMIN][uploadPolicy] payload:', payload);
-
-      // 4) merge 저장
+      // 실제 쓰기
       const ref = doc(db, 'settings', 'uploadPolicy');
       await setDoc(ref, payload, { merge: true });
 
+      console.log('[ADMIN DEBUG] setDoc OK');
       alert('메뉴 설정이 저장되었습니다.');
     } catch (e: any) {
-      console.error('[ADMIN NAV SAVE][ERR]', e?.code, e?.message, e);
+      // Firestore SDK 에러 상세 출력
+      console.error('[ADMIN NAV SAVE][ERR] code:', e?.code, 'name:', e?.name);
+      console.error('[ADMIN NAV SAVE][ERR] message:', e?.message);
+      console.error('[ADMIN NAV SAVE][ERR] customData:', safeStringify(e?.customData));
+      console.error('[ADMIN NAV SAVE][ERR] full:', e);
       alert(`메뉴 저장 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
     } finally {
       setSavingNav(false);
+      console.log('[ADMIN DEBUG] saveMenuDisabled: END');
     }
   };
 
-  // ===== [B] 기존 유저관리 상태/로직 (원본 유지) =====
+  // ===== [B] 기존 유저관리 =====
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
@@ -223,10 +259,10 @@ export default function AdminPage() {
     const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS);
     const endTs = clampEndAfterStart(startDate, endDate);
     patchRow(r.uid, {
-      isSubscribed: true,
-      subscriptionStartAt: Timestamp.fromDate(startDate),
-      subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
-      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
+        isSubscribed: true,
+        subscriptionStartAt: Timestamp.fromDate(startDate),
+        subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
+        remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
     });
   };
 
@@ -289,9 +325,6 @@ export default function AdminPage() {
     } finally { setSaving(null); }
   };
 
-  /** =========================
-   *  접근 제어(원본 유지)
-   * ========================= */
   if (loading) return <main className="p-6 text-sm text-gray-500">로딩 중...</main>;
   if (myRole !== 'admin') return (
     <main className="p-6">
@@ -300,12 +333,9 @@ export default function AdminPage() {
     </main>
   );
 
-  /** =========================
-   *  렌더링: 상단 '메뉴 관리' + 기존 '사용자 관리'
-   * ========================= */
   return (
     <main className="p-6 space-y-6">
-      {/* === 메뉴 관리(비활성화) 섹션: 기존 기능 위에 '추가'만 함 === */}
+      {/* 메뉴 관리 섹션 */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
         <h2 className="text-lg font-bold mb-2">메뉴 관리 (비활성화)</h2>
         <p className="text-sm text-slate-600 mb-4">
@@ -347,12 +377,12 @@ export default function AdminPage() {
             {savingNav ? '저장 중…' : '저장'}
           </button>
           <div className="text-xs text-slate-500 self-center">
-            문서: <code>settings/uploadPolicy</code> / 필드: <code>navigation.disabled: string[]</code> (merge 저장)
+            문서: <code>settings/uploadPolicy</code> / 필드: <code>navigation.disabled: string[]</code>
           </div>
         </div>
       </section>
 
-      {/* === 기존 사용자 관리 섹션 (원본 유지) === */}
+      {/* 사용자 관리 섹션 */}
       <section>
         <h1 className="text-xl font-semibold mb-4">사용자 관리</h1>
         {fetching ? (
