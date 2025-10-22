@@ -2,13 +2,13 @@
 
 /**
  * 관리자 페이지 (메뉴 비활성화 + 사용자 관리)
- * - 기존 UI는 유지
- * - "저장 중 permission-denied" 원인 파악을 위해 화면 디버그 패널 추가
- * - 저장 직전 권한/문서/페이로드를 가시화
+ * - UI/디자인은 유지, 로직만 보완
+ * - Firestore 규칙과 동일하게 "users/{uid}.role === 'admin'" 기준으로 관리자 판단
+ * - 디버그 패널에 context role vs users문서 role 동시 노출
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useUser } from '@/contexts/UserContext';
+import { useUser } from '@/contexts/UserContext'; // ← 기존 컨텍스트(표시용/보조)
 import { db } from '@/lib/firebase/firebase';
 import {
   collection,
@@ -22,7 +22,7 @@ import {
   getDoc,
   setLogLevel,
 } from 'firebase/firestore';
-import { getAuth, getIdTokenResult } from 'firebase/auth';
+import { getAuth, getIdTokenResult, onAuthStateChanged } from 'firebase/auth';
 
 // 필요 시 Firestore 내부 로그를 보려면 주석 해제
 // setLogLevel('debug');
@@ -41,6 +41,7 @@ interface UserRow {
   remainingDays?: number | null;
 }
 
+/** KST 자정 기준 도우미들 */
 function todayKST(): Date {
   const now = new Date();
   const kst = new Date(now.getTime() + 9 * 3600 * 1000);
@@ -83,6 +84,7 @@ function clampEndAfterStart(start: Date | null, end: Date | null) {
 
 const DEFAULT_SUBSCRIPTION_DAYS = 30;
 
+/** 메뉴 메타 */
 type MenuConfig = { slug: string; label: string };
 const ALL_MENUS: MenuConfig[] = [
   { slug: 'convert', label: 'Data Convert' },
@@ -91,7 +93,7 @@ const ALL_MENUS: MenuConfig[] = [
   { slug: 'admin', label: 'Admin' },
 ];
 
-// 안전 유틸들
+/** 안전 유틸 */
 function sanitizeSlugArray(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   return input
@@ -133,9 +135,46 @@ function safeStringify(o: any) {
 }
 
 export default function AdminPage() {
-  const { role: myRole, loading } = useUser();
+  const { role: myRoleFromContext, loading: userCtxLoading } = useUser();
 
-  // ── [A] 메뉴 관리 상태
+  // ── [A] users/{uid}.role을 직접 읽어 규칙과 동일 기준으로 관리자 판정
+  const [authUid, setAuthUid] = useState<string | null>(null);
+  const [usersDocRole, setUsersDocRole] = useState<Role | null>(null);
+  const [roleLoading, setRoleLoading] = useState(true); // users문서 역할 로딩 상태
+
+  useEffect(() => {
+    const auth = getAuth();
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setRoleLoading(true);
+      try {
+        if (!u) {
+          setAuthUid(null);
+          setUsersDocRole(null);
+          return;
+        }
+        setAuthUid(u.uid);
+
+        // 토큰 최신화(선택) — 클레임 쓰는 경우 대비
+        try {
+          await getIdTokenResult(u, true);
+        } catch (_) {}
+
+        // users/{uid}에서 role 읽기(※ 규칙의 관리자 판정과 동일 소스)
+        const uref = doc(db, 'users', u.uid);
+        const usnap = await getDoc(uref);
+        const r = (usnap.exists() ? (usnap.data() as any)?.role : null) as Role | null;
+        setUsersDocRole(r ?? null);
+      } finally {
+        setRoleLoading(false);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  /** 이 값 하나만 신뢰해서 관리자 여부를 판정한다(규칙과 동일) */
+  const isAdminRole = usersDocRole === 'admin';
+
+  // ── [B] 메뉴 관리 상태
   const [navDisabled, setNavDisabled] = useState<string[]>([]);
   const [savingNav, setSavingNav] = useState(false);
 
@@ -152,15 +191,14 @@ export default function AdminPage() {
     lastError?: { code?: any; message?: any; customData?: any } | null;
   }>({});
 
-  // uploadPolicy 구독
+  // uploadPolicy 구독 — 관리자일 때만
   useEffect(() => {
-    if (loading || myRole !== 'admin') return;
+    if (roleLoading || !isAdminRole) return;
     const ref = doc(db, 'settings', 'uploadPolicy');
     const unsub = onSnapshot(
       ref,
       (snap) => {
         const data = snap.data() as any | undefined;
-        // 규칙이 bool/list 혼용 허용될 수 있으므로 list만 수용
         const arr = Array.isArray(data?.navigation?.disabled) ? data?.navigation?.disabled : [];
         setNavDisabled(sanitizeSlugArray(arr));
       },
@@ -169,7 +207,7 @@ export default function AdminPage() {
       }
     );
     return () => unsub();
-  }, [loading, myRole]);
+  }, [roleLoading, isAdminRole]);
 
   const disabledSet = useMemo(() => new Set(navDisabled), [navDisabled]);
   const toggleMenu = (slug: string) => {
@@ -180,17 +218,15 @@ export default function AdminPage() {
     });
   };
 
-  // 권한/문서/페이로드 실시간 덤프 함수
+  // 권한/문서/페이로드 실시간 덤프(디버그 패널용)
   const dumpContext = async () => {
     const auth = getAuth();
     const user = auth.currentUser;
-    let authUid: string | null = null;
     let authEmail: string | null = null;
     let tokenClaims: any = null;
-    let usersDocRole: any = null;
+    let usersRole: any = usersDocRole;
 
     if (user) {
-      authUid = user.uid;
       authEmail = user.email ?? null;
       try {
         const tokenRes = await getIdTokenResult(user, true);
@@ -198,13 +234,7 @@ export default function AdminPage() {
       } catch (e: any) {
         tokenClaims = { error: e?.message || 'token error' };
       }
-      try {
-        const uref = doc(db, 'users', user.uid);
-        const usnap = await getDoc(uref);
-        usersDocRole = usnap.exists() ? (usnap.data() as any)?.role : '(users/{uid} 문서 없음)';
-      } catch (e: any) {
-        usersDocRole = { error: e?.message || 'users doc read error' };
-      }
+      // usersDocRole은 별도 상태로 이미 읽어 둠
     }
 
     const cleaned = sanitizeSlugArray(navDisabled);
@@ -215,23 +245,26 @@ export default function AdminPage() {
 
     setDbg((d) => ({
       ...d,
-      myRole,
+      myRole: myRoleFromContext, // 컨텍스트 역할(참고용)
       authUid,
       authEmail,
       tokenClaims,
-      usersDocRole,
+      usersDocRole: usersRole,   // 규칙과 동일한 판단 근거
       uploadPolicyPath: 'settings/uploadPolicy',
       uploadPolicyPayload: payload,
     }));
   };
 
-  // 저장
+  // 저장 — 관리자(role 기준)일 때만 수행
   const saveMenuDisabled = async () => {
+    if (!isAdminRole) {
+      alert('저장 권한이 없습니다. (users/{uid}.role이 admin이어야 합니다)');
+      return;
+    }
     setSavingNav(true);
-    await dumpContext(); // 저장 직전에 현재 상태를 디버그 패널에 반영
+    await dumpContext(); // 저장 직전 디버그 패널 갱신
     try {
       const ref = doc(db, 'settings', 'uploadPolicy');
-      // 디버그 패널에 표시된 payload 그대로 사용
       const payload = ((): any => {
         const cleaned = sanitizeSlugArray(navDisabled);
         return pruneUndefined({
@@ -254,13 +287,13 @@ export default function AdminPage() {
     }
   };
 
-  // ── [B] 기존 사용자 관리
+  // ── [C] 사용자 관리(기존 유지) — 관리자일 때만 로드
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
 
   useEffect(() => {
-    if (loading || myRole !== 'admin') return;
+    if (roleLoading || !isAdminRole) return;
     (async () => {
       setFetching(true);
       try {
@@ -287,7 +320,7 @@ export default function AdminPage() {
         setFetching(false);
       }
     })();
-  }, [loading, myRole]);
+  }, [roleLoading, isAdminRole]);
 
   const patchRow = (uid: string, patch: Partial<UserRow>) =>
     setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, ...patch } : r)));
@@ -374,13 +407,15 @@ export default function AdminPage() {
     }
   };
 
-  if (loading)
+  // ── 로딩/권한 가드 (규칙과 동일 기준으로 처리)
+  if (userCtxLoading || roleLoading)
     return <main className="p-6 text-sm text-gray-500">로딩 중...</main>;
-  if (myRole !== 'admin')
+
+  if (!isAdminRole)
     return (
       <main className="p-6">
         <h1 className="text-xl font-semibold mb-4">관리자 페이지</h1>
-        <p className="text-red-600 dark:text-red-400">⛔ 관리자 권한이 없습니다.</p>
+        <p className="text-red-600 dark:text-red-400">⛔ 관리자 권한이 없습니다. (users/{{uid}}.role 기준)</p>
       </main>
     );
 
@@ -529,17 +564,16 @@ export default function AdminPage() {
         )}
       </section>
 
-      {/* ── 디버그 패널: 화면 표시용 (콘솔 무시/차단 상황 대비) ── */}
+      {/* 디버그 패널 */}
       {showDebug && (
         <section className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-slate-800 dark:bg-amber-100/30 dark:text-amber-50">
           <div className="mb-2 font-semibold">디버그 패널</div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 whitespace-pre-wrap">
             <div>
-              <div>myRole(from context): {String(dbg.myRole ?? myRole)}</div>
-              <div>authUid: {dbg.authUid ?? '-'}</div>
-              <div>authEmail: {dbg.authEmail ?? '-'}</div>
-              <div>{'users/{uid}.role'}: {String(dbg.usersDocRole ?? '-')}</div>
-              <div>uploadPolicy path: {dbg.uploadPolicyPath ?? 'settings/uploadPolicy'}</div>
+              {/* 컨텍스트/문서 역할 동시 노출로 불일치 즉시 확인 */}
+              <div>myRole(from context): {String(myRoleFromContext)}</div>
+              <div>usersDocRole(from users/{{uid}}): {String(usersDocRole ?? '-')}</div>
+              <div>authUid: {authUid ?? '-'}</div>
             </div>
             <div className="overflow-auto max-h-56">
               <div className="font-semibold">tokenClaims</div>
