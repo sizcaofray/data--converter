@@ -336,7 +336,7 @@ export default function AdminPage() {
       return;
     }
     const startDate = r.subscriptionStartAt?.toDate() ?? todayKST();
-    const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS);
+    aconst endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS);
     const endTs = clampEndAfterStart(startDate, endDate);
     patchRow(r.uid, {
       isSubscribed: true,
@@ -415,7 +415,9 @@ export default function AdminPage() {
     return (
       <main className="p-6">
         <h1 className="text-xl font-semibold mb-4">관리자 페이지</h1>
-        <p className="text-red-600 dark:text-red-400">⛔ 관리자 권한이 없습니다. (users/{{uid}}.role 기준)</p>
+        <p className="text-red-600 dark:text-red-400">
+          ⛔ 관리자 권한이 없습니다. (<code>users/{'{'}uid{'}'}.role</code> 기준)
+        </p>
       </main>
     );
 
@@ -572,7 +574,7 @@ export default function AdminPage() {
             <div>
               {/* 컨텍스트/문서 역할 동시 노출로 불일치 즉시 확인 */}
               <div>myRole(from context): {String(myRoleFromContext)}</div>
-              <div>usersDocRole(from users/{{uid}}): {String(usersDocRole ?? '-')}</div>
+              <div>usersDocRole(from users/{'{'}uid{'}'}): {String(usersDocRole ?? '-')}</div>
               <div>authUid: {authUid ?? '-'}</div>
             </div>
             <div className="overflow-auto max-h-56">
