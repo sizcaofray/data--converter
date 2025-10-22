@@ -2,13 +2,13 @@
 
 /**
  * 관리자 페이지 (메뉴 비활성화 + 사용자 관리)
- * - UI/디자인은 유지, 로직만 보완
+ * - UI/디자인 유지, 로직만 보완
  * - Firestore 규칙과 동일하게 "users/{uid}.role === 'admin'" 기준으로 관리자 판단
  * - 디버그 패널에 context role vs users문서 role 동시 노출
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useUser } from '@/contexts/UserContext'; // ← 기존 컨텍스트(표시용/보조)
+import { useUser } from '@/contexts/UserContext'; // 컨텍스트(표시용/보조)
 import { db } from '@/lib/firebase/firebase';
 import {
   collection,
@@ -20,11 +20,11 @@ import {
   setDoc,
   serverTimestamp,
   getDoc,
-  setLogLevel,
+  // setLogLevel,
 } from 'firebase/firestore';
 import { getAuth, getIdTokenResult, onAuthStateChanged } from 'firebase/auth';
 
-// 필요 시 Firestore 내부 로그를 보려면 주석 해제
+// Firestore 내부 로그 필요 시 주석 해제
 // setLogLevel('debug');
 
 type Role = 'free' | 'basic' | 'premium' | 'admin';
@@ -154,7 +154,7 @@ export default function AdminPage() {
         }
         setAuthUid(u.uid);
 
-        // 토큰 최신화(선택) — 클레임 쓰는 경우 대비
+        // 토큰 최신화(선택) — 커스텀 클레임 사용 대비
         try {
           await getIdTokenResult(u, true);
         } catch (_) {}
@@ -234,7 +234,6 @@ export default function AdminPage() {
       } catch (e: any) {
         tokenClaims = { error: e?.message || 'token error' };
       }
-      // usersDocRole은 별도 상태로 이미 읽어 둠
     }
 
     const cleaned = sanitizeSlugArray(navDisabled);
@@ -336,7 +335,7 @@ export default function AdminPage() {
       return;
     }
     const startDate = r.subscriptionStartAt?.toDate() ?? todayKST();
-    aconst endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS);
+    const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS); // ← 오타 수정
     const endTs = clampEndAfterStart(startDate, endDate);
     patchRow(r.uid, {
       isSubscribed: true,
