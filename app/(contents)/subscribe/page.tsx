@@ -1,20 +1,28 @@
-'use client'; // 반드시 있어야 페이지가 클라이언트로 동작합니다.
+'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import BootpayScript from '@/components/BootpayScript';
 import { useUser } from '@/contexts/UserContext';
 
+// 🔧 타입 정의 (핵심)
+type PlanKey = 'free' | 'basic' | 'premium';
+interface Plan {
+  name: string;
+  price: number;
+  key: PlanKey;
+  description: string;
+}
+
 export default function SubscribePage() {
   const [showPopup, setShowPopup] = useState(false);
   const { role } = useUser();
 
-  // 디버그/쿼리
   const sp = useSearchParams();
   const debugOn = sp?.get('debug') === '1';
   const openQS = sp?.get('open') === '1';
   const upgradeQS = sp?.get('upgrade') === 'premium';
-  const roleNorm = String(role).toLowerCase();
+  const roleNorm = String(role).toLowerCase() as PlanKey | 'admin';
   const dbg = (...args: any[]) => console.debug('[SubscribePage]', ...args);
 
   // /subscribe?open=1 → 자동 팝업 오픈
@@ -30,17 +38,21 @@ export default function SubscribePage() {
     window.onunhandledrejection = (e) => { dbg('unhandledrejection', e?.reason || e); };
   }, [debugOn, roleNorm, openQS, upgradeQS]);
 
-  const plans = useMemo(() => ([
-    { name: '무료',    price: 0,      key: 'free',    description: '기본 변환 (한번에 1개씩 가능)' },
-    { name: 'Basic',   price: 10000,  key: 'basic',   description: '파일 처리 개수 제한 없음(Max : 50)' },
-    { name: 'Premium', price: 100000, key: 'premium', description: 'Validation, Report 제공' },
-  ]), []);
+  // ⬇⬇⬇ 여기에서 Plan 타입으로 정확히 고정 (key가 'free' | 'basic' | 'premium' 으로 추론됨)
+  const plans: ReadonlyArray<Plan> = useMemo(
+    () => [
+      { name: '무료',    price: 0,      key: 'free',    description: '기본 변환 (한번에 1개씩 가능)' },
+      { name: 'Basic',   price: 10000,  key: 'basic',   description: '파일 처리 개수 제한 없음(Max : 50)' },
+      { name: 'Premium', price: 100000, key: 'premium', description: 'Validation, Report 제공' },
+    ],
+    [],
+  );
 
-  const disabled = (key: 'free'|'basic'|'premium') =>
+  // Basic 사용자는 Premium만 가능
+  const disabled = (key: PlanKey): boolean =>
     roleNorm === 'basic' && key !== 'premium';
 
-  const handleSelect = (plan: typeof plans[number]) => {
-    // Basic 사용자면 Premium만 결제 가능
+  const handleSelect = (plan: Plan) => {
     if (disabled(plan.key)) { if (debugOn) dbg('CLICK disabled plan', plan.key); return; }
     try {
       if (!(window as any).Bootpay) {
@@ -49,7 +61,7 @@ export default function SubscribePage() {
         return;
       }
       if (debugOn) dbg('REQUEST PAY', { plan });
-      // TODO: 실제 Bootpay 연동 함수 호출 위치
+      // TODO: 실제 Bootpay 연동 함수 호출
       alert(`${plan.name} 결제를 진행합니다.`);
       setShowPopup(false);
     } catch (e) {
