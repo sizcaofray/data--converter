@@ -5,7 +5,6 @@ import { useSearchParams } from 'next/navigation';
 import BootpayScript from '@/components/BootpayScript';
 import { useUser } from '@/contexts/UserContext';
 
-// 🔧 타입 정의 (핵심)
 type PlanKey = 'free' | 'basic' | 'premium';
 interface Plan {
   name: string;
@@ -23,50 +22,70 @@ export default function SubscribePage() {
   const openQS = sp?.get('open') === '1';
   const upgradeQS = sp?.get('upgrade') === 'premium';
   const roleNorm = String(role).toLowerCase() as PlanKey | 'admin';
-  const dbg = (...args: any[]) => console.debug('[SubscribePage]', ...args);
 
-  // /subscribe?open=1 → 자동 팝업 오픈
+  // helper log function
+  const log = (...msg: any[]) => {
+    console.log('[Subscribe Debug]', ...msg);
+  };
+
+  // 쿼리로 open=1 들어오면 자동 팝업
   useEffect(() => {
-    if (openQS) { setShowPopup(true); if (debugOn) dbg('AUTO OPEN POPUP via ?open=1'); }
-  }, [openQS, debugOn]);
+    if (openQS) {
+      log('자동 팝업 오픈 조건 충족 (open=1)');
+      setShowPopup(true);
+    }
+  }, [openQS]);
 
-  // 마운트 로그
+  // BootpayScript 로드 상태 모니터링
   useEffect(() => {
-    if (!debugOn) return;
-    dbg('MOUNT', { role: roleNorm, openQS, upgradeQS, bootpayPresent: !!(window as any).Bootpay });
-    window.onerror = (msg, src, line, col, err) => { dbg('window.onerror', { msg, src, line, col, err }); return false; };
-    window.onunhandledrejection = (e) => { dbg('unhandledrejection', e?.reason || e); };
-  }, [debugOn, roleNorm, openQS, upgradeQS]);
+    const timer = setInterval(() => {
+      if ((window as any).Bootpay) {
+        log('✅ Bootpay 객체 로드 확인 완료');
+        clearInterval(timer);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
-  // ⬇⬇⬇ 여기에서 Plan 타입으로 정확히 고정 (key가 'free' | 'basic' | 'premium' 으로 추론됨)
-  const plans: ReadonlyArray<Plan> = useMemo(
+  const plans: Plan[] = useMemo(
     () => [
-      { name: '무료',    price: 0,      key: 'free',    description: '기본 변환 (한번에 1개씩 가능)' },
-      { name: 'Basic',   price: 10000,  key: 'basic',   description: '파일 처리 개수 제한 없음(Max : 50)' },
+      { name: '무료', price: 0, key: 'free', description: '기본 변환 (한번에 1개씩 가능)' },
+      { name: 'Basic', price: 10000, key: 'basic', description: '파일 처리 개수 제한 없음(Max : 50)' },
       { name: 'Premium', price: 100000, key: 'premium', description: 'Validation, Report 제공' },
     ],
-    [],
+    []
   );
 
-  // Basic 사용자는 Premium만 가능
-  const disabled = (key: PlanKey): boolean =>
-    roleNorm === 'basic' && key !== 'premium';
+  const disabled = (key: PlanKey) => roleNorm === 'basic' && key !== 'premium';
 
   const handleSelect = (plan: Plan) => {
-    if (disabled(plan.key)) { if (debugOn) dbg('CLICK disabled plan', plan.key); return; }
+    log('선택한 플랜:', plan.key);
+
+    if (disabled(plan.key)) {
+      log('⚠️ Basic 유저의 비활성화 플랜 클릭 차단');
+      alert('Basic 사용자는 Premium만 결제 가능합니다.');
+      return;
+    }
+
     try {
-      if (!(window as any).Bootpay) {
-        if (debugOn) dbg('Bootpay not loaded');
-        alert('결제 모듈이 아직 로드되지 않았습니다. (HTTPS 권장)');
+      const bootpay = (window as any).Bootpay;
+      if (!bootpay) {
+        log('❌ Bootpay 객체 없음 — 로드되지 않음');
+        alert('결제 모듈이 아직 로드되지 않았습니다. (HTTPS 환경 필요)');
         return;
       }
-      if (debugOn) dbg('REQUEST PAY', { plan });
-      // TODO: 실제 Bootpay 연동 함수 호출
+
+      log('✅ Bootpay 결제 요청 시작');
       alert(`${plan.name} 결제를 진행합니다.`);
+
+      // 실제 Bootpay 호출 (시뮬레이션)
+      // bootpay.request({ ... });
+
       setShowPopup(false);
+      log('결제 팝업 닫힘');
     } catch (e) {
-      console.error(e);
-      alert('결제 중 오류가 발생했습니다.');
+      console.error('❌ 결제 중 오류 발생', e);
+      alert('결제 중 오류가 발생했습니다. 콘솔 로그를 확인하세요.');
     }
   };
 
@@ -80,7 +99,10 @@ export default function SubscribePage() {
       </p>
 
       <button
-        onClick={() => { setShowPopup(true); if (debugOn) dbg('OPEN POPUP (button)'); }}
+        onClick={() => {
+          setShowPopup(true);
+          log('수동 구독 팝업 열기 클릭됨');
+        }}
         className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition"
       >
         구독하기
@@ -89,14 +111,20 @@ export default function SubscribePage() {
       {showPopup && (
         <div
           className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center"
-          onClick={() => { setShowPopup(false); if (debugOn) dbg('CLOSE POPUP (overlay)'); }}
+          onClick={() => {
+            setShowPopup(false);
+            log('팝업 영역 클릭 → 닫힘');
+          }}
         >
           <div
             className="bg-white text-slate-900 dark:bg-gray-900 dark:text-white p-6 rounded-lg shadow-xl w-[95%] max-w-5xl relative"
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              onClick={() => { setShowPopup(false); if (debugOn) dbg('CLOSE POPUP (x)'); }}
+              onClick={() => {
+                setShowPopup(false);
+                log('팝업 닫기 버튼 클릭');
+              }}
               className="absolute top-2 right-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 text-xl"
               aria-label="닫기"
             >
@@ -134,22 +162,13 @@ export default function SubscribePage() {
                           {plan.price === 0 ? '무료' : `${plan.price.toLocaleString()}원`}
                         </div>
                       </div>
-                      <p className="text-sm text-gray-500 dark:text-gray-300">
-                        {plan.description}
-                      </p>
+                      <p className="text-sm text-gray-500 dark:text-gray-300">{plan.description}</p>
                     </div>
                   </div>
                 );
               })}
             </div>
           </div>
-        </div>
-      )}
-
-      {/* 디버그 오버레이: ?debug=1 일 때만 표시(레이아웃 영향 없음) */}
-      {debugOn && (
-        <div className="fixed bottom-2 right-2 z-[9999] text-[11px] bg-black/70 text-white px-2 py-1 rounded pointer-events-none">
-          role:{roleNorm} · openQS:{String(openQS)} · upgradeQS:{String(upgradeQS)} · bootpay:{String(!!(window as any).Bootpay)}
         </div>
       )}
     </main>
