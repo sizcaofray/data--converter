@@ -1,335 +1,255 @@
 'use client';
+
 /**
  * components/LogoutHeader.tsx
- * -----------------------------------------------------------------------------
- * ✅ 표시 규칙(최종)
- *  - 오직 하나의 배지:
- *      · 만료일 존재  → "만료일 YYYY-MM-DD (N일)"   // 마지막날 24:00 포함
- *      · 만료일 없음/경과 → "만료일 0일"
- *
- * ✅ 방어/디버깅
- *  - 다양한 만료일 키 폴백 + 컨텍스트에서 못 찾으면 Firestore users/{uid} 1회 조회
- *  - DEBUG 로그: 어떤 키가 잡혔는지/최종 배지 문자열
- *  - 디자인/마크업/클래스 변경 없음
- * -----------------------------------------------------------------------------
+ * ──────────────────────────────────────────────────────────────────────────
+ * - 만료(남은 일수 ≤ 0) → "구독"
+ * - 구독 중 role==='basic' → "업그레이드"
+ * - 구독 중 role in {premium, admin} → "구독관리"
+ * - 팝업 컨텍스트 없으면 /subscribe?open=1 로 라우팅
+ * - ?debug=1 로 접속 시 콘솔 로그 + 우하단 작은 디버그 오버레이 표시
+ *   (레이아웃 영향 없음)
  */
 
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-
-// Firebase
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { auth, db } from '@/lib/firebase/firebase';
 import {
   onAuthStateChanged,
   setPersistence,
   browserLocalPersistence,
+  signOut,
   GoogleAuthProvider,
   signInWithPopup,
-  signOut,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { doc, updateDoc, serverTimestamp, getDoc } from 'firebase/firestore';
-
-// Contexts
-import { useSubscribePopup } from '@/contexts/SubscribePopupContext';
+import { doc, getDoc } from 'firebase/firestore';
 import { useUser } from '@/contexts/UserContext';
+import { useSubscribePopup } from '@/contexts/SubscribePopupContext';
 
-// ─────────────────────────────────────────────────────────────────────────────
-const DEBUG = true; // 배포 시 false 권장
-// ─────────────────────────────────────────────────────────────────────────────
-
-// 날짜 유틸
-const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-const fmtDate = (dt: Date) => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-
-/** 마지막날 24:00까지 포함한 "남은 일수" 계산 (최소 0) */
-const remainingDaysInclusive = (end: Date | null | undefined): number => {
-  if (!end) return 0;
-  const dayMs = 24 * 60 * 60 * 1000;
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const endNextDayStart = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 0, 0, 0, 0);
-  const diff = endNextDayStart.getTime() - todayStart.getTime();
-  if (!Number.isFinite(diff)) return 0;
-  const days = Math.ceil(diff / dayMs);
-  return days > 0 ? days : 0;
+/* ───────── 디버그 유틸 ───────── */
+const useDebugFlag = () => {
+  const sp = useSearchParams();
+  const q = sp?.get('debug');
+  const [on, setOn] = useState<boolean>(q === '1');
+  useEffect(() => { if (q === '1') setOn(true); }, [q]);
+  return on;
 };
+const dbg = (...args: any[]) => console.debug('[LogoutHeader]', ...args);
 
-/** Date 파싱(숫자/문자열/Firestore Timestamp 등) */
-const toDateSafe = (v: any): Date | null => {
-  if (!v) return null;
-  if (v?.toDate) {
-    const d = v.toDate();
-    return isNaN(d.getTime()) ? null : d;
-  }
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d;
-};
-
-const coalesce = (...vals: any[]) => vals.find((x) => x !== undefined && x !== null);
-
-/** 만료일 후보 키(확장) */
+/* ───────── 만료일 유틸 ───────── */
 const END_KEYS = [
-  'subscriptionEndAt',
-  'subscriptionEndsAt',
-  'subscriptionEndDate',
-  'endAt',
-  'endsAt',
-  'endDate',
-  'end_date',
-  'expiresAt',
-  'expiryAt',
-  'expiredAt',
-  'validUntil',
-  'validTill',
-  'paidUntil',
-  'paidUntilAt',
-  'subEndAt',
-  'subEndsAt',
-  'subEndDate',
-  'billingEndAt',
-  'billingEndsAt',
-  'planEndAt',
-  'planEndsAt',
+  'endAt', 'endsAt', 'endDate', 'expireAt', 'expiredAt', 'paidUntil',
+  'subscriptionEnd', 'planEnd', 'basicEnd', 'premiumEnd',
 ];
+
+const toDateSafe = (v: any): Date | null => {
+  try {
+    if (!v) return null;
+    if (typeof v === 'number') return new Date(v);
+    if (typeof v === 'string') {
+      const d = new Date(v.replace(/\./g, '-').replace(/\//g, '-'));
+      return Number.isFinite(d.getTime()) ? d : null;
+    }
+    if (v?.toDate) return v.toDate();
+    return null;
+  } catch { return null; }
+};
 
 const pickEndRaw = (obj: any): any => {
   if (!obj || typeof obj !== 'object') return null;
-  for (const k of END_KEYS) if (k in obj) return (obj as any)[k];
-
+  for (const k of END_KEYS) if (obj[k] != null) return obj[k];
   for (const nest of ['subscription', 'billing', 'plan', 'account']) {
-    const box = (obj as any)[nest];
+    const box = obj[nest];
     if (box && typeof box === 'object') {
-      for (const k of END_KEYS) if (k in box) return (box as any)[k];
+      for (const k of END_KEYS) if (box[k] != null) return box[k];
     }
   }
   return null;
 };
 
+const remainingDaysInclusive = (end: Date | null | undefined): number => {
+  if (!end) return 0;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const endNext = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 0, 0, 0, 0);
+  const diff = endNext.getTime() - start.getTime();
+  if (!Number.isFinite(diff)) return 0;
+  const dayMs = 24 * 60 * 60 * 1000;
+  return Math.max(Math.ceil(diff / dayMs), 0);
+};
+
+const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
 export default function LogoutHeader() {
   const router = useRouter();
+  const debugOn = useDebugFlag();
 
-  // 구독 팝업 컨텍스트(미마운트 방어)
+  /* 컨텍스트들(예외 안전) */
   let popupCtx: any = null;
-  try {
-    popupCtx = (useSubscribePopup as any)?.();
-  } catch {
-    popupCtx = null;
-  }
-  // 🔧 팝업이 없으면 /subscribe?open=1 로 이동하도록 래핑 (JSX 변경 없음)
-  const open = useCallback(() => {
-    if (popupCtx?.open) popupCtx.open();
-    else router.push('/subscribe?open=1');
-  }, [popupCtx, router]);
-  const popupAvailable = !!popupCtx?.open;
-
-  // 유저 컨텍스트(미마운트 방어)
+  try { popupCtx = useSubscribePopup(); } catch { popupCtx = null; }
   let userCtx: any = {};
-  try {
-    userCtx = (useUser as any)?.() ?? {};
-  } catch {
-    userCtx = {};
-  }
+  try { userCtx = useUser() ?? {}; } catch { userCtx = {}; }
 
-  // Auth
+  /* Auth */
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
   useEffect(() => {
-    setPersistence(auth, browserLocalPersistence).catch(() => null);
+    setPersistence(auth, browserLocalPersistence).catch(() => {});
     const unsub = onAuthStateChanged(auth, (u) => setAuthUser(u || null));
     return () => unsub();
   }, []);
 
-  // 역할(plan)
-  const roleFromCtx: string = String(
-    userCtx.role ??
-      userCtx.plan ??
-      userCtx?.user?.role ??
-      userCtx?.user?.plan ??
-      userCtx?.account?.role ??
-      userCtx?.account?.plan ??
-      '',
-  ).toLowerCase();
+  /* 역할 */
+  const role: 'free' | 'basic' | 'premium' | 'admin' = useMemo(() => {
+    const r = String(userCtx?.role ?? userCtx?.user?.role ?? 'free').toLowerCase();
+    return (['free', 'basic', 'premium', 'admin'] as const).includes(r as any) ? (r as any) : 'free';
+  }, [userCtx?.role, userCtx?.user?.role]);
 
-  // 만료일 후보 소스
-  const userDoc =
-    userCtx.user ??
-    userCtx.account ??
-    userCtx.subscription ??
-    {};
-
-  // 1차: 컨텍스트에서 만료일 후보
-  const rawEndFromCtx = coalesce(pickEndRaw(userDoc), pickEndRaw(userCtx));
-
-  // 2차: 없으면 Firestore에서 한번 조회(보강)
-  const [fetchedUserData, setFetchedUserData] = useState<any>(null);
-  const [extraEndRaw, setExtraEndRaw] = useState<any>(null);
+  /* 만료일: 컨텍스트 → Firestore(폴백) */
+  const [endDate, setEndDate] = useState<Date | null>(null);
+  const [endSource, setEndSource] = useState<'ctx' | 'fs' | 'none'>('none');
 
   useEffect(() => {
-    if (!authUser?.uid) return;
-    if (rawEndFromCtx !== null && rawEndFromCtx !== undefined) return;
-    let cancel = false;
+    let cancelled = false;
     (async () => {
+      // 1) 컨텍스트
+      const raw1 = pickEndRaw(userCtx?.user ?? userCtx);
+      const d1 = toDateSafe(raw1);
+      if (!cancelled && d1) { setEndDate(d1); setEndSource('ctx'); return; }
+
+      // 2) Firestore
+      const uid = authUser?.uid;
+      if (!uid) { if (!cancelled) { setEndDate(null); setEndSource('none'); } return; }
       try {
-        const ref = doc(db, 'users', authUser.uid);
-        const snap = await getDoc(ref);
-        if (!snap.exists()) return;
-        const data = snap.data();
-        if (cancel) return;
-        setFetchedUserData(data);
-        setExtraEndRaw(pickEndRaw(data) ?? null);
-        if (DEBUG) console.log('📥 [LogoutHeader] fetched user doc:', data);
+        const snap = await getDoc(doc(db, 'users', uid));
+        const data = snap.exists() ? snap.data() : {};
+        const raw2 = pickEndRaw(data);
+        const d2 = toDateSafe(raw2);
+        if (!cancelled) { setEndDate(d2); setEndSource(d2 ? 'fs' : 'none'); }
+        if (debugOn) dbg('FS user doc', data);
       } catch (e) {
-        console.warn('[LogoutHeader] fetch user doc failed:', e);
+        if (!cancelled) { setEndDate(null); setEndSource('none'); }
+        if (debugOn) dbg('FS error', e);
       }
     })();
-    return () => { cancel = true; };
-  }, [authUser?.uid, rawEndFromCtx]);
+    return () => { cancelled = true; };
+  }, [authUser?.uid, userCtx, debugOn]);
 
-  // 최종 만료일 원시값 → Date
-  const rawEnd = coalesce(rawEndFromCtx, extraEndRaw);
-  const subscriptionEndsAt: Date | null = toDateSafe(rawEnd);
+  const remain = useMemo(() => remainingDaysInclusive(endDate), [endDate]);
+  const isExpired = remain <= 0;
+  const badgeText = endDate ? `만료일 ${fmt(endDate)} (${remain}일)` : '만료일 0일';
 
-  // ✅ 남은 일수: 만료일 없으면 0, 있으면 계산값(음수면 0)
-  const remainNum: number = useMemo(() => {
-    if (!subscriptionEndsAt) return 0;
-    const r = remainingDaysInclusive(subscriptionEndsAt);
-    return r > 0 ? r : 0;
-  }, [subscriptionEndsAt]);
+  /* 버튼 노출 분기(만료 최우선) */
+  const showSubscribe = !!authUser && isExpired;
+  const showUpgrade   = !!authUser && !isExpired && role === 'basic';
+  const showManage    = !!authUser && !isExpired && (role === 'premium' || role === 'admin');
 
-  const isExpired = remainNum <= 0;
+  /* 버튼 액션: 팝업 우선, 없으면 /subscribe?open=1 */
+  const goSubscribe = useCallback(() => {
+    if (popupCtx?.open) { popupCtx.open(); if (debugOn) dbg('open subscribe via popup'); }
+    else { router.push('/subscribe?open=1'); if (debugOn) dbg('open subscribe via route'); }
+  }, [popupCtx, router, debugOn]);
 
-  // ✅ 배지 문자열(유일하게 이것만 표시)
-  const endBadgeText = subscriptionEndsAt
-    ? `만료일 ${fmtDate(subscriptionEndsAt)} (${remainNum}일)`
-    : '만료일 0일';
+  const goUpgrade = useCallback(() => {
+    if (popupCtx?.open) { popupCtx.open(); if (debugOn) dbg('open upgrade via popup'); }
+    else { router.push('/subscribe?upgrade=premium&open=1'); if (debugOn) dbg('open upgrade via route'); }
+  }, [popupCtx, router, debugOn]);
 
-  if (DEBUG) {
-    const foundKey =
-      Object.keys(userDoc || {}).find((k) => END_KEYS.includes(k as any)) ||
-      Object.keys(userCtx || {}).find((k) => END_KEYS.includes(k as any)) ||
-      'unknown';
-    // eslint-disable-next-line no-console
-    console.log(
-      '[LogoutHeader DEBUG]',
-      { roleFromCtx, foundKey, rawEnd, subscriptionEndsAt, remainNum, isExpired },
-      fetchedUserData ? '(+fetched)' : '',
-    );
-  }
-
-  // 표시용 등급 (만료 시 basic)
-  const [displayRole, setDisplayRole] = useState<'basic' | 'premium' | ''>('');
-  useEffect(() => {
-    if (!roleFromCtx) {
-      setDisplayRole('');
-      return;
-    }
-    if (roleFromCtx === 'premium') {
-      if (subscriptionEndsAt && remainingDaysInclusive(subscriptionEndsAt) <= 0) {
-        setDisplayRole('basic');
-      } else {
-        setDisplayRole('premium');
-      }
-    } else {
-      setDisplayRole(roleFromCtx as any);
-    }
-  }, [roleFromCtx, subscriptionEndsAt]);
-
-  // Firestore 다운그레이드(중복 방지)
-  const downgradedRef = useRef(false);
-  useEffect(() => {
-    if (downgradedRef.current) return;
-    if (!authUser?.uid) return;
-    if (roleFromCtx === 'premium' && subscriptionEndsAt && remainingDaysInclusive(subscriptionEndsAt) <= 0) {
-      downgradedRef.current = true;
-      (async () => {
-        try {
-          const ref = doc(db, 'users', authUser.uid);
-          await updateDoc(ref, {
-            plan: 'basic',
-            updatedAt: serverTimestamp(),
-          });
-          if (DEBUG) console.log('[LogoutHeader] premium→basic 자동 다운그레이드 반영');
-        } catch (e) {
-          console.warn('[LogoutHeader] downgrade failed:', e);
-        }
-      })();
-    }
-  }, [authUser?.uid, roleFromCtx, subscriptionEndsAt]);
-
-  // 로그인/로그아웃
+  /* 로그인/로그아웃 (기존 유지) */
   const onLogin = async () => {
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-      router.refresh();
-    } catch (e) {
-      console.error('[Auth] 로그인 실패:', e);
-    }
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); router.refresh(); }
+    catch (e) { console.error('[Auth] 로그인 실패', e); }
   };
   const onLogout = async () => {
-    try {
-      await signOut(auth);
-      router.push('/');
-    } catch (e) {
-      console.error('[Auth] 로그아웃 실패:', e);
-    }
+    try { await signOut(auth); router.push('/'); }
+    catch (e) { console.error('[Auth] 로그아웃 실패', e); }
   };
 
-  // 렌더
-  const isBasic = displayRole === 'basic';
-  const isPremium = displayRole === 'premium';
+  /* 마운트 로그 */
+  useEffect(() => {
+    if (!debugOn) return;
+    dbg('MOUNT', {
+      popupHasOpen: !!popupCtx?.open,
+      authUid: authUser?.uid ?? null,
+      role,
+      endSource,
+      endDate: endDate ? fmt(endDate) : null,
+      remain,
+      isExpired,
+      showSubscribe, showUpgrade, showManage,
+    });
+  }, [debugOn, popupCtx, authUser?.uid, role, endSource, endDate, remain, isExpired, showSubscribe, showUpgrade, showManage]);
 
+  /* ────── 아래는 현재 구조/클래스 유지 (우/좌 정렬 바뀌지 않음) ────── */
   return (
     <header className="w-full flex items-center justify-between px-4 py-3 bg-zinc-900 text-white">
-      {/* 좌측 로고/타이틀 (원본 유지) */}
       <div className="flex items-center gap-3">
-        <Link href="/" className="text-lg font-semibold">Data Convert</Link>
+        <a href="/" className="text-lg font-semibold">Data Convert</a>
       </div>
 
-      {/* 우측 영역 (원본 순서/클래스 유지) */}
       <div className="flex items-center gap-2">
-        {/* ✅ 오직 만료일 배지만 표시 */}
         {authUser && (
-          <span
-            className="text-xs px-2 py-0.5 rounded border border-white/20"
-            title={subscriptionEndsAt ? '마지막날 24:00까지 사용 가능' : '만료일이 설정되지 않았습니다.'}
-          >
-            {endBadgeText}
+          <span className="text-xs px-2 py-0.5 rounded border border-white/20">
+            {badgeText}
           </span>
         )}
 
-        {/* 구독/업그레이드 또는 Premium 배지 */}
-        {isPremium ? (
-          <span className="text-xs px-2 py-0.5 rounded border border-emerald-500/60 text-emerald-400">
-            프리미엄 이용중
-          </span>
-        ) : (
+        {showSubscribe && (
           <button
             type="button"
-            onClick={open}
+            onClick={goSubscribe}
             className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
-            disabled={!popupAvailable}
-            title={popupAvailable ? undefined : '구독 팝업 컨텍스트가 설정되지 않았습니다'}
           >
-            {isExpired ? '구독' : (isBasic ? '업그레이드' : '구독')}
+            구독
+          </button>
+        )}
+        {showUpgrade && (
+          <button
+            type="button"
+            onClick={goUpgrade}
+            className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
+          >
+            업그레이드
+          </button>
+        )}
+        {showManage && (
+          <button
+            type="button"
+            onClick={() => router.push('/subscribe')}
+            className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
+          >
+            구독관리
           </button>
         )}
 
-        {/* 이메일 */}
         {authUser?.email && <span className="text-sm opacity-80">{authUser.email}</span>}
 
-        {/* 로그인/로그아웃 */}
         {!authUser ? (
-          <button type="button" onClick={onLogin} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
+          <button
+            type="button"
+            onClick={onLogin}
+            className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20"
+          >
             로그인
           </button>
         ) : (
-          <button type="button" onClick={onLogout} className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20">
+          <button
+            type="button"
+            onClick={onLogout}
+            className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20"
+          >
             로그아웃
           </button>
         )}
       </div>
+
+      {/* 디버그 오버레이: ?debug=1일 때만 보임(레이아웃 영향 없음) */}
+      {debugOn && (
+        <div className="fixed bottom-2 right-2 z-[9999] text-[11px] bg-black/70 text-white px-2 py-1 rounded pointer-events-none">
+          role:{role} · remain:{remain} · expired:{String(isExpired)} · end:{endDate ? fmt(endDate) : '—'} · src:{endSource} · popup:{String(!!popupCtx?.open)}
+        </div>
+      )}
     </header>
   );
 }
