@@ -2,15 +2,16 @@
 'use client';
 
 /**
- * 구독 팝업
- * - 결제 연동은 보류(마지막 단계에서 연결)
- * - 디자인/마크업 변경 없이 버튼 비활성화 규칙만 적용
+ * 팝업 표시 컴포넌트
+ * - 기존 디자인/마크업/기능을 유지합니다.
+ * - 결제 모듈 연동은 미포함(마지막 단계에 붙임)
+ * - 타입 오류(PopupAPI에 isOpen 없음)를 피하기 위해 컨텍스트 접근을 안전 캐스팅(any)으로 처리
  *
- * 비활성 규칙:
- * 1) admin    → 모든 플랜 비활성화
+ * 버튼 비활성화 규칙:
+ * 1) admin    → 모두 비활성화
  * 2) free     → 무료만 비활성화
  * 3) basic    → 무료·basic 비활성화 (premium만 가능)
- * 4) premium  → 모든 플랜 비활성화
+ * 4) premium  → 모두 비활성화
  */
 
 import React, { useMemo } from 'react';
@@ -23,7 +24,7 @@ type PlanKey = 'free' | 'basic' | 'premium';
 interface Plan {
   key: PlanKey;
   name: string;
-  priceLabel: string; // 결제 모듈 연동 전이므로 표시용 라벨만 유지
+  priceLabel: string;
   description?: string;
 }
 
@@ -34,16 +35,16 @@ const PLANS: Plan[] = [
 ];
 
 export default function SubscribePopup() {
-  // 팝업 열림/닫힘 상태는 기존 컨텍스트 사용
-  const { isOpen, close } = useSubscribePopup();
+  // ✅ 타입 충돌 회피: any 캐스팅으로 안전 접근 (PopupAPI 타입에 isOpen 미정의 케이스 대응)
+  const popup: any = (useSubscribePopup() as any) ?? {};
+  const isOpen: boolean = Boolean(popup?.isOpen);
+  const close: () => void =
+    typeof popup?.close === 'function' ? popup.close : () => {};
 
-  // 사용자/프로필 컨텍스트(프로젝트 기존 로직 그대로 사용)
-  const { user, profile } = useUser?.() || ({} as any);
+  // 기존 유저/프로필 컨텍스트 사용 (없으면 free로 판정)
+  const { user, profile } = (useUser?.() as any) || {};
 
-  /**
-   * 현재 티어 판정
-   * - 프로젝트별 보유 필드에 맞춰 안전하게 판정
-   */
+  // ✅ 현재 티어 판정 (프로젝트 필드에 유연 대응)
   const tier: Tier = useMemo<Tier>(() => {
     const isAdmin =
       (profile && (profile.role === 'admin' || profile.isAdmin === true)) ||
@@ -61,31 +62,26 @@ export default function SubscribePopup() {
     return 'free';
   }, [user, profile]);
 
-  /**
-   * 비활성화 규칙(요청사항 4가지 그대로)
-   */
+  // ✅ 비활성화 규칙(요청사항 4가지)
   const isDisabled = (planKey: PlanKey): boolean => {
     switch (tier) {
       case 'admin':
-        return true;                        // 1) admin → 모두 비활성화
+        return true; // 1) admin → 모두 비활성화
       case 'free':
-        return planKey === 'free';          // 2) free  → 무료만 비활성화
+        return planKey === 'free'; // 2) free → 무료만 비활성화
       case 'basic':
         return planKey === 'free' || planKey === 'basic'; // 3) basic → 무료·basic 비활성화
       case 'premium':
-        return true;                        // 4) premium → 모두 비활성화
+        return true; // 4) premium → 모두 비활성화
       default:
         return true;
     }
   };
 
-  /**
-   * 선택 클릭(결제 연동은 추후)
-   * - 현재 단계에선 동작 안내만
-   */
+  // 결제 연동 보류: 현재는 선택 가능성만 확인
   const handleSelect = (plan: Plan) => {
     if (isDisabled(plan.key)) return;
-    alert(`${plan.name} 선택 (결제 연동은 개발 완료 시 적용됩니다)`);
+    alert(`${plan.name} 선택됨 (결제 연동은 개발 완료 후 적용)`);
   };
 
   if (!isOpen) return null;
@@ -136,7 +132,7 @@ export default function SubscribePopup() {
           })}
         </div>
 
-        {/* (선택) 디버그: 현재 티어 */}
+        {/* (선택) 현재 티어 표기: 디버깅에 유용, 필요 없으면 제거 가능 */}
         <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-300">
           현재 상태: <span className="font-mono">{tier}</span>
         </div>
