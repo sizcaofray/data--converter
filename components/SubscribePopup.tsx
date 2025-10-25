@@ -1,145 +1,147 @@
+// components/SubscribePopup.tsx
 'use client';
 
-import { memo, useCallback, useMemo } from 'react';
+/**
+ * 변경점 요약
+ * - 컨텍스트 타입에 isOpen이 없어도 동작하도록 any 캐스팅으로 안전 접근
+ * - isOpen 미제공 시 기본값 false 처리(표시 안 함)
+ * - close 미제공 시 no-op 처리
+ * - 결제 연동 보류, 버튼 활성/비활성 규칙만 반영
+ *
+ * 비활성 규칙:
+ * 1) admin → 모두 비활성화
+ * 2) free(미구독, admin 아님) → 무료만 비활성화
+ * 3) basic → 무료·basic 비활성화
+ * 4) premium → 모두 비활성화
+ */
+
+import React, { useMemo } from 'react';
 import { useSubscribePopup } from '@/contexts/SubscribePopupContext';
+
+// 프로젝트에 따라 없을 수도 있는 컨텍스트이므로 안전 접근
 import { useUser } from '@/contexts/UserContext';
 
-const PLANS = [
-  { name: '무료',    price: 0,      key: 'free',    description: '기본 변환 (한번에 1개씩 가능)' },
-  { name: 'Basic',   price: 10000,  key: 'basic',   description: '파일 처리 개수 제한 없음(Max : 50)' },
-  { name: 'Premium', price: 100000, key: 'premium', description: 'Validation, Report 제공' },
+type Tier = 'admin' | 'premium' | 'basic' | 'free';
+
+type PlanKey = 'free' | 'basic' | 'premium';
+interface Plan {
+  key: PlanKey;
+  name: string;
+  priceLabel: string;
+  description?: string;
+}
+
+const PLANS: Plan[] = [
+  { key: 'free',    name: '무료',    priceLabel: '무료',       description: '기본 기능' },
+  { key: 'basic',   name: 'Basic',   priceLabel: '10,000원',   description: '일반 구독' },
+  { key: 'premium', name: 'Premium', priceLabel: '100,000원',  description: '고급 구독' },
 ];
 
-const norm = (v: unknown) => (v ?? '').toString().trim().toLowerCase();
+export default function SubscribePopup() {
+  // 컨텍스트 타입 안전 처리(any 캐스팅)
+  const popupCtx: any = useSubscribePopup?.() ?? {};
+  const isOpen: boolean = Boolean(popupCtx?.isOpen); // 컨텍스트가 isOpen을 제공하지 않으면 false
+  const close: () => void = typeof popupCtx?.close === 'function' ? popupCtx.close : () => {};
 
-function SubscribePopup() {
-  const { show, close } = useSubscribePopup();
-  const { user, role } = useUser();
+  // 사용자 정보도 안전 접근(없으면 free로 판정)
+  const userCtx: any = useUser?.() ?? {};
+  const user = userCtx?.user ?? null;
+  const profile = userCtx?.profile ?? null;
 
-  if (!show) return null;
+  // 티어 판정(프로젝트 실데이터에 맞게 유연 판정)
+  const tier: Tier = useMemo<Tier>(() => {
+    const isAdmin =
+      (profile && (profile.role === 'admin' || profile.isAdmin === true)) ||
+      (user && user.claims && user.claims.admin === true);
+    if (isAdmin) return 'admin';
 
-  const normalizedRole = norm(role);
-  const isAdmin = normalizedRole === 'admin';
-  const isBasicRole = normalizedRole === 'basic';
+    const isPremium =
+      profile && (profile.role === 'premium' || profile.plan === 'premium' || profile.isPremium === true);
+    if (isPremium) return 'premium';
 
-  const waitBootpay = useCallback(async (retries = 10, intervalMs = 200) => {
-    for (let i = 0; i < retries; i++) {
-      if (typeof window !== 'undefined' && (window as any).Bootpay) return (window as any).Bootpay;
-      await new Promise((r) => setTimeout(r, intervalMs));
+    const isBasic =
+      profile && (profile.role === 'basic' || profile.plan === 'basic' || profile.isBasic === true);
+    if (isBasic) return 'basic';
+
+    return 'free';
+  }, [user, profile]);
+
+  // 비활성화 규칙
+  const isDisabled = (planKey: PlanKey): boolean => {
+    switch (tier) {
+      case 'admin':
+        return true; // 1) admin → 모두 비활성화
+      case 'free':
+        return planKey === 'free'; // 2) free → 무료만 비활성화
+      case 'basic':
+        return planKey === 'free' || planKey === 'basic'; // 3) basic → 무료·basic 비활성화
+      case 'premium':
+        return true; // 4) premium → 모두 비활성화
+      default:
+        return true;
     }
-    return null;
-  }, []);
+  };
 
-  const requestPayment = useCallback(
-    async (plan: { name: string; price: number; key: string }) => {
-      if (typeof window === 'undefined') return;
+  const handleSelect = (plan: Plan) => {
+    if (isDisabled(plan.key)) return;
+    // 결제 연동은 최종 단계에서: 지금은 안내만
+    alert(`${plan.name} 선택 (결제 연동은 개발 완료 시 적용됩니다)`);
+  };
 
-      const Bootpay = await waitBootpay();
-      if (!Bootpay) {
-        alert('Bootpay 로딩이 지연되고 있습니다. 새로고침 후 다시 시도해 주세요.');
-        return;
-      }
-
-      const userInfo = {
-        id: user?.uid || 'guest',
-        username: user?.displayName || '비회원',
-        email: user?.email || 'guest@example.com',
-      };
-
-      Bootpay.request({
-        application_id: '5b8f6a4d396fa665fdc2b5e8', // 실제 앱 ID
-        price: plan.price,
-        name: plan.name,
-        pg: 'kcp',
-        method: 'card',
-        order_id: `order_${Date.now()}`,
-        user_info: userInfo,
-        items: [{ item_name: plan.name, qty: 1, unique: plan.key, price: plan.price }],
-        extra: { open_type: 'iframe' },
-        success() {
-          alert('✅ 결제 성공');
-          close();
-        },
-        error() {
-          alert('❌ 결제 실패. 잠시 후 다시 시도해 주세요.');
-        },
-        close() {
-          /* no-op */
-        },
-      });
-    },
-    [close, user, waitBootpay]
-  );
-
-  const cards = useMemo(
-    () =>
-      PLANS.map((plan) => {
-        const isCurrent = plan.key === normalizedRole;
-        // Basic 사용자는 premium만 활성화
-        const disabled = isAdmin || isCurrent || (isBasicRole && plan.key !== 'premium');
-
-        return (
-          <div
-            key={plan.key}
-            className={[
-              'rounded-lg p-4 h-full flex flex-col justify-between transition',
-              disabled
-                ? 'border-4 border-blue-500 bg-blue-50 dark:bg-blue-900 cursor-not-allowed'
-                : 'border border-gray-300 cursor-pointer hover:shadow',
-            ].join(' ')}
-            onClick={() => {
-              if (!disabled) requestPayment(plan);
-            }}
-            role="button"
-            aria-disabled={disabled}
-            tabIndex={disabled ? -1 : 0}
-          >
-            <div>
-              <div className="flex justify-between items-center mb-2">
-                <div className="text-lg font-medium">
-                  {plan.name}
-                  {disabled && (
-                    <span className="ml-2 text-blue-500 text-sm">
-                      {isAdmin
-                        ? '관리자 상태로 결제 비활성화'
-                        : isBasicRole && plan.key !== 'premium'
-                        ? '업그레이드는 Premium만 선택'
-                        : '현재 상태'}
-                    </span>
-                  )}
-                </div>
-                <div className="text-right text-gray-600 dark:text-gray-300">
-                  {plan.price === 0 ? '무료' : plan.price.toLocaleString() + '원'}
-                </div>
-              </div>
-              <p className="text-sm text-gray-500 dark:text-gray-300">{plan.description}</p>
-            </div>
-          </div>
-        );
-      }),
-    [normalizedRole, isAdmin, isBasicRole, requestPayment]
-  );
+  // 컨텍스트가 표시상태를 제공하지 않으면, 팝업을 띄우지 않음
+  if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 grid place-items-center" onClick={close}>
-      <div
-        className="bg-white text-slate-900 dark:bg-gray-900 dark:text-white p-6 rounded-lg shadow-xl w-[95%] max-w-5xl relative"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          onClick={close}
-          className="absolute top-2 right-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 text-xl"
-          aria-label="닫기"
-        >
-          &times;
-        </button>
+    <div
+      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50"
+      role="dialog"
+      aria-modal="true"
+      aria-label="구독 결제 팝업"
+    >
+      <div className="w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 shadow-xl">
+        {/* 헤더 */}
+        <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">요금제 선택</h2>
+          <button
+            type="button"
+            onClick={close}
+            className="text-sm px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/10"
+          >
+            닫기
+          </button>
+        </div>
 
-        <h2 className="text-xl font-semibold mb-6">요금제 선택</h2>
+        {/* 본문 */}
+        <div className="p-5 grid grid-cols-1 gap-4">
+          {PLANS.map((p) => {
+            const disabled = isDisabled(p.key);
+            return (
+              <div key={p.key} className="border rounded-xl p-4 dark:border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="font-medium">{p.name}</div>
+                  <div className="text-sm opacity-75">{p.priceLabel}</div>
+                </div>
+                {p.description && (
+                  <p className="text-sm text-gray-500 dark:text-gray-300 mb-3">{p.description}</p>
+                )}
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => handleSelect(p)}
+                  className="w-full rounded-lg border px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50"
+                >
+                  {disabled ? '선택 불가' : '선택'}
+                </button>
+              </div>
+            );
+          })}
+        </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">{cards}</div>
+        {/* 푸터(디버그용 표시) */}
+        <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-300">
+          현재 상태: <span className="font-mono">{tier}</span>
+        </div>
       </div>
     </div>
   );
 }
-
-export default memo(SubscribePopup);
