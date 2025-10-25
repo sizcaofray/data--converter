@@ -2,6 +2,8 @@ import './globals.css'
 import { ReactNode } from 'react'
 import { Suspense } from 'react'
 import UserProvider from '@/contexts/UserContext'
+import { SubscribePopupProvider } from '@/contexts/SubscribePopupContext'
+import SubscribePopup from '@/components/SubscribePopup'
 
 export const metadata = { title: '로그인 페이지', description: '구글 계정 로그인 예제' }
 
@@ -21,15 +23,19 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ko" suppressHydrationWarning>
       <body className="h-screen overflow-hidden flex flex-col transition-colors">
+        <SubscribePopupProvider>
         {NOTICE_ENABLED && NOTICE_MESSAGE && (
           <div className={`w-full text-sm px-4 py-2 ${bannerClass(NOTICE_LEVEL)}`} role="status" aria-live="polite">
             <div className="max-w-6xl mx-auto">{NOTICE_MESSAGE}</div>
           </div>
         )}
 
-        <div className="flex-1 min-h-0 overflow-auto">
+        <div className="flex-1 overflow-auto">
           <Suspense fallback={<div className="p-4 text-sm opacity-70">로딩 중…</div>}>
-            <UserProvider>{children}</UserProvider>
+            <UserProvider>
+              {/* ——— 여기에 기존 헤더/페이지 콘텐츠가 그대로 렌더됩니다 ——— */}
+              {children}
+            </UserProvider>
           </Suspense>
         </div>
 
@@ -40,6 +46,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <a href="/legal/privacy" className="underline underline-offset-2 hover:opacity-80">개인정보처리방침</a>
           </div>
         </footer>
+      
+          <SubscribePopup />
+        </SubscribePopupProvider>
       </body>
     </html>
   )
