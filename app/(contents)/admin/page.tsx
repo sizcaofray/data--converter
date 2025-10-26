@@ -1,314 +1,611 @@
 'use client';
 
 /**
- * 관리자 페이지 (Firestore 문서 단일 판정)
- * - 컨텍스트 role을 사용하지 않고, 로그인 UID의 users/{uid}.role === 'admin' 만 신뢰
- * - 로딩 중에는 '권한 없음' 표시 금지
- * - date-fns 제거(설치 불필요)
+ * 관리자 페이지 (메뉴 비활성화 + 사용자 관리)
+ * - UI/디자인 유지, 로직만 보완
+ * - Firestore 규칙과 동일하게 "users/{uid}.role === 'admin'" 기준으로 관리자 판단
+ * - 디버그 패널에 context role vs users문서 role 동시 노출
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { auth, db } from '@/lib/firebase/firebase';
+import { useUser } from '@/contexts/UserContext'; // 컨텍스트(표시용/보조)
+import { db } from '@/lib/firebase/firebase';
 import {
   collection,
-  doc,
-  getDoc,
   getDocs,
-  limit,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  Timestamp,
   updateDoc,
-  where,
+  doc,
+  Timestamp,
+  onSnapshot,
+  setDoc,
+  serverTimestamp,
+  getDoc,
+  // setLogLevel,
 } from 'firebase/firestore';
+import { getAuth, getIdTokenResult, onAuthStateChanged } from 'firebase/auth';
 
-/* ───────── 날짜 유틸 (설치 없이 동작) ───────── */
-const toKst = (d: Date) => {
-  const tzOffsetMin = 9 * 60;
-  return new Date(d.getTime() + (tzOffsetMin - d.getTimezoneOffset()) * 60 * 1000);
-};
-const kstToday = () => {
-  const now = new Date(); const k = toKst(now);
-  return new Date(k.getFullYear(), k.getMonth(), k.getDate());
-};
-const kstTodayPlusDays = (days: number) => { const b = kstToday(); b.setDate(b.getDate() + days); return b; };
-const inputDateToDate = (input: string) => { const [y,m,d] = input.split('-').map(Number); return new Date(y, (m||1)-1, d||1, 0,0,0); };
-const formatDateYMD = (d: Date | null) => { if(!d) return ''; const k=toKst(d); return `${k.getFullYear()}-${String(k.getMonth()+1).padStart(2,'0')}-${String(k.getDate()).padStart(2,'0')}`; };
-const formatDateYMDHM = (d: Date | null) => { if(!d) return ''; const k=toKst(d); return `${k.getFullYear()}-${String(k.getMonth()+1).padStart(2,'0')}-${String(k.getDate()).padStart(2,'0')} ${String(k.getHours()).padStart(2,'0')}:${String(k.getMinutes()).padStart(2,'0')}`; };
-const tsToDate = (ts: Timestamp | null | undefined) => (ts ? ts.toDate() : null);
+// Firestore 내부 로그 필요 시 주석 해제
+// setLogLevel('debug');
 
-/* ───────── 타입 ───────── */
-type Role = 'admin' | 'basic' | 'premium' | 'free' | undefined;
+type Role = 'free' | 'basic' | 'premium' | 'admin';
+
 interface UserRow {
   uid: string;
-  email?: string | null;
-  displayName?: string | null;
-  role?: Role;
-  tier?: 'free' | 'basic' | 'premium';
-  createdAt?: Timestamp | null;
+  email: string;
+  role: Role;
+  uniqueId?: string | null;
+  joinedAt?: Timestamp | null;
+  isSubscribed?: boolean;
   subscriptionStartAt?: Timestamp | null;
   subscriptionEndAt?: Timestamp | null;
   remainingDays?: number | null;
-  lastLoginAt?: Timestamp | null;
-  lastPaidAt?: Timestamp | null;
 }
-const roleToTier = (role?: Role): UserRow['tier'] => (role === 'premium' ? 'premium' : role === 'basic' ? 'basic' : 'free');
-const calcRemainingDaysFromEnd = (end: Timestamp | null): number => {
-  if (!end) return 0;
-  const endDate = toKst(end.toDate()); const today = kstToday();
-  const diff = Math.ceil((endDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
-  return Math.max(0, diff);
-};
 
-/* ───────── 관리자 판정: Firestore 단일 기준 ───────── */
-async function resolveAdminByFirestore(): Promise<{ uid?: string; isAdmin: boolean; role?: Role; email?: string | null }> {
-  const u = auth.currentUser;
-  if (!u) return { isAdmin: false };
+/** KST 자정 기준 도우미들 */
+function todayKST(): Date {
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9 * 3600 * 1000);
+  return new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()));
+}
+function dateToInput(d: Date | null) {
+  if (!d) return '';
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+function tsToInputDate(ts: Timestamp | null | undefined) {
+  if (!ts) return '';
+  const d = ts.toDate();
+  return dateToInput(new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())));
+}
+function inputDateToDate(s: string) {
+  if (!s) return null;
+  const d = new Date(s + 'T00:00:00Z');
+  return isNaN(d.getTime()) ? null : d;
+}
+function calcRemainingDaysFromEnd(end: Timestamp | null | undefined) {
+  if (!end) return null;
+  const e = end.toDate();
+  const eu = new Date(Date.UTC(e.getFullYear(), e.getMonth(), e.getDate()));
+  const base = todayKST();
+  const diff = eu.getTime() - base.getTime();
+  const n = Math.ceil(diff / 86400000);
+  return n < 0 ? 0 : n;
+}
+function kstTodayPlusDays(n: number) {
+  const base = todayKST();
+  return new Date(base.getTime() + n * 86400000);
+}
+function clampEndAfterStart(start: Date | null, end: Date | null) {
+  if (!start || !end) return end;
+  return end.getTime() < start.getTime() ? start : end;
+}
+
+const DEFAULT_SUBSCRIPTION_DAYS = 30;
+
+/** 메뉴 메타 */
+type MenuConfig = { slug: string; label: string };
+const ALL_MENUS: MenuConfig[] = [
+  { slug: 'convert', label: 'Data Convert' },
+  { slug: 'compare', label: 'Compare' },
+  { slug: 'random', label: 'Random' },
+  { slug: 'admin', label: 'Admin' },
+];
+
+/** 안전 유틸 */
+function sanitizeSlugArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((v) => (typeof v === 'string' ? v : String(v ?? '').trim()))
+    .filter((v) => v.length > 0);
+}
+function pruneUndefined<T extends Record<string, any>>(obj: T): T {
+  const walk = (v: any): any => {
+    if (v === undefined) return undefined;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const out: any = {};
+      for (const k of Object.keys(v)) {
+        const w = walk(v[k]);
+        if (w !== undefined) out[k] = w;
+      }
+      return out;
+    }
+    return v;
+  };
+  return walk(obj);
+}
+function safeStringify(o: any) {
   try {
-    const snap = await getDoc(doc(db, 'users', u.uid));
-    const data = snap.exists() ? snap.data() : null;
-    const role = (data?.role as Role) ?? undefined;
-    return { uid: u.uid, isAdmin: role === 'admin', role, email: u.email ?? null };
-  } catch (e) {
-    console.error('[admin] resolveAdminByFirestore error:', e);
-    return { uid: u.uid, isAdmin: false, role: undefined, email: u.email ?? null };
+    const seen = new WeakSet();
+    return JSON.stringify(
+      o,
+      (k, v) => {
+        if (typeof v === 'object' && v !== null) {
+          if (seen.has(v)) return '[Circular]';
+          seen.add(v);
+        }
+        return v;
+      },
+      2
+    );
+  } catch {
+    return String(o);
   }
 }
 
 export default function AdminPage() {
-  const [adminReady, setAdminReady] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [whoami, setWhoami] = useState<{ uid?: string; role?: Role; email?: string | null }>({});
+  const { role: myRoleFromContext, loading: userCtxLoading } = useUser();
 
-  const [rows, setRows] = useState<UserRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // ── [A] users/{uid}.role을 직접 읽어 규칙과 동일 기준으로 관리자 판정
+  const [authUid, setAuthUid] = useState<string | null>(null);
+  const [usersDocRole, setUsersDocRole] = useState<Role | null>(null);
+  const [roleLoading, setRoleLoading] = useState(true); // users문서 역할 로딩 상태
 
-  // 1) 로그인/역할 판정 (Firestore만 신뢰)
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      const r = await resolveAdminByFirestore();
-      if (!alive) return;
-      setWhoami({ uid: r.uid, role: r.role, email: r.email });
-      setIsAdmin(r.isAdmin);
-      setAdminReady(true);
-    })();
-    return () => { alive = false; };
+    const auth = getAuth();
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setRoleLoading(true);
+      try {
+        if (!u) {
+          setAuthUid(null);
+          setUsersDocRole(null);
+          return;
+        }
+        setAuthUid(u.uid);
+
+        // 토큰 최신화(선택) — 커스텀 클레임 사용 대비
+        try {
+          await getIdTokenResult(u, true);
+        } catch (_) {}
+
+        // users/{uid}에서 role 읽기(※ 규칙의 관리자 판정과 동일 소스)
+        const uref = doc(db, 'users', u.uid);
+        const usnap = await getDoc(uref);
+        const r = (usnap.exists() ? (usnap.data() as any)?.role : null) as Role | null;
+        setUsersDocRole(r ?? null);
+      } finally {
+        setRoleLoading(false);
+      }
+    });
+    return () => unsub();
   }, []);
 
-  // 2) 목록 로드 (관리자일 때만)
-  const fetchUsers = async () => {
-    setLoading(true); setError(null);
-    try {
-      const qAdmin = query(collection(db, 'users'), where('role', '==', 'admin'), orderBy('createdAt','desc'), limit(50));
-      const adminSnap = await getDocs(qAdmin);
-      const qUsers = query(collection(db, 'users'), orderBy('createdAt','desc'), limit(200));
-      const userSnap = await getDocs(qUsers);
+  /** 이 값 하나만 신뢰해서 관리자 여부를 판정한다(규칙과 동일) */
+  const isAdminRole = usersDocRole === 'admin';
 
-      const mapDoc = (d: any): UserRow => {
-        const data = d.data() || {};
-        const role = (data.role as Role) ?? undefined;
-        const row: UserRow = {
-          uid: d.id,
-          email: data.email ?? null,
-          displayName: data.displayName ?? null,
-          role,
-          tier: roleToTier(role),
-          createdAt: data.createdAt ?? null,
-          subscriptionStartAt: data.subscriptionStartAt ?? null,
-          subscriptionEndAt: data.subscriptionEndAt ?? null,
-          remainingDays: data.remainingDays ?? null,
-          lastLoginAt: data.lastLoginAt ?? null,
-          lastPaidAt: data.lastPaidAt ?? null,
-        };
-        if (row.remainingDays == null) row.remainingDays = calcRemainingDaysFromEnd(row.subscriptionEndAt ?? null);
-        return row;
-      };
+  // ── [B] 메뉴 관리 상태
+  const [navDisabled, setNavDisabled] = useState<string[]>([]);
+  const [savingNav, setSavingNav] = useState(false);
 
-      const list = [...adminSnap.docs, ...userSnap.docs].map(mapDoc);
-      const uniq = new Map<string, UserRow>(); list.forEach((r) => uniq.set(r.uid, r));
-      setRows(Array.from(uniq.values()));
-    } catch (e: any) {
-      console.error(e); setError(e?.message || '불러오기 실패');
-    } finally { setLoading(false); }
+  // 디버그 패널 상태
+  const [showDebug, setShowDebug] = useState(true);
+  const [dbg, setDbg] = useState<{
+    myRole?: any;
+    authUid?: string | null;
+    authEmail?: string | null;
+    tokenClaims?: any;
+    usersDocRole?: any;
+    uploadPolicyPath?: string;
+    uploadPolicyPayload?: any;
+    lastError?: { code?: any; message?: any; customData?: any } | null;
+  }>({});
+
+  // uploadPolicy 구독 — 관리자일 때만
+  useEffect(() => {
+    if (roleLoading || !isAdminRole) return;
+    const ref = doc(db, 'settings', 'uploadPolicy');
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        const data = snap.data() as any | undefined;
+        const arr = Array.isArray(data?.navigation?.disabled) ? data?.navigation?.disabled : [];
+        setNavDisabled(sanitizeSlugArray(arr));
+      },
+      (err) => {
+        setDbg((d) => ({ ...d, lastError: { code: err?.code, message: err?.message, customData: err?.customData } }));
+      }
+    );
+    return () => unsub();
+  }, [roleLoading, isAdminRole]);
+
+  const disabledSet = useMemo(() => new Set(navDisabled), [navDisabled]);
+  const toggleMenu = (slug: string) => {
+    setNavDisabled((prev) => {
+      const s = new Set(prev);
+      s.has(slug) ? s.delete(slug) : s.add(slug);
+      return Array.from(s);
+    });
   };
 
-  useEffect(() => {
-    if (adminReady && isAdmin) fetchUsers();
-  }, [adminReady, isAdmin]);
+  // 권한/문서/페이로드 실시간 덤프(디버그 패널용)
+  const dumpContext = async () => {
+    const auth = getAuth();
+    const user = auth.currentUser;
+    let authEmail: string | null = null;
+    let tokenClaims: any = null;
+    let usersRole: any = usersDocRole;
 
-  /* ───────── 접근 제어 UI ───────── */
-  if (!adminReady) {
-    return (
-      <main className="p-6">
-        <div className="text-sm text-gray-500">로딩 중…</div>
-      </main>
-    );
-  }
-  if (!isAdmin) {
-    return (
-      <main className="p-6">
-        <h1 className="text-xl font-semibold mb-2">관리자 전용 페이지</h1>
-        <p className="text-sm text-gray-600 dark:text-gray-300">
-          접근 권한이 없습니다. 관리자 계정으로 로그인해 주세요.
-        </p>
-        <div className="mt-4 text-xs text-gray-500">
-          (현재 Firestore 판정 role: <b>{String(whoami.role ?? 'unknown')}</b>, 이메일: <b>{whoami.email ?? '-'}</b>)
-        </div>
-      </main>
-    );
-  }
+    if (user) {
+      authEmail = user.email ?? null;
+      try {
+        const tokenRes = await getIdTokenResult(user, true);
+        tokenClaims = tokenRes?.claims ?? null;
+      } catch (e: any) {
+        tokenClaims = { error: e?.message || 'token error' };
+      }
+    }
 
-  /* ───────── 관리자 화면 (기존 UI 유지) ───────── */
-  const patchRow = async (uid: string, patch: Partial<UserRow>) => {
+    const cleaned = sanitizeSlugArray(navDisabled);
+    const payload = pruneUndefined({
+      navigation: { disabled: cleaned },
+      updatedAt: serverTimestamp(),
+    });
+
+    setDbg((d) => ({
+      ...d,
+      myRole: myRoleFromContext, // 컨텍스트 역할(참고용)
+      authUid,
+      authEmail,
+      tokenClaims,
+      usersDocRole: usersRole,   // 규칙과 동일한 판단 근거
+      uploadPolicyPath: 'settings/uploadPolicy',
+      uploadPolicyPayload: payload,
+    }));
+  };
+
+  // 저장 — 관리자(role 기준)일 때만 수행
+  const saveMenuDisabled = async () => {
+    if (!isAdminRole) {
+      alert('저장 권한이 없습니다. (users/{uid}.role이 admin이어야 합니다)');
+      return;
+    }
+    setSavingNav(true);
+    await dumpContext(); // 저장 직전 디버그 패널 갱신
     try {
-      const ref = doc(db, 'users', uid);
-      await updateDoc(ref, { ...patch, updatedAt: serverTimestamp() });
-      setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, ...patch } : r)));
+      const ref = doc(db, 'settings', 'uploadPolicy');
+      const payload = ((): any => {
+        const cleaned = sanitizeSlugArray(navDisabled);
+        return pruneUndefined({
+          navigation: { disabled: cleaned },
+          updatedAt: serverTimestamp(),
+        });
+      })();
+
+      await setDoc(ref, payload, { merge: true });
+      setDbg((d) => ({ ...d, lastError: null }));
+      alert('메뉴 설정이 저장되었습니다.');
     } catch (e: any) {
-      console.error(e);
-      alert('수정 중 오류: ' + (e?.message || 'unknown'));
+      setDbg((d) => ({
+        ...d,
+        lastError: { code: e?.code, message: e?.message, customData: e?.customData },
+      }));
+      alert(`메뉴 저장 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
+    } finally {
+      setSavingNav(false);
     }
   };
 
+  // ── [C] 사용자 관리(기존 유지) — 관리자일 때만 로드
+  const [rows, setRows] = useState<UserRow[]>([]);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+
+  useEffect(() => {
+    if (roleLoading || !isAdminRole) return;
+    (async () => {
+      setFetching(true);
+      try {
+        const snap = await getDocs(collection(db, 'users'));
+        const list: UserRow[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as any;
+          const endTs: Timestamp | null = data.subscriptionEndAt ?? null;
+          list.push({
+            uid: d.id,
+            email: data.email ?? '',
+            role: (data.role ?? 'free') as Role,
+            uniqueId: data.uniqueId ?? null,
+            joinedAt: data.joinedAt ?? null,
+            isSubscribed: data.isSubscribed ?? false,
+            subscriptionStartAt: data.subscriptionStartAt ?? null,
+            subscriptionEndAt: endTs,
+            remainingDays: calcRemainingDaysFromEnd(endTs),
+          });
+        });
+        list.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
+        setRows(list);
+      } finally {
+        setFetching(false);
+      }
+    })();
+  }, [roleLoading, isAdminRole]);
+
+  const patchRow = (uid: string, patch: Partial<UserRow>) =>
+    setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, ...patch } : r)));
+
+  const toggleSubscribed = (r: UserRow, checked: boolean) => {
+    if (!checked) {
+      patchRow(r.uid, {
+        isSubscribed: false,
+        subscriptionStartAt: null,
+        subscriptionEndAt: null,
+        remainingDays: null,
+      });
+      return;
+    }
+    const startDate = r.subscriptionStartAt?.toDate() ?? todayKST();
+    const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS); // ← 오타 수정
+    const endTs = clampEndAfterStart(startDate, endDate);
+    patchRow(r.uid, {
+      isSubscribed: true,
+      subscriptionStartAt: Timestamp.fromDate(startDate),
+      subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
+      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
+    });
+  };
+
+  const changeRemainingDays = (r: UserRow, val: string) => {
+    const n = Math.max(0, Number(val || 0));
+    const endDate = kstTodayPlusDays(n);
+    patchRow(r.uid, { remainingDays: n, subscriptionEndAt: Timestamp.fromDate(endDate) });
+  };
+
+  const changeStartDate = (r: UserRow, input: string) => {
+    const newStart = inputDateToDate(input);
+    const currEnd = r.subscriptionEndAt?.toDate() ?? null;
+    const clampedEnd = clampEndAfterStart(newStart, currEnd);
+    const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
+    patchRow(r.uid, {
+      subscriptionStartAt: newStart ? Timestamp.fromDate(newStart) : null,
+      subscriptionEndAt: endTs,
+      remainingDays: calcRemainingDaysFromEnd(endTs),
+    });
+  };
+
+  const changeEndDate = (r: UserRow, input: string) => {
+    const newEnd = inputDateToDate(input);
+    const start = r.subscriptionStartAt?.toDate() ?? null;
+    const clampedEnd = clampEndAfterStart(start, newEnd);
+    const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
+    patchRow(r.uid, {
+      subscriptionEndAt: endTs,
+      remainingDays: calcRemainingDaysFromEnd(endTs),
+    });
+  };
+
+  const handleSave = async (row: UserRow) => {
+    setSaving(row.uid);
+    try {
+      const ref = doc(db, 'users', row.uid);
+      let startTs: Timestamp | null = row.subscriptionStartAt ?? null;
+      let endTs: Timestamp | null = row.subscriptionEndAt ?? null;
+      let isSubscribed = !!row.isSubscribed;
+
+      if (!isSubscribed) {
+        startTs = null;
+        endTs = null;
+      } else {
+        const startD = startTs?.toDate() ?? null;
+        const endD = endTs?.toDate() ?? null;
+        const clampedEnd = clampEndAfterStart(startD, endD);
+        endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
+      }
+
+      await updateDoc(ref, {
+        role: row.role,
+        isSubscribed,
+        subscriptionStartAt: startTs ?? null,
+        subscriptionEndAt: endTs ?? null,
+      });
+      alert('저장되었습니다.');
+    } catch (e: any) {
+      alert(`저장 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // ── 로딩/권한 가드 (규칙과 동일 기준으로 처리)
+  if (userCtxLoading || roleLoading)
+    return <main className="p-6 text-sm text-gray-500">로딩 중...</main>;
+
+  if (!isAdminRole)
+    return (
+      <main className="p-6">
+        <h1 className="text-xl font-semibold mb-4">관리자 페이지</h1>
+        <p className="text-red-600 dark:text-red-400">
+          ⛔ 관리자 권한이 없습니다. (<code>users/{'{'}uid{'}'}.role</code> 기준)
+        </p>
+      </main>
+    );
+
   return (
-    <div className="p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Admin</h1>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={fetchUsers}
-            className="rounded px-3 py-1 border border-gray-300 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/10 text-sm"
-          >
-            새로고침
-          </button>
-          <button
-            onClick={async () => {
-              const uid = prompt('추가할 uid를 입력하세요?');
-              if (!uid) return;
-              const ref = doc(db, 'users', uid);
-              const snap = await getDoc(ref);
-              if (!snap.exists()) {
-                await setDoc(ref, { role: 'free', createdAt: serverTimestamp() });
-              }
-              alert('추가/갱신 완료');
-              fetchUsers();
-            }}
-            className="rounded px-3 py-1 border border-gray-300 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/10 text-sm"
-          >
-            사용자 추가
-          </button>
-        </div>
-      </div>
+    <main className="p-6 space-y-6">
+      {/* 메뉴 관리 섹션 */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
+        <h2 className="text-lg font-bold mb-2">메뉴 관리 (비활성화)</h2>
+        <p className="text-sm text-slate-600 mb-4">
+          체크된 메뉴는 사이드바에서 <b>보여지되 클릭이 차단</b>됩니다. (<code>settings/uploadPolicy.navigation.disabled: string[]</code>)
+        </p>
 
-      {/* 디버그 패널 */}
-      <div className="mb-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-600 dark:text-gray-300">
-        <div>현재 Firestore 판정: <b>{String(whoami.role ?? 'unknown')}</b> ({whoami.email ?? '-'})</div>
-      </div>
-
-      {/* 목록 */}
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <div className="grid grid-cols-12 gap-2 px-4 py-2 text-xs bg-gray-50 dark:bg-zinc-800/60 border-b border-gray-200 dark:border-gray-700">
-          <div className="col-span-2">UID</div>
-          <div className="col-span-2">이메일</div>
-          <div className="col-span-2">닉네임</div>
-          <div className="col-span-1">역할</div>
-          <div className="col-span-2">구독(시작~종료)</div>
-          <div className="col-span-1">남은일수</div>
-          <div className="col-span-2">기타</div>
-        </div>
-
-        {loading && <div className="px-5 py-4 text-sm text-gray-500">로딩 중…</div>}
-        {error && <div className="px-5 py-4 text-sm text-red-600 dark:text-red-400">{error}</div>}
-
-        <div className="divide-y divide-gray-200 dark:divide-gray-700">
-          {rows.map((r) => {
-            const start = tsToDate(r.subscriptionStartAt ?? null);
-            const end = tsToDate(r.subscriptionEndAt ?? null);
-            const startStr = formatDateYMD(start);
-            const endStr = formatDateYMD(end);
-
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+          {ALL_MENUS.map((m) => {
+            const checked = disabledSet.has(m.slug);
             return (
-              <div key={r.uid} className="grid grid-cols-12 gap-2 px-4 py-3 text-sm">
-                <div className="col-span-2"><div className="font-mono text-xs">{r.uid}</div></div>
-                <div className="col-span-2"><div className="truncate">{r.email ?? '-'}</div></div>
-                <div className="col-span-2"><div className="truncate">{r.displayName ?? '-'}</div></div>
-                <div className="col-span-1">
-                  <select
-                    value={r.role ?? 'free'}
-                    onChange={(e) => patchRow(r.uid, { role: e.target.value as Role, tier: roleToTier(e.target.value as Role) })}
-                    className="w-full rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-zinc-900 px-2 py-1 text-sm"
-                  >
-                    <option value="admin">admin</option>
-                    <option value="premium">premium</option>
-                    <option value="basic">basic</option>
-                    <option value="free">free</option>
-                  </select>
-                </div>
-                <div className="col-span-2 flex items-center gap-2">
-                  <input
-                    type="date"
-                    value={startStr}
-                    onChange={(e) => {
-                      const newStart = inputDateToDate(e.target.value);
-                      const currEnd = r.subscriptionEndAt?.toDate() ?? null;
-                      const clampedEnd = (currEnd && newStart && currEnd.getTime() < newStart.getTime())
-                        ? new Date(newStart.getFullYear(), newStart.getMonth(), newStart.getDate() + 1)
-                        : currEnd;
-                      const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-                      patchRow(r.uid, {
-                        subscriptionStartAt: Timestamp.fromDate(newStart),
-                        subscriptionEndAt: endTs,
-                        remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(clampedEnd!) : null),
-                      });
-                    }}
-                    className="w-[140px] rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-zinc-900 px-2 py-1 text-sm"
-                  />
-                  <span>~</span>
-                  <input
-                    type="date"
-                    value={endStr}
-                    onChange={(e) => {
-                      const newEnd = inputDateToDate(e.target.value);
-                      const currStart = r.subscriptionStartAt?.toDate() ?? null;
-                      const clampedEnd = (currStart && newEnd && newEnd.getTime() < currStart.getTime())
-                        ? new Date(currStart.getFullYear(), currStart.getMonth(), currStart.getDate() + 1)
-                        : newEnd;
-                      const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-                      patchRow(r.uid, {
-                        subscriptionEndAt: endTs,
-                        remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(clampedEnd!) : null),
-                      });
-                    }}
-                    className="w-[140px] rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-zinc-900 px-2 py-1 text-sm"
-                  />
-                </div>
-                <div className="col-span-1">
-                  <input
-                    type="number"
-                    min={0}
-                    value={r.remainingDays ?? 0}
-                    onChange={(e) => {
-                      const n = Math.max(0, Number(e.target.value || 0));
-                      const endDate = kstTodayPlusDays(n);
-                      patchRow(r.uid, { remainingDays: n, subscriptionEndAt: Timestamp.fromDate(endDate) });
-                    }}
-                    className="w-full rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-zinc-900 px-2 py-1 text-sm"
-                  />
-                </div>
-                <div className="col-span-2 text-xs text-gray-600 dark:text-gray-300 space-y-1">
-                  <div>생성: {r.createdAt ? formatDateYMDHM(tsToDate(r.createdAt)) : '-'}</div>
-                  <div>최근로그인: {r.lastLoginAt ? formatDateYMDHM(tsToDate(r.lastLoginAt)) : '-'}</div>
-                  <div>최근결제: {r.lastPaidAt ? formatDateYMDHM(tsToDate(r.lastPaidAt)) : '-'}</div>
-                </div>
-              </div>
+              <label
+                key={m.slug}
+                className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-800 p-3 cursor-pointer"
+                title={checked ? '비활성화됨' : '활성화됨'}
+              >
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={checked}
+                  onChange={() => toggleMenu(m.slug)}
+                />
+                <span className="text-sm">{m.label}</span>
+                <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800">
+                  {checked ? 'OFF' : 'ON'}
+                </span>
+              </label>
             );
           })}
         </div>
-      </div>
-    </div>
+
+        <div className="mt-4 flex gap-2">
+          <button
+            onClick={saveMenuDisabled}
+            disabled={savingNav}
+            className={`rounded px-4 py-2 text-sm font-semibold ${
+              savingNav ? 'bg-slate-300 text-slate-600' : 'bg-black text-white hover:opacity-90'
+            }`}
+          >
+            {savingNav ? '저장 중…' : '저장'}
+          </button>
+
+          <label className="ml-4 inline-flex items-center gap-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={showDebug}
+              onChange={(e) => setShowDebug(e.target.checked)}
+            />
+            디버그 패널 표시
+          </label>
+        </div>
+      </section>
+
+      {/* 사용자 관리 섹션 */}
+      <section>
+        <h1 className="text-xl font-semibold mb-4">사용자 관리</h1>
+        {fetching ? (
+          <div className="text-sm text-gray-500">사용자 목록을 불러오는 중...</div>
+        ) : (
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="text-left border-b">
+                <th className="py-2 pr-4">Email</th>
+                <th className="py-2 pr-4">Role</th>
+                <th className="py-2 pr-4">Subscribed</th>
+                <th className="py-2 pr-4">Start</th>
+                <th className="py-2 pr-4">End</th>
+                <th className="py-2 pr-4">남은일수</th>
+                <th className="py-2 pr-4">Unique ID</th>
+                <th className="py-2 pr-4">Joined</th>
+                <th className="py-2 pr-4">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.uid} className="border-b">
+                  <td className="py-2 pr-4 align-top">{r.email}</td>
+                  <td className="py-2 pr-4 align-top">
+                    <select
+                      className="border rounded px-2 py-1 bg-white text-gray-900 dark:bg-transparent dark:text-gray-100"
+                      value={r.role}
+                      onChange={(e) => patchRow(r.uid, { role: e.target.value as Role })}
+                    >
+                      <option value="free">free</option>
+                      <option value="basic">basic</option>
+                      <option value="premium">premium</option>
+                      <option value="admin">admin</option>
+                    </select>
+                  </td>
+                  <td className="py-2 pr-4 align-top">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4"
+                      checked={!!r.isSubscribed}
+                      onChange={(e) => toggleSubscribed(r, e.target.checked)}
+                    />
+                  </td>
+                  <td className="py-2 pr-4 align-top">
+                    <input
+                      type="date"
+                      className="border rounded px-2 py-1 bg-transparent"
+                      value={tsToInputDate(r.subscriptionStartAt)}
+                      onChange={(e) => changeStartDate(r, e.target.value)}
+                      disabled={!r.isSubscribed}
+                    />
+                  </td>
+                  <td className="py-2 pr-4 align-top">
+                    <input
+                      type="date"
+                      className="border rounded px-2 py-1 bg-transparent"
+                      value={tsToInputDate(r.subscriptionEndAt)}
+                      onChange={(e) => changeEndDate(r, e.target.value)}
+                      disabled={!r.isSubscribed}
+                    />
+                  </td>
+                  <td className="py-2 pr-4 align-top">
+                    <input
+                      type="number"
+                      min={0}
+                      className="w-24 border rounded px-2 py-1 bg-transparent"
+                      value={r.remainingDays ?? ''}
+                      onChange={(e) => changeRemainingDays(r, e.target.value)}
+                      disabled={!r.isSubscribed}
+                    />
+                  </td>
+                  <td className="py-2 pr-4 align-top">{r.uniqueId ?? '-'}</td>
+                  <td className="py-2 pr-4 align-top">{r.joinedAt ? tsToInputDate(r.joinedAt) : '-'}</td>
+                  <td className="py-2 pr-4 align-top">
+                    <button
+                      onClick={() => handleSave(r)}
+                      className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
+                      disabled={saving === r.uid}
+                    >
+                      {saving === r.uid ? '저장 중…' : '저장'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      {/* 디버그 패널 */}
+      {showDebug && (
+        <section className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-slate-800 dark:bg-amber-100/30 dark:text-amber-50">
+          <div className="mb-2 font-semibold">디버그 패널</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 whitespace-pre-wrap">
+            <div>
+              {/* 컨텍스트/문서 역할 동시 노출로 불일치 즉시 확인 */}
+              <div>myRole(from context): {String(myRoleFromContext)}</div>
+              <div>usersDocRole(from users/{'{'}uid{'}'}): {String(usersDocRole ?? '-')}</div>
+              <div>authUid: {authUid ?? '-'}</div>
+            </div>
+            <div className="overflow-auto max-h-56">
+              <div className="font-semibold">tokenClaims</div>
+              <pre>{safeStringify(dbg.tokenClaims ?? {})}</pre>
+            </div>
+            <div className="overflow-auto max-h-56 md:col-span-2">
+              <div className="font-semibold">payload</div>
+              <pre>{safeStringify(dbg.uploadPolicyPayload ?? {
+                navigation: { disabled: navDisabled },
+                updatedAt: '(serverTimestamp)',
+              })}</pre>
+            </div>
+            {dbg.lastError && (
+              <div className="overflow-auto max-h-56 md:col-span-2 text-red-700">
+                <div className="font-semibold">lastError</div>
+                <pre>{safeStringify(dbg.lastError)}</pre>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 flex gap-2">
+            <button
+              className="px-3 py-1 rounded border"
+              onClick={dumpContext}
+              title="현재 로그인/권한/문서 상태를 패널에 갱신"
+            >
+              상태 새로고침
+            </button>
+          </div>
+        </section>
+      )}
+    </main>
   );
 }
