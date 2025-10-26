@@ -3,12 +3,12 @@
 /**
  * 관리자 페이지 (메뉴 비활성화 + 사용자 관리)
  * - UI/디자인 유지, 로직만 보완
- * - Firestore 규칙과 동일하게 "users/{uid}.role === 'admin'" 기준으로 관리자 판단
- * - 디버그 패널에 context role vs users문서 role 동시 노출
+ * - 핵심 보완:
+ *   1) 컨텍스트 role 로딩 중에는 "권한 없음"을 먼저 띄우지 않음(로딩 표시)
+ *   2) 컨텍스트 role이 없을 때 Firestore users/{uid}.role을 즉시 조회하여 대체 판정
+ *   3) 둘 중 하나라도 'admin'이면 관리자 접근 허용
  *
- * 변경점(설치 없이 동작):
- * - date-fns, date-fns/locale 제거
- * - Intl.DateTimeFormat('ko-KR') 기반 포맷 유틸로 대체
+ * - 외부 패키지(예: date-fns) 의존 제거(설치 불필요)
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -29,7 +29,7 @@ import {
   where,
 } from 'firebase/firestore';
 
-/* ───────── KST & 날짜 유틸 (date-fns 대체) ───────── */
+/* ───────── KST & 날짜 유틸 (설치 없이 동작) ───────── */
 
 // KST(+09:00) 보정
 const toKst = (d: Date) => {
@@ -51,14 +51,13 @@ const kstTodayPlusDays = (days: number) => {
   return base;
 };
 
-// "yyyy-MM-dd" 문자열 → KST 00:00:00 Date
+// "yyyy-MM-dd" → KST 00:00:00 Date
 const inputDateToDate = (input: string) => {
   const [y, m, d] = input.split('-').map((x) => Number(x));
-  // 월은 0-11, 일 기본값 보정
   return new Date(y, (m || 1) - 1, d || 1, 0, 0, 0);
 };
 
-// "yyyy-MM-dd" 포맷(ko-KR, zero-padding 보장)
+// "yyyy-MM-dd"
 const formatDateYMD = (d: Date | null) => {
   if (!d) return '';
   const k = toKst(d);
@@ -68,7 +67,7 @@ const formatDateYMD = (d: Date | null) => {
   return `${y}-${m}-${day}`;
 };
 
-// "yyyy-MM-dd HH:mm" 포맷(ko-KR, zero-padding)
+// "yyyy-MM-dd HH:mm"
 const formatDateYMDHM = (d: Date | null) => {
   if (!d) return '';
   const k = toKst(d);
@@ -125,19 +124,68 @@ const calcRemainingDaysFromEnd = (end: Timestamp | null): number => {
 };
 
 export default function AdminPage() {
-  const ctx = useUser();
+  const ctx = useUser(); // { user, role, ... }
   const [rows, setRows] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 컨텍스트 표기용
-  const ctxRole: Role = ctx?.role as Role;
-  const tier = roleToTier(ctxRole);
+  // 🔐 관리자 판정 안정화용 상태
+  const [effectiveRole, setEffectiveRole] = useState<Role>(undefined);
+  const [roleReady, setRoleReady] = useState(false); // role 최종 판정이 끝났는지
 
-  // 권한 가드: 관리자만 접근(표시)
-  const isAdmin = ctxRole === 'admin';
+  // 1) 컨텍스트 role 우선 사용, 2) 없으면 Firestore users/{uid}.role 조회
+  useEffect(() => {
+    let canceled = false;
 
-  // Firestore users 로드
+    (async () => {
+      try {
+        // 컨텍스트에 role이 이미 있으면 그것을 신뢰
+        if (ctx?.role) {
+          if (!canceled) {
+            setEffectiveRole(ctx.role as Role);
+            setRoleReady(true);
+          }
+          return;
+        }
+
+        // 컨텍스트 user는 있는데 role이 비어 있으면 Firestore에서 보조 조회
+        const uid = ctx?.user?.uid;
+        if (uid) {
+          const snap = await getDoc(doc(db, 'users', uid));
+          const roleFS = (snap.exists() ? (snap.data()?.role as Role) : undefined) || undefined;
+          if (!canceled) {
+            setEffectiveRole(roleFS);
+            setRoleReady(true);
+          }
+          return;
+        }
+
+        // user도 없으면 아직 로그인/컨텍스트 로딩 단계 → 잠시 대기
+        if (!canceled) {
+          setEffectiveRole(undefined);
+          setRoleReady(false);
+        }
+      } catch (e) {
+        if (!canceled) {
+          console.error('[admin] role resolve error:', e);
+          setEffectiveRole(undefined);
+          setRoleReady(true); // 에러가 나도 더 기다리진 않음
+        }
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, [ctx?.role, ctx?.user?.uid]);
+
+  // tier 계산(표시용)
+  const tier = roleToTier(effectiveRole);
+
+  // 최종 관리자 여부
+  const isAdmin = effectiveRole === 'admin';
+
+  // Firestore users 목록 로드
   const fetchUsers = async () => {
     setLoading(true);
     setError(null);
@@ -169,7 +217,6 @@ export default function AdminPage() {
           lastLoginAt: data.lastLoginAt ?? null,
           lastPaidAt: data.lastPaidAt ?? null,
         };
-        // remainingDays 없으면 종료일로 계산
         if (row.remainingDays == null) {
           row.remainingDays = calcRemainingDaysFromEnd(row.subscriptionEndAt ?? null);
         }
@@ -192,87 +239,23 @@ export default function AdminPage() {
     }
   };
 
+  // role 판정이 끝난 뒤에만 목록 로드
   useEffect(() => {
-    fetchUsers();
-  }, []);
-
-  // 공통 patch
-  const patchRow = async (uid: string, patch: Partial<UserRow>) => {
-    try {
-      const ref = doc(db, 'users', uid);
-      const payload: any = { ...patch, updatedAt: serverTimestamp() };
-      await updateDoc(ref, payload);
-      setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, ...patch } : r)));
-    } catch (e: any) {
-      console.error(e);
-      alert('수정 중 오류가 발생했습니다: ' + (e?.message || 'unknown'));
+    if (roleReady && isAdmin) {
+      fetchUsers();
     }
-  };
+  }, [roleReady, isAdmin]);
 
-  // 역할 변경
-  const changeRole = (r: UserRow, v: Role) => {
-    patchRow(r.uid, { role: v, tier: roleToTier(v) });
-  };
+  // ⛳ ① role 판정이 아직이면 "권한 없음" 대신 로딩만 보여줌
+  if (!roleReady) {
+    return (
+      <main className="p-6">
+        <div className="text-sm text-gray-500">로딩 중…</div>
+      </main>
+    );
+  }
 
-  // 시작/종료일 교차 보정
-  const clampEndAfterStart = (start: Date | null, end: Date | null) => {
-    if (!start || !end) return end;
-    if (end.getTime() < start.getTime()) {
-      return new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
-    }
-    return end;
-  };
-
-  // 구독 시작/종료 날짜 편집(세트)
-  const changeStartDate = (r: UserRow, input: string) => {
-    const newStart = inputDateToDate(input);
-    const currEnd = r.subscriptionEndAt?.toDate() ?? null;
-    const clampedEnd = clampEndAfterStart(newStart, currEnd);
-    const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-
-    patchRow(r.uid, {
-      subscriptionStartAt: Timestamp.fromDate(newStart),
-      subscriptionEndAt: endTs,
-      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(clampedEnd!) : null),
-    });
-  };
-
-  const changeEndDate = (r: UserRow, input: string) => {
-    const newEnd = inputDateToDate(input);
-    const currStart = r.subscriptionStartAt?.toDate() ?? null;
-    const clampedEnd = clampEndAfterStart(currStart, newEnd);
-    const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-
-    patchRow(r.uid, {
-      subscriptionEndAt: endTs,
-      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(clampedEnd!) : null),
-    });
-  };
-
-  // 남은 일수 직접 입력
-  const changeRemainingDays = (r: UserRow, val: string) => {
-    const n = Math.max(0, Number(val || 0));
-    const endDate = kstTodayPlusDays(n);
-    patchRow(r.uid, { remainingDays: n, subscriptionEndAt: Timestamp.fromDate(endDate) });
-  };
-
-  // 행 추가(테스트용)
-  const addUserRow = async () => {
-    const uid = prompt('추가할 uid를 입력하세요?');
-    if (!uid) return;
-    const ref = doc(db, 'users', uid);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, {
-        role: 'free',
-        createdAt: serverTimestamp(),
-      });
-    }
-    alert('추가/갱신 완료');
-    fetchUsers();
-  };
-
-  // 렌더
+  // ⛳ ② 최종 판정: admin 아니면 접근 불가
   if (!isAdmin) {
     return (
       <main className="p-6">
@@ -281,12 +264,13 @@ export default function AdminPage() {
           접근 권한이 없습니다. 관리자 계정으로 로그인해 주세요.
         </p>
         <div className="mt-4 text-xs text-gray-500">
-          (현재 컨텍스트 role: <b>{String(ctxRole ?? 'unknown')}</b>)
+          (현재 판정된 role: <b>{String(effectiveRole ?? 'unknown')}</b>)
         </div>
       </main>
     );
   }
 
+  // ⛳ ③ 여기부터 관리자 화면(기존 UI 유지)
   return (
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -299,7 +283,17 @@ export default function AdminPage() {
             새로고침
           </button>
           <button
-            onClick={addUserRow}
+            onClick={async () => {
+              const uid = prompt('추가할 uid를 입력하세요?');
+              if (!uid) return;
+              const ref = doc(db, 'users', uid);
+              const snap = await getDoc(ref);
+              if (!snap.exists()) {
+                await setDoc(ref, { role: 'free', createdAt: serverTimestamp() });
+              }
+              alert('추가/갱신 완료');
+              fetchUsers();
+            }}
             className="rounded px-3 py-1 border border-gray-300 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/10 text-sm"
           >
             사용자 추가
@@ -309,7 +303,10 @@ export default function AdminPage() {
 
       {/* 디버그 패널 */}
       <div className="mb-4 rounded-lg border border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-600 dark:text-gray-300">
-        <div>context role: <b>{String(ctxRole ?? 'unknown')}</b> → tier: <b>{String(tier)}</b></div>
+        <div>
+          effective role: <b>{String(effectiveRole ?? 'unknown')}</b> → tier:{' '}
+          <b>{String(tier)}</b>
+        </div>
       </div>
 
       {/* 목록 */}
@@ -324,9 +321,7 @@ export default function AdminPage() {
           <div className="col-span-2">기타</div>
         </div>
 
-        {loading && (
-          <div className="px-5 py-4 text-sm text-gray-500">로딩 중…</div>
-        )}
+        {loading && <div className="px-5 py-4 text-sm text-gray-500">로딩 중…</div>}
         {error && (
           <div className="px-5 py-4 text-sm text-red-600 dark:text-red-400">{error}</div>
         )}
@@ -340,19 +335,13 @@ export default function AdminPage() {
 
             return (
               <div key={r.uid} className="grid grid-cols-12 gap-2 px-4 py-3 text-sm">
-                <div className="col-span-2">
-                  <div className="font-mono text-xs">{r.uid}</div>
-                </div>
-                <div className="col-span-2">
-                  <div className="truncate">{r.email ?? '-'}</div>
-                </div>
-                <div className="col-span-2">
-                  <div className="truncate">{r.displayName ?? '-'}</div>
-                </div>
+                <div className="col-span-2"><div className="font-mono text-xs">{r.uid}</div></div>
+                <div className="col-span-2"><div className="truncate">{r.email ?? '-'}</div></div>
+                <div className="col-span-2"><div className="truncate">{r.displayName ?? '-'}</div></div>
                 <div className="col-span-1">
                   <select
                     value={r.role ?? 'free'}
-                    onChange={(e) => changeRole(r, e.target.value as Role)}
+                    onChange={(e) => patchRow(r.uid, { role: e.target.value as Role, tier: roleToTier(e.target.value as Role) })}
                     className="w-full rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-zinc-900 px-2 py-1 text-sm"
                   >
                     <option value="admin">admin</option>
@@ -365,14 +354,37 @@ export default function AdminPage() {
                   <input
                     type="date"
                     value={startStr}
-                    onChange={(e) => changeStartDate(r, e.target.value)}
+                    onChange={(e) => {
+                      const newStart = inputDateToDate(e.target.value);
+                      const currEnd = r.subscriptionEndAt?.toDate() ?? null;
+                      const clampedEnd = (currEnd && newStart && currEnd.getTime() < newStart.getTime())
+                        ? new Date(newStart.getFullYear(), newStart.getMonth(), newStart.getDate() + 1)
+                        : currEnd;
+                      const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
+                      patchRow(r.uid, {
+                        subscriptionStartAt: Timestamp.fromDate(newStart),
+                        subscriptionEndAt: endTs,
+                        remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(clampedEnd!) : null),
+                      });
+                    }}
                     className="w-[140px] rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-zinc-900 px-2 py-1 text-sm"
                   />
                   <span>~</span>
                   <input
                     type="date"
                     value={endStr}
-                    onChange={(e) => changeEndDate(r, e.target.value)}
+                    onChange={(e) => {
+                      const newEnd = inputDateToDate(e.target.value);
+                      const currStart = r.subscriptionStartAt?.toDate() ?? null;
+                      const clampedEnd = (currStart && newEnd && newEnd.getTime() < currStart.getTime())
+                        ? new Date(currStart.getFullYear(), currStart.getMonth(), currStart.getDate() + 1)
+                        : newEnd;
+                      const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
+                      patchRow(r.uid, {
+                        subscriptionEndAt: endTs,
+                        remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(clampedEnd!) : null),
+                      });
+                    }}
                     className="w-[140px] rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-zinc-900 px-2 py-1 text-sm"
                   />
                 </div>
@@ -381,7 +393,11 @@ export default function AdminPage() {
                     type="number"
                     min={0}
                     value={r.remainingDays ?? 0}
-                    onChange={(e) => changeRemainingDays(r, e.target.value)}
+                    onChange={(e) => {
+                      const n = Math.max(0, Number(e.target.value || 0));
+                      const endDate = kstTodayPlusDays(n);
+                      patchRow(r.uid, { remainingDays: n, subscriptionEndAt: Timestamp.fromDate(endDate) });
+                    }}
                     className="w-full rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-zinc-900 px-2 py-1 text-sm"
                   />
                 </div>
@@ -393,10 +409,6 @@ export default function AdminPage() {
               </div>
             );
           })}
-        </div>
-
-        <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-300">
-          현재 상태: <span className="font-mono">{tier}</span>
         </div>
       </div>
     </div>
