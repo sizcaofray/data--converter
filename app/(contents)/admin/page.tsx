@@ -5,10 +5,14 @@
  * - UI/디자인 유지, 로직만 보완
  * - Firestore 규칙과 동일하게 "users/{uid}.role === 'admin'" 기준으로 관리자 판단
  * - 디버그 패널에 context role vs users문서 role 동시 노출
+ *
+ * 변경점(설치 없이 동작):
+ * - date-fns, date-fns/locale 제거
+ * - Intl.DateTimeFormat('ko-KR') 기반 포맷 유틸로 대체
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useUser } from '@/contexts/UserContext'; // 컨텍스트(표시용/보조)
+import { useUser } from '@/contexts/UserContext';
 import { db } from '@/lib/firebase/firebase';
 import {
   collection,
@@ -24,30 +28,59 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { format } from 'date-fns';
-import { ko } from 'date-fns/locale';
 
-// 날짜 유틸 (KST 기준)
+/* ───────── KST & 날짜 유틸 (date-fns 대체) ───────── */
+
+// KST(+09:00) 보정
 const toKst = (d: Date) => {
-  const tzOffset = 9 * 60; // KST +09:00
-  return new Date(d.getTime() + (tzOffset - d.getTimezoneOffset()) * 60 * 1000);
+  const tzOffsetMin = 9 * 60; // +09:00
+  return new Date(d.getTime() + (tzOffsetMin - d.getTimezoneOffset()) * 60 * 1000);
 };
+
+// 오늘(0시) KST
 const kstToday = () => {
   const now = new Date();
   const k = toKst(now);
   return new Date(k.getFullYear(), k.getMonth(), k.getDate());
 };
+
+// KST 오늘 + n일
 const kstTodayPlusDays = (days: number) => {
   const base = kstToday();
   base.setDate(base.getDate() + days);
   return base;
 };
+
+// "yyyy-MM-dd" 문자열 → KST 00:00:00 Date
 const inputDateToDate = (input: string) => {
-  // yyyy-MM-dd → Date (KST 00:00:00)
   const [y, m, d] = input.split('-').map((x) => Number(x));
+  // 월은 0-11, 일 기본값 보정
   return new Date(y, (m || 1) - 1, d || 1, 0, 0, 0);
 };
-const formatDate = (d: Date | null) => (d ? format(d, 'yyyy-MM-dd', { locale: ko }) : '');
+
+// "yyyy-MM-dd" 포맷(ko-KR, zero-padding 보장)
+const formatDateYMD = (d: Date | null) => {
+  if (!d) return '';
+  const k = toKst(d);
+  const y = k.getFullYear();
+  const m = String(k.getMonth() + 1).padStart(2, '0');
+  const day = String(k.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+// "yyyy-MM-dd HH:mm" 포맷(ko-KR, zero-padding)
+const formatDateYMDHM = (d: Date | null) => {
+  if (!d) return '';
+  const k = toKst(d);
+  const y = k.getFullYear();
+  const m = String(k.getMonth() + 1).padStart(2, '0');
+  const day = String(k.getDate()).padStart(2, '0');
+  const hh = String(k.getHours()).padStart(2, '0');
+  const mm = String(k.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${day} ${hh}:${mm}`;
+};
+
+// Firestore Timestamp → Date | null
 const tsToDate = (ts: Timestamp | null | undefined) => (ts ? ts.toDate() : null);
 
 type Role = 'admin' | 'basic' | 'premium' | 'free' | undefined;
@@ -58,7 +91,7 @@ interface UserRow {
   displayName?: string | null;
 
   role?: Role;
-  tier?: 'free' | 'basic' | 'premium'; // 표시용
+  tier?: 'free' | 'basic' | 'premium';
   createdAt?: Timestamp | null;
 
   // 구독 관련
@@ -82,6 +115,7 @@ const roleToTier = (role?: Role): UserRow['tier'] => {
   }
 };
 
+// 종료일 기준 남은 일수(오늘 0시 기준, 음수면 0)
 const calcRemainingDaysFromEnd = (end: Timestamp | null): number => {
   if (!end) return 0;
   const endDate = toKst(end.toDate());
@@ -91,7 +125,7 @@ const calcRemainingDaysFromEnd = (end: Timestamp | null): number => {
 };
 
 export default function AdminPage() {
-  const ctx = useUser(); // { user, role } 등
+  const ctx = useUser();
   const [rows, setRows] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,12 +137,11 @@ export default function AdminPage() {
   // 권한 가드: 관리자만 접근(표시)
   const isAdmin = ctxRole === 'admin';
 
-  // Firestore에서 users 목록 로드
+  // Firestore users 로드
   const fetchUsers = async () => {
     setLoading(true);
     setError(null);
     try {
-      // 관리자 우선 50명
       const qAdmin = query(
         collection(db, 'users'),
         where('role', '==', 'admin'),
@@ -117,7 +150,6 @@ export default function AdminPage() {
       );
       const adminSnap = await getDocs(qAdmin);
 
-      // 일반 사용자
       const qUsers = query(collection(db, 'users'), orderBy('createdAt', 'desc'), limit(200));
       const userSnap = await getDocs(qUsers);
 
@@ -137,7 +169,7 @@ export default function AdminPage() {
           lastLoginAt: data.lastLoginAt ?? null,
           lastPaidAt: data.lastPaidAt ?? null,
         };
-        // 정합성: remainingDays가 없으면 subscriptionEndAt로 계산
+        // remainingDays 없으면 종료일로 계산
         if (row.remainingDays == null) {
           row.remainingDays = calcRemainingDaysFromEnd(row.subscriptionEndAt ?? null);
         }
@@ -164,15 +196,13 @@ export default function AdminPage() {
     fetchUsers();
   }, []);
 
-  // 행 수정
+  // 공통 patch
   const patchRow = async (uid: string, patch: Partial<UserRow>) => {
     try {
       const ref = doc(db, 'users', uid);
       const payload: any = { ...patch, updatedAt: serverTimestamp() };
       await updateDoc(ref, payload);
-      setRows((prev) =>
-        prev.map((r) => (r.uid === uid ? { ...r, ...patch } : r))
-      );
+      setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, ...patch } : r)));
     } catch (e: any) {
       console.error(e);
       alert('수정 중 오류가 발생했습니다: ' + (e?.message || 'unknown'));
@@ -184,46 +214,16 @@ export default function AdminPage() {
     patchRow(r.uid, { role: v, tier: roleToTier(v) });
   };
 
-  // 구독 시작/종료 날짜 편집
-  const changeStart = (r: UserRow, input: string) => {
-    const newStart = inputDateToDate(input);
-    const end = r.subscriptionEndAt?.toDate() ?? null;
-    // end보다 start가 뒤가 되면 end를 start+1일로 보정
-    const clampedEnd =
-      end && newStart && end.getTime() < newStart.getTime()
-        ? new Date(newStart.getFullYear(), newStart.getMonth(), newStart.getDate() + 1)
-        : end;
-    const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-
-    patchRow(r.uid, {
-      subscriptionStartAt: Timestamp.fromDate(newStart),
-      subscriptionEndAt: endTs,
-      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
-    });
+  // 시작/종료일 교차 보정
+  const clampEndAfterStart = (start: Date | null, end: Date | null) => {
+    if (!start || !end) return end;
+    if (end.getTime() < start.getTime()) {
+      return new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+    }
+    return end;
   };
 
-  const changeEnd = (r: UserRow, input: string) => {
-    const newEnd = inputDateToDate(input);
-    const start = r.subscriptionStartAt?.toDate() ?? null;
-    // start보다 end가 앞이면 end=start+1일로 보정
-    const clampedEnd =
-      start && newEnd && newEnd.getTime() < start.getTime()
-        ? new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1)
-        : newEnd;
-    const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-
-    patchRow(r.uid, {
-      subscriptionEndAt: endTs,
-      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
-    });
-  };
-
-  const changeRemainingDays = (r: UserRow, val: string) => {
-    const n = Math.max(0, Number(val || 0));
-    const endDate = kstTodayPlusDays(n);
-    patchRow(r.uid, { remainingDays: n, subscriptionEndAt: Timestamp.fromDate(endDate) });
-  };
-
+  // 구독 시작/종료 날짜 편집(세트)
   const changeStartDate = (r: UserRow, input: string) => {
     const newStart = inputDateToDate(input);
     const currEnd = r.subscriptionEndAt?.toDate() ?? null;
@@ -233,7 +233,7 @@ export default function AdminPage() {
     patchRow(r.uid, {
       subscriptionStartAt: Timestamp.fromDate(newStart),
       subscriptionEndAt: endTs,
-      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
+      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(clampedEnd!) : null),
     });
   };
 
@@ -245,16 +245,15 @@ export default function AdminPage() {
 
     patchRow(r.uid, {
       subscriptionEndAt: endTs,
-      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
+      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(clampedEnd!) : null),
     });
   };
 
-  const clampEndAfterStart = (start: Date | null, end: Date | null) => {
-    if (!start || !end) return end;
-    if (end.getTime() < start.getTime()) {
-      return new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
-    }
-    return end;
+  // 남은 일수 직접 입력
+  const changeRemainingDays = (r: UserRow, val: string) => {
+    const n = Math.max(0, Number(val || 0));
+    const endDate = kstTodayPlusDays(n);
+    patchRow(r.uid, { remainingDays: n, subscriptionEndAt: Timestamp.fromDate(endDate) });
   };
 
   // 행 추가(테스트용)
@@ -301,7 +300,7 @@ export default function AdminPage() {
           </button>
           <button
             onClick={addUserRow}
-            className="rounded px-3 py-1 border border-gray-300 dark:border-gray-700 hover:bg-black/5 dark:hover:bg.white/10 text-sm"
+            className="rounded px-3 py-1 border border-gray-300 dark:border-gray-700 hover:bg-black/5 dark:hover:bg-white/10 text-sm"
           >
             사용자 추가
           </button>
@@ -336,8 +335,8 @@ export default function AdminPage() {
           {rows.map((r) => {
             const start = tsToDate(r.subscriptionStartAt ?? null);
             const end = tsToDate(r.subscriptionEndAt ?? null);
-            const startStr = formatDate(start);
-            const endStr = formatDate(end);
+            const startStr = formatDateYMD(start);
+            const endStr = formatDateYMD(end);
 
             return (
               <div key={r.uid} className="grid grid-cols-12 gap-2 px-4 py-3 text-sm">
@@ -387,16 +386,15 @@ export default function AdminPage() {
                   />
                 </div>
                 <div className="col-span-2 text-xs text-gray-600 dark:text-gray-300 space-y-1">
-                  <div>생성: {r.createdAt ? format(tsToDate(r.createdAt)!, 'yyyy-MM-dd HH:mm', { locale: ko }) : '-'}</div>
-                  <div>최근로그인: {r.lastLoginAt ? format(tsToDate(r.lastLoginAt)!, 'yyyy-MM-dd HH:mm', { locale: ko }) : '-'}</div>
-                  <div>최근결제: {r.lastPaidAt ? format(tsToDate(r.lastPaidAt)!, 'yyyy-MM-dd HH:mm', { locale: ko }) : '-'}</div>
+                  <div>생성: {r.createdAt ? formatDateYMDHM(tsToDate(r.createdAt)) : '-'}</div>
+                  <div>최근로그인: {r.lastLoginAt ? formatDateYMDHM(tsToDate(r.lastLoginAt)) : '-'}</div>
+                  <div>최근결제: {r.lastPaidAt ? formatDateYMDHM(tsToDate(r.lastPaidAt)) : '-'}</div>
                 </div>
               </div>
             );
           })}
         </div>
 
-        {/* (선택) 현재 티어 표기: 디버깅에 유용, 필요 없으면 제거 가능 */}
         <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-300">
           현재 상태: <span className="font-mono">{tier}</span>
         </div>
