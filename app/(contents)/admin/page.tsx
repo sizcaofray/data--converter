@@ -7,6 +7,8 @@
  * - 디버그 패널에 context role vs users문서 role 동시 노출
  */
 
+export const dynamic = 'force-dynamic';
+
 import { useEffect, useMemo, useState } from 'react';
 import { useUser } from '@/contexts/UserContext'; // 컨텍스트(표시용/보조)
 import { db } from '@/lib/firebase/firebase';
