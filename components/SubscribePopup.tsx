@@ -5,30 +5,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 type PlanKey = 'free' | 'basic' | 'premium';
 interface Plan { key: PlanKey; name: string; price: number; description: string; }
 
-/** 구독 버튼이 있는 페이지에서만 팝업이 동작하도록 설계 */
 export default function SubscribePopup() {
   const [open, setOpen] = useState(false);
   const hasTriggersRef = useRef(false);
 
   const plans = useMemo<Plan[]>(
     () => [
-      { key: 'free',    name: '무료',    price: 0,       description: '기본 변환 (한 번에 1개)' },
-      { key: 'basic',   name: 'Basic',   price: 10_000,  description: '동시 처리 확장 / 일반 사용자용' },
-      { key: 'premium', name: 'Premium', price: 100_000, description: '검증/리포트 포함 / 파워 유저용' },
+      { key: 'free',    name: '무료',    price: 0,       description: '기본 변환 (1개씩)' },
+      { key: 'basic',   name: 'Basic',   price: 10_000,  description: '무제한 변환 / 일반 사용자용' },
+      { key: 'premium', name: 'Premium', price: 100_000, description: '리포트 / 검증 기능 포함' },
     ],
     []
   );
 
-  /** 현재 페이지에 트리거 버튼이 있는지 1회 점검 */
+  // 현재 페이지에 구독 버튼이 있는지 확인
   useEffect(() => {
     const sel = '[data-open="subscribe"], #subscribe-btn, .subscribe-btn';
-    const exist = !!document.querySelector(sel);
-    hasTriggersRef.current = exist;
+    hasTriggersRef.current = !!document.querySelector(sel);
   }, []);
 
-  /** 트리거가 있을 때만 클릭 위임 리스너 등록 */
+  // 구독 버튼이 있을 때만 이벤트 리스너 등록
   useEffect(() => {
-    if (!hasTriggersRef.current) return; // ← 다른 페이지는 여기서 바로 종료 (리스너 미등록)
+    if (!hasTriggersRef.current) return;
 
     const matchTrigger = (el: Element | null): Element | null => {
       let cur: Element | null = el;
@@ -48,7 +46,7 @@ export default function SubscribePopup() {
       if (!target) return;
       const t = matchTrigger(target);
       if (!t) return;
-      if ((t as HTMLElement).tagName === 'A') e.preventDefault(); // 라우팅 방지
+      if ((t as HTMLElement).tagName === 'A') e.preventDefault();
       setOpen(true);
     };
 
@@ -56,22 +54,12 @@ export default function SubscribePopup() {
     return () => document.removeEventListener('click', onClick, true);
   }, []);
 
-  /** ESC로 닫기 */
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open]);
-
-  /** 오버레이 바깥 클릭 시 닫기 */
   const onOverlayClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) setOpen(false);
   }, []);
 
-  /** (후속 단계) 실제 결제는 여기에서 Bootpay.request 연결 예정 */
   const onSelectPlan = useCallback((p: Plan) => {
-    alert(`'${p.name}' 플랜 선택됨. 결제 연동은 다음 단계에서 연결합니다.`);
+    alert(`'${p.name}' 플랜 선택됨 (결제 연동은 추후 연결 예정).`);
     setOpen(false);
   }, []);
 
