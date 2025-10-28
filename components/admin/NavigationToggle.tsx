@@ -1,11 +1,21 @@
 'use client';
 
 /**
- * settings/uploadPolicy 문서의 navigation.disabled(string[])을
- * 토글로 편집하는 "메뉴 관리" 섹션 컴포넌트.
+ * components/admin/NavigationToggle.tsx
+ * -----------------------------------------------------------
+ * 목적:
+ *  - 기존 "메뉴 비활성화(navigation.disabled)" 기능 유지
+ *  - 전역 "구독 버튼 활성화(subscribeButtonEnabled)" 토글 추가
  *
- * ✅ 기존 업로드 정책(uploadPolicy) 필드들은 setDoc(..., { merge: true })로 보존됩니다.
- * ✅ 역할/구독에 따른 사이드바 노출 로직에는 영향 없습니다(사이드바에서 disabled면 '보여주되 클릭 불가').
+ * 데이터:
+ *  - 경로: settings/uploadPolicy
+ *  - 필드:
+ *      navigation.disabled: string[]         // 기존 유지
+ *      subscribeButtonEnabled: boolean       // 신규 추가 (기본 true)
+ *
+ * 주의:
+ *  - setDoc(..., { merge: true }) → 기존 값 보존
+ *  - 변수명/키 이름 혼동 금지: subscribeButtonEnabled ← subscribeEnabled(state)
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -14,10 +24,7 @@ import { db } from '@/lib/firebase/firebase';
 
 type MenuConfig = { slug: string; label: string };
 
-/**
- * 프로젝트에 존재하는 실제 메뉴 slug로 구성하세요.
- * (Sidebar의 href 첫 세그먼트와 동일해야 함)
- */
+// ⚠️ 사이드바 슬러그와 동일하게 유지
 const ALL_MENUS: MenuConfig[] = [
   { slug: 'convert', label: 'Data Convert' },
   { slug: 'compare', label: 'Compare' },
@@ -25,74 +32,118 @@ const ALL_MENUS: MenuConfig[] = [
   { slug: 'admin',   label: 'Admin' },
 ];
 
+function sanitizeSlugArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const s = new Set<string>();
+  for (const v of input) {
+    const t = String(v ?? '').trim();
+    if (t) s.add(t);
+  }
+  return [...s].sort();
+}
+
 export default function NavigationToggle() {
+  // ── 기존: 메뉴 비활성화 목록
   const [disabled, setDisabled] = useState<string[]>([]);
+  // ── 신규: 전역 구독 버튼 ON/OFF
+  const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true);
   const [saving, setSaving] = useState(false);
 
-  // settings/uploadPolicy.navigation.disabled 구독
+  // Firestore 실시간 구독 (settings/uploadPolicy)
   useEffect(() => {
     const ref = doc(db, 'settings', 'uploadPolicy');
     return onSnapshot(ref, (snap) => {
-      const data = snap.data() as any | undefined;
-      const arr = data?.navigation?.disabled;
-      setDisabled(Array.isArray(arr) ? arr : []);
+      const data = (snap.data() as any) || {};
+      setDisabled(sanitizeSlugArray(data?.navigation?.disabled));
+      setSubscribeEnabled(
+        data?.subscribeButtonEnabled === undefined
+          ? true
+          : Boolean(data.subscribeButtonEnabled)
+      );
     });
   }, []);
 
-  const disabledSet = useMemo(() => new Set(disabled), [disabled]);
-
-  const toggle = (slug: string) => {
-    setDisabled(prev => {
+  // 체크박스 토글(기존 유지)
+  const toggleSlug = (slug: string) =>
+    setDisabled((prev) => {
       const s = new Set(prev);
       s.has(slug) ? s.delete(slug) : s.add(slug);
-      return Array.from(s);
+      return [...s].sort();
     });
-  };
 
+  const disabledSet = useMemo(() => new Set(disabled), [disabled]);
+
+  // 저장: merge=true → 기존 필드 보존
   const save = async () => {
     setSaving(true);
     try {
       const ref = doc(db, 'settings', 'uploadPolicy');
-      await setDoc(ref, { navigation: { disabled } }, { merge: true });
+      await setDoc(
+        ref,
+        {
+          navigation: { disabled },
+          // ✅ 변수명 ↔ 필드명 명시 매핑 (TS/런타임 모두 안전)
+          subscribeButtonEnabled: subscribeEnabled,
+          updatedAt: new Date(),
+        },
+        { merge: true }
+      );
+      alert('메뉴/구독 설정이 저장되었습니다.');
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
-      <h2 className="text-lg font-bold mb-2">메뉴 관리 (비활성화)</h2>
-      <p className="text-sm text-slate-600 mb-4">
-        체크된 메뉴는 사이드바에서 <b>보여지되 클릭이 차단</b>됩니다.
-        (<code>settings/uploadPolicy.navigation.disabled</code>에 저장)
-      </p>
+    <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-6">
+      <header className="space-y-1">
+        <h2 className="text-lg font-bold">메뉴 관리</h2>
+        <p className="text-sm text-slate-500">
+          체크된 메뉴는 사이트바에서 보여지되 클릭이 차단됩니다.
+          <span className="opacity-70"> (settings/uploadPolicy.navigation.disabled)</span>
+        </p>
+      </header>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-        {ALL_MENUS.map((m) => {
-          const checked = disabledSet.has(m.slug);
-          return (
-            <label
-              key={m.slug}
-              className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-800 p-3 cursor-pointer"
-              title={checked ? '비활성화됨' : '활성화됨'}
-            >
-              <input
-                type="checkbox"
-                className="h-4 w-4"
-                checked={checked}
-                onChange={() => toggle(m.slug)}
-              />
-              <span className="text-sm">{m.label}</span>
-              <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800">
-                {checked ? 'OFF' : 'ON'}
-              </span>
-            </label>
-          );
-        })}
+      {/* ✅ 신규: 전역 '구독 버튼 활성화' 토글 */}
+      <div className="flex items-center gap-3">
+        <span className="font-medium">구독 버튼 활성화</span>
+        <button
+          type="button"
+          className={`px-3 py-1 rounded border ${
+            subscribeEnabled ? 'bg-green-600 text-white' : 'bg-gray-200'
+          }`}
+          onClick={() => setSubscribeEnabled((v) => !v)}
+          aria-pressed={subscribeEnabled}
+          aria-label="구독 버튼 활성화 토글"
+        >
+          {subscribeEnabled ? '활성화' : '비활성화'}
+        </button>
       </div>
 
-      <div className="mt-4 flex gap-2">
+      {/* ── 기존: 메뉴 비활성화 체크박스 목록 */}
+      <div className="space-y-2">
+        <div className="text-sm text-slate-600">아래 체크된 메뉴는 비활성화됩니다.</div>
+        <div className="grid grid-cols-2 gap-2">
+          {ALL_MENUS.map(({ slug, label }) => (
+            <label key={slug} className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={disabledSet.has(slug)}
+                onChange={() => toggleSlug(slug)}
+              />
+              <span>
+                {label}{' '}
+                <span className="text-xs text-slate-500">({slug})</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* 저장 */}
+      <div className="flex items-center justify-between border-t pt-4">
         <button
+          type="button"
           onClick={save}
           disabled={saving}
           className={`rounded px-4 py-2 text-sm font-semibold ${
@@ -101,8 +152,9 @@ export default function NavigationToggle() {
         >
           {saving ? '저장 중…' : '저장'}
         </button>
-        <div className="text-xs text-slate-500 self-center">
-          문서: <code>settings/uploadPolicy</code> / 필드: <code>navigation.disabled: string[]</code> (merge 저장)
+        <div className="text-xs text-slate-500">
+          문서: <code>settings/uploadPolicy</code> · 필드:{' '}
+          <code>navigation.disabled</code>, <code>subscribeButtonEnabled</code>
         </div>
       </div>
     </section>
