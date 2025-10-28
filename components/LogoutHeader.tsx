@@ -9,6 +9,9 @@
  * - 팝업 컨텍스트 없으면 /subscribe?open=1 로 라우팅
  * - ?debug=1 로 접속 시 콘솔 로그 + 우하단 작은 디버그 오버레이 표시
  *   (레이아웃 영향 없음)
+ *
+ * ✅ 추가: settings/uploadPolicy.subscribeButtonEnabled 를 전역 게이트로 사용해
+ *          버튼 “표시/숨김”만 제어(내부 동작/라우팅에는 관여하지 않음)
  */
 
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
@@ -23,7 +26,7 @@ import {
   signInWithPopup,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore'; // [추가] onSnapshot
 import { useUser } from '@/contexts/UserContext';
 import { useSubscribePopup } from '@/contexts/SubscribePopupContext';
 
@@ -140,10 +143,28 @@ export default function LogoutHeader() {
   const isExpired = remain <= 0;
   const badgeText = endDate ? `만료일 ${fmt(endDate)} (${remain}일)` : '만료일 0일';
 
-  /* 버튼 노출 분기(만료 최우선) */
+  /* 버튼 노출 분기(만료 최우선) — 기존 로직 유지 */
   const showSubscribe = !!authUser && isExpired;
   const showUpgrade   = !!authUser && !isExpired && role === 'basic';
   const showManage    = !!authUser && !isExpired && (role === 'premium' || role === 'admin');
+
+  /* ✅ 전역 게이트: settings/uploadPolicy.subscribeButtonEnabled (표시만 제어) */
+  const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true); // [추가]
+  useEffect(() => { // [추가]
+    const ref = doc(db, 'settings', 'uploadPolicy');
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = (snap.data() as any) || {};
+      const v = data?.subscribeButtonEnabled;
+      setSubscribeEnabled(v === undefined ? true : !!v);
+      if (debugOn) dbg('subscribeButtonEnabled =', v);
+    });
+    return () => unsub();
+  }, [debugOn]);
+
+  // 게이트 적용: 렌더 직전에만 AND 결합(내부 동작/라우팅 변경 없음)
+  const _showSubscribe = showSubscribe && subscribeEnabled; // [추가]
+  const _showUpgrade   = showUpgrade   && subscribeEnabled; // [추가]
+  const _showManage    = showManage    && subscribeEnabled; // [추가]
 
   /* 버튼 액션: 팝업 우선, 없으면 /subscribe?open=1 */
   const goSubscribe = useCallback(() => {
@@ -178,8 +199,10 @@ export default function LogoutHeader() {
       remain,
       isExpired,
       showSubscribe, showUpgrade, showManage,
+      subscribeEnabled, // [추가] 게이트 상태
     });
-  }, [debugOn, popupCtx, authUser?.uid, role, endSource, endDate, remain, isExpired, showSubscribe, showUpgrade, showManage]);
+  }, [debugOn, popupCtx, authUser?.uid, role, endSource, endDate, remain, isExpired,
+      showSubscribe, showUpgrade, showManage, subscribeEnabled]);
 
   /* ────── 아래는 현재 구조/클래스 유지 (우/좌 정렬 바뀌지 않음) ────── */
   return (
@@ -195,7 +218,8 @@ export default function LogoutHeader() {
           </span>
         )}
 
-        {showSubscribe && (
+        {/* [변경] 표시 조건만 _show* 로 치환 — 버튼 내부 동작/스타일은 그대로 */}
+        {_showSubscribe && (
           <button
             type="button"
             onClick={goSubscribe}
@@ -204,7 +228,7 @@ export default function LogoutHeader() {
             구독
           </button>
         )}
-        {showUpgrade && (
+        {_showUpgrade && (
           <button
             type="button"
             onClick={goUpgrade}
@@ -213,7 +237,7 @@ export default function LogoutHeader() {
             업그레이드
           </button>
         )}
-        {showManage && (
+        {_showManage && (
           <button
             type="button"
             onClick={() => router.push('/subscribe')}
@@ -247,7 +271,7 @@ export default function LogoutHeader() {
       {/* 디버그 오버레이: ?debug=1일 때만 보임(레이아웃 영향 없음) */}
       {debugOn && (
         <div className="fixed bottom-2 right-2 z-[9999] text-[11px] bg-black/70 text-white px-2 py-1 rounded pointer-events-none">
-          role:{role} · remain:{remain} · expired:{String(isExpired)} · end:{endDate ? fmt(endDate) : '—'} · src:{endSource} · popup:{String(!!popupCtx?.open)}
+          role:{role} · remain:{remain} · expired:{String(isExpired)} · end:{endDate ? fmt(endDate) : '—'} · src:{endSource} · popup:{String(!!popupCtx?.open)} · SUB:{String(subscribeEnabled)}
         </div>
       )}
     </header>
