@@ -95,8 +95,25 @@ export default function NavigationToggle() {
   };
 
   return (
-    <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-6">
-      <header className="space-y-1">
+  <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-6">
+
+    {/* ✅ [추가 위치 변경] 구독 버튼 활성화 토글을 가장 상단에 표시 */}
+    <div className="flex items-center gap-3 mb-4">
+      <span className="font-medium">구독 버튼 활성화</span>
+      <button
+        type="button"
+        className={`px-3 py-1 rounded border ${
+          subscribeEnabled ? 'bg-green-600 text-white' : 'bg-gray-200'
+        }`}
+        onClick={() => setSubscribeEnabled(v => !v)}
+        aria-pressed={subscribeEnabled}
+        aria-label="구독 버튼 활성화 토글"
+      >
+        {subscribeEnabled ? '활성화' : '비활성화'}
+      </button>
+    </div>
+
+    <header className="space-y-1">
         <h2 className="text-lg font-bold">메뉴 관리</h2>
         <p className="text-sm text-slate-500">
           체크된 메뉴는 사이트바에서 보여지되 클릭이 차단됩니다.
