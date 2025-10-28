@@ -82,7 +82,7 @@ export default function NavigationToggle() {
         ref,
         {
           navigation: { disabled },
-          subscribeButtonEnabled, // ✅ 신규 필드 저장
+          subscribeButtonEnabled: subscribeEnabled, // ✅ 신규 필드 저장
           updatedAt: new Date(),
         },
         { merge: true }
