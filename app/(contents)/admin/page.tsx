@@ -164,7 +164,7 @@ export default function AdminPage() {
 
   // ── [B] 메뉴 관리 상태 + ✅ 구독버튼 전역토글 상태
   const [navDisabled, setNavDisabled] = useState<string[]>([]);
-  const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true); // ✅ 추가
+  const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true); // ✅ 실제 상태 변수
   const [savingNav, setSavingNav] = useState(false);
 
   // 디버그 패널 상태
@@ -190,7 +190,7 @@ export default function AdminPage() {
         const data = (snap.data() as any) || {};
         const arr = Array.isArray(data?.navigation?.disabled) ? data.navigation.disabled : [];
         setNavDisabled(sanitizeSlugArray(arr));
-        // ✅ 구독버튼 전역 토글 읽기 (기본 true)
+        // ✅ 저장된 키는 subscribeButtonEnabled, 상태는 subscribeEnabled
         setSubscribeEnabled(
           data?.subscribeButtonEnabled === undefined
             ? true
@@ -231,9 +231,10 @@ export default function AdminPage() {
     }
 
     const cleaned = sanitizeSlugArray(navDisabled);
+    // ❗️핵심 수정: 값은 subscribeEnabled로 저장/표시
     const payload = pruneUndefined({
       navigation: { disabled: cleaned },
-      subscribeButtonEnabled, // ✅ 토글 포함
+      subscribeButtonEnabled: subscribeEnabled, // ✅ FIX
       updatedAt: serverTimestamp(),
     });
 
@@ -260,11 +261,12 @@ export default function AdminPage() {
     try {
       const ref = doc(db, 'settings', 'uploadPolicy');
       const cleaned = sanitizeSlugArray(navDisabled);
+      // ❗️핵심 수정: 값은 subscribeEnabled로 저장
       await setDoc(
         ref,
         {
           navigation: { disabled: cleaned },
-          subscribeButtonEnabled, // ✅ 함께 저장
+          subscribeButtonEnabled: subscribeEnabled, // ✅ FIX
           updatedAt: serverTimestamp(),
         },
         { merge: true }
@@ -595,7 +597,8 @@ export default function AdminPage() {
               <div className="font-semibold">payload</div>
               <pre>{safeStringify(dbg.uploadPolicyPayload ?? {
                 navigation: { disabled: navDisabled },
-                subscribeButtonEnabled, // ✅ 디버그 표시
+                // ❗️표시도 상태 변수 사용
+                subscribeButtonEnabled: subscribeEnabled,
                 updatedAt: '(serverTimestamp)',
               })}</pre>
             </div>
