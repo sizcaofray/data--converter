@@ -9,7 +9,6 @@
  * - 팝업 컨텍스트 없으면 /subscribe?open=1 로 라우팅
  * - ?debug=1 로 접속 시 콘솔 로그 + 우하단 작은 디버그 오버레이 표시
  *   (레이아웃 영향 없음)
- * - ✅ 추가: settings/uploadPolicy.subscribeButtonEnabled 전역 게이트
  */
 
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
@@ -24,203 +23,233 @@ import {
   signInWithPopup,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { useUser } from '@/contexts/UserContext';
 import { useSubscribePopup } from '@/contexts/SubscribePopupContext';
 
-type Role = 'free' | 'basic' | 'premium' | 'admin';
+/* ───────── 디버그 유틸 ───────── */
+const useDebugFlag = () => {
+  const sp = useSearchParams();
+  const q = sp?.get('debug');
+  const [on, setOn] = useState<boolean>(q === '1');
+  useEffect(() => { if (q === '1') setOn(true); }, [q]);
+  return on;
+};
+const dbg = (...args: any[]) => console.debug('[LogoutHeader]', ...args);
 
-interface UserRow {
-  uid?: string;
-  email?: string;
-  role?: Role;
-  endAt?: any; endsAt?: any; endDate?: any;
-  expireAt?: any; expiredAt?: any; paidUntil?: any;
-  subscriptionEnd?: any; planEnd?: any; basicEnd?: any; premiumEnd?: any;
-  plan?: 'free' | 'basic' | 'premium';
-  createdAt?: any; updatedAt?: any;
-}
-
+/* ───────── 만료일 유틸 ───────── */
 const END_KEYS = [
-  'endAt','endsAt','endDate','expireAt','expiredAt','paidUntil',
-  'subscriptionEnd','planEnd','basicEnd','premiumEnd',
+  'endAt', 'endsAt', 'endDate', 'expireAt', 'expiredAt', 'paidUntil',
+  'subscriptionEnd', 'planEnd', 'basicEnd', 'premiumEnd',
 ];
 
 const toDateSafe = (v: any): Date | null => {
   try {
     if (!v) return null;
-    if (typeof v?.toDate === 'function') return v.toDate();
-    const d = new Date(v);
-    return isNaN(+d) ? null : d;
+    if (typeof v === 'number') return new Date(v);
+    if (typeof v === 'string') {
+      const d = new Date(v.replace(/\./g, '-').replace(/\//g, '-'));
+      return Number.isFinite(d.getTime()) ? d : null;
+    }
+    if (v?.toDate) return v.toDate();
+    return null;
   } catch { return null; }
 };
 
-const getRemainDays = (u: UserRow): number | null => {
-  for (const k of END_KEYS) {
-    const d = toDateSafe((u as any)[k]);
-    if (d) return Math.floor((d.getTime() - Date.now()) / 86400000);
+const pickEndRaw = (obj: any): any => {
+  if (!obj || typeof obj !== 'object') return null;
+  for (const k of END_KEYS) if (obj[k] != null) return obj[k];
+  for (const nest of ['subscription', 'billing', 'plan', 'account']) {
+    const box = obj[nest];
+    if (box && typeof box === 'object') {
+      for (const k of END_KEYS) if (box[k] != null) return box[k];
+    }
   }
   return null;
 };
 
-const useQueryDebug = () => {
-  const sp = useSearchParams();
-  const on = sp?.get('debug') === '1';
-  const [flag, setFlag] = useState<boolean>(on);
-  useEffect(() => { if (on) setFlag(true); }, [on]);
-  return flag;
+const remainingDaysInclusive = (end: Date | null | undefined): number => {
+  if (!end) return 0;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const endNext = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 0, 0, 0, 0);
+  const diff = endNext.getTime() - start.getTime();
+  if (!Number.isFinite(diff)) return 0;
+  const dayMs = 24 * 60 * 60 * 1000;
+  return Math.max(Math.ceil(diff / dayMs), 0);
 };
+
+const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 export default function LogoutHeader() {
   const router = useRouter();
-  const debug = useQueryDebug();
+  const debugOn = useDebugFlag();
 
-  const { user: authUser } = useUser();
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [userDoc, setUserDoc] = useState<UserRow | null>(null);
-  const [showDebugOverlay, setShowDebugOverlay] = useState(false);
-  const [popupOpen, setPopupOpen] = useState(false);
+  /* 컨텍스트들(예외 안전) */
+  let popupCtx: any = null;
+  try { popupCtx = useSubscribePopup(); } catch { popupCtx = null; }
+  let userCtx: any = {};
+  try { userCtx = useUser() ?? {}; } catch { userCtx = {}; }
 
-  // ✅ 전역 구독 버튼 ON/OFF
-  const [subscribeEnabled, setSubscribeEnabled] = useState(true);
-
-  // settings/uploadPolicy.subscribeButtonEnabled 실시간 구독
+  /* Auth */
+  const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
   useEffect(() => {
-    const ref = doc(db, 'settings', 'uploadPolicy');
-    const unsub = onSnapshot(ref, (snap) => {
-      const data = (snap.data() as any) || {};
-      const v = data?.subscribeButtonEnabled;
-      setSubscribeEnabled(v === undefined ? true : !!v);
-    });
+    setPersistence(auth, browserLocalPersistence).catch(() => {});
+    const unsub = onAuthStateChanged(auth, (u) => setAuthUser(u || null));
     return () => unsub();
   }, []);
 
-  // Firebase Auth 구독(기존 유지)
-  useEffect(() => {
-    setPersistence(auth, browserLocalPersistence);
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setFirebaseUser(user ?? null);
-    });
-    return () => unsub();
-  }, []);
+  /* 역할 */
+  const role: 'free' | 'basic' | 'premium' | 'admin' = useMemo(() => {
+    const r = String(userCtx?.role ?? userCtx?.user?.role ?? 'free').toLowerCase();
+    return (['free', 'basic', 'premium', 'admin'] as const).includes(r as any) ? (r as any) : 'free';
+  }, [userCtx?.role, userCtx?.user?.role]);
 
-  // users/{uid} 문서 로드(기존 유지)
+  /* 만료일: 컨텍스트 → Firestore(폴백) */
+  const [endDate, setEndDate] = useState<Date | null>(null);
+  const [endSource, setEndSource] = useState<'ctx' | 'fs' | 'none'>('none');
+
   useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
     (async () => {
+      // 1) 컨텍스트
+      const raw1 = pickEndRaw(userCtx?.user ?? userCtx);
+      const d1 = toDateSafe(raw1);
+      if (!cancelled && d1) { setEndDate(d1); setEndSource('ctx'); return; }
+
+      // 2) Firestore
+      const uid = authUser?.uid;
+      if (!uid) { if (!cancelled) { setEndDate(null); setEndSource('none'); } return; }
       try {
-        if (!firebaseUser) {
-          if (mounted) setUserDoc(null);
-          return;
-        }
-        const ref = doc(db, 'users', firebaseUser.uid);
-        const snap = await getDoc(ref);
-        const data = (snap.data() as any) || null;
-        if (mounted) setUserDoc(data);
+        const snap = await getDoc(doc(db, 'users', uid));
+        const data = snap.exists() ? snap.data() : {};
+        const raw2 = pickEndRaw(data);
+        const d2 = toDateSafe(raw2);
+        if (!cancelled) { setEndDate(d2); setEndSource(d2 ? 'fs' : 'none'); }
+        if (debugOn) dbg('FS user doc', data);
       } catch (e) {
-        console.warn('[LogoutHeader] user load failed:', e);
+        if (!cancelled) { setEndDate(null); setEndSource('none'); }
+        if (debugOn) dbg('FS error', e);
       }
     })();
-    return () => { mounted = false; };
-  }, [firebaseUser]);
+    return () => { cancelled = true; };
+  }, [authUser?.uid, userCtx, debugOn]);
 
-  // 정책 계산(기존 유지)
-  const remain = useMemo(() => (userDoc ? getRemainDays(userDoc) : null), [userDoc]);
-  const expired = useMemo(() => (remain !== null ? remain <= 0 : false), [remain]);
+  const remain = useMemo(() => remainingDaysInclusive(endDate), [endDate]);
+  const isExpired = remain <= 0;
+  const badgeText = endDate ? `만료일 ${fmt(endDate)} (${remain}일)` : '만료일 0일';
 
-  // 기본 노출 정책 (기존 유지)
-  // - 무료/만료 → 구독
-  // - basic → 업그레이드
-  // - premium/admin → 구독관리
-  const showSubscribe = useMemo(() => {
-    if (!userDoc) return true;
-    const role = userDoc.role ?? 'free';
-    if (role === 'free') return true;
-    return false;
-  }, [userDoc]);
+  /* 버튼 노출 분기(만료 최우선) */
+  const showSubscribe = !!authUser && isExpired;
+  const showUpgrade   = !!authUser && !isExpired && role === 'basic';
+  const showManage    = !!authUser && !isExpired && (role === 'premium' || role === 'admin');
 
-  const showUpgrade = useMemo(() => {
-    if (!userDoc) return false;
-    const role = userDoc.role ?? 'free';
-    return role === 'basic';
-  }, [userDoc]);
+  /* 버튼 액션: 팝업 우선, 없으면 /subscribe?open=1 */
+  const goSubscribe = useCallback(() => {
+    if (popupCtx?.open) { popupCtx.open(); if (debugOn) dbg('open subscribe via popup'); }
+    else { router.push('/subscribe?open=1'); if (debugOn) dbg('open subscribe via route'); }
+  }, [popupCtx, router, debugOn]);
 
-  const showManage = useMemo(() => {
-    if (!userDoc) return false;
-    const role = userDoc.role ?? 'free';
-    return role === 'premium' || role === 'admin';
-  }, [userDoc]);
+  const goUpgrade = useCallback(() => {
+    if (popupCtx?.open) { popupCtx.open(); if (debugOn) dbg('open upgrade via popup'); }
+    else { router.push('/subscribe?upgrade=premium&open=1'); if (debugOn) dbg('open upgrade via route'); }
+  }, [popupCtx, router, debugOn]);
 
-  // ✅ 전역 게이트 적용
-  const _showSubscribe = showSubscribe && subscribeEnabled;
-  const _showUpgrade   = showUpgrade   && subscribeEnabled;
-  const _showManage    = showManage    && subscribeEnabled;
+  /* 로그인/로그아웃 (기존 유지) */
+  const onLogin = async () => {
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); router.refresh(); }
+    catch (e) { console.error('[Auth] 로그인 실패', e); }
+  };
+  const onLogout = async () => {
+    try { await signOut(auth); router.push('/'); }
+    catch (e) { console.error('[Auth] 로그아웃 실패', e); }
+  };
 
-  // 클릭 핸들러(기존 유지; Bootpay는 후속 작업)
-  const openSubscribeFlow = useCallback(() => {
-    router.push('/subscribe?open=1');
-  }, [router]);
+  /* 마운트 로그 */
+  useEffect(() => {
+    if (!debugOn) return;
+    dbg('MOUNT', {
+      popupHasOpen: !!popupCtx?.open,
+      authUid: authUser?.uid ?? null,
+      role,
+      endSource,
+      endDate: endDate ? fmt(endDate) : null,
+      remain,
+      isExpired,
+      showSubscribe, showUpgrade, showManage,
+    });
+  }, [debugOn, popupCtx, authUser?.uid, role, endSource, endDate, remain, isExpired, showSubscribe, showUpgrade, showManage]);
 
+  /* ────── 아래는 현재 구조/클래스 유지 (우/좌 정렬 바뀌지 않음) ────── */
   return (
-    <div className="flex items-center gap-3">
-      {/* (기존: 우측 기타 요소 유지) */}
+    <header className="w-full flex items-center justify-between px-4 py-3 bg-zinc-900 text-white">
+      <div className="flex items-center gap-3">
+        <a href="/" className="text-lg font-semibold">Data Convert</a>
+      </div>
 
-      {_showSubscribe && (
-        <button
-          type="button"
-          onClick={openSubscribeFlow}
-          className="text-sm rounded px-3 py-1 bg-blue-600 text-white hover:bg-blue-700"
-        >
-          구독
-        </button>
-      )}
+      <div className="flex items-center gap-2">
+        {authUser && (
+          <span className="text-xs px-2 py-0.5 rounded border border-white/20">
+            {badgeText}
+          </span>
+        )}
 
-      {_showUpgrade && (
-        <button
-          type="button"
-          onClick={openSubscribeFlow}
-          className="text-sm rounded px-3 py-1 bg-amber-500 text-white hover:bg-amber-600"
-        >
-          업그레이드
-        </button>
-      )}
+        {showSubscribe && (
+          <button
+            type="button"
+            onClick={goSubscribe}
+            className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
+          >
+            구독
+          </button>
+        )}
+        {showUpgrade && (
+          <button
+            type="button"
+            onClick={goUpgrade}
+            className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
+          >
+            업그레이드
+          </button>
+        )}
+        {showManage && (
+          <button
+            type="button"
+            onClick={() => router.push('/subscribe')}
+            className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
+          >
+            구독관리
+          </button>
+        )}
 
-      {_showManage && (
-        <button
-          type="button"
-          onClick={() => router.push('/subscribe')}
-          className="text-sm rounded px-3 py-1 border border-white/20 hover:bg-white/10"
-        >
-          구독관리
-        </button>
-      )}
+        {authUser?.email && <span className="text-sm opacity-80">{authUser.email}</span>}
 
-      {authUser?.email && <span className="text-sm opacity-80">{authUser.email}</span>}
+        {!authUser ? (
+          <button
+            type="button"
+            onClick={onLogin}
+            className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20"
+          >
+            로그인
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="text-sm rounded px-3 py-1 bg-white/10 hover:bg-white/20"
+          >
+            로그아웃
+          </button>
+        )}
+      </div>
 
-      {!authUser ? (
-        <button
-          type="button"
-          onClick={() => router.push('/login')}
-          className="text-sm rounded px-3 py-1 border hover:bg-white/10"
-        >
-          로그인
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={() => router.push('/logout')}
-          className="text-sm rounded px-3 py-1 border hover:bg-white/10"
-        >
-          로그아웃
-        </button>
-      )}
-
-      {/* 디버그 배지(옵션) */}
-      {debug && (
-        <div className="ml-2 text-[11px] text-slate-400">
-          {subscribeEnabled ? 'SUB:ON' : 'SUB:OFF'} · {userDoc?.role ?? 'anon'}
+      {/* 디버그 오버레이: ?debug=1일 때만 보임(레이아웃 영향 없음) */}
+      {debugOn && (
+        <div className="fixed bottom-2 right-2 z-[9999] text-[11px] bg-black/70 text-white px-2 py-1 rounded pointer-events-none">
+          role:{role} · remain:{remain} · expired:{String(isExpired)} · end:{endDate ? fmt(endDate) : '—'} · src:{endSource} · popup:{String(!!popupCtx?.open)}
         </div>
       )}
-    </div>
+    </header>
   );
 }
