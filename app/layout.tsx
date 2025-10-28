@@ -25,6 +25,9 @@ function bannerClass(level: string) {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ko" suppressHydrationWarning>
+      <head>
+        <meta name="google-site-verification" content="pOguJ27pS61Q0gqU9afI8X_wXywspJ5UCMOfsa6XsL4" />
+      </head>
       <body className="min-h-screen transition-colors">
         {/* ✅ 전역 컨텍스트: 팝업 open()이 실제로 동작하도록 보장 */}
         <UserProvider>
