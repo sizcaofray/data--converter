@@ -1,14 +1,13 @@
 'use client';
 
 /**
- * 관리자 페이지 (메뉴 비활성화 + 사용자 관리)
- * - UI/디자인 유지, 로직만 보완
- * - Firestore 규칙과 동일하게 "users/{uid}.role === 'admin'" 기준으로 관리자 판단
- * - 디버그 패널에 context role vs users문서 role 동시 노출
+ * 관리자 페이지 (메뉴 비활성화 + 사용자 관리 + ✅ 구독버튼 전역토글)
+ * - 디자인 유지, 로직만 보완
+ * - 관리자 판단은 users/{uid}.role === 'admin' 기준(규칙과 동일)
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useUser } from '@/contexts/UserContext'; // 컨텍스트(표시용/보조)
+import { useUser } from '@/contexts/UserContext';
 import { db } from '@/lib/firebase/firebase';
 import {
   collection,
@@ -20,12 +19,8 @@ import {
   setDoc,
   serverTimestamp,
   getDoc,
-  // setLogLevel,
 } from 'firebase/firestore';
 import { getAuth, getIdTokenResult, onAuthStateChanged } from 'firebase/auth';
-
-// Firestore 내부 로그 필요 시 주석 해제
-// setLogLevel('debug');
 
 type Role = 'free' | 'basic' | 'premium' | 'admin';
 
@@ -137,10 +132,10 @@ function safeStringify(o: any) {
 export default function AdminPage() {
   const { role: myRoleFromContext, loading: userCtxLoading } = useUser();
 
-  // ── [A] users/{uid}.role을 직접 읽어 규칙과 동일 기준으로 관리자 판정
+  // ── [A] users/{uid}.role 로 관리자 판정(규칙과 동일)
   const [authUid, setAuthUid] = useState<string | null>(null);
   const [usersDocRole, setUsersDocRole] = useState<Role | null>(null);
-  const [roleLoading, setRoleLoading] = useState(true); // users문서 역할 로딩 상태
+  const [roleLoading, setRoleLoading] = useState(true);
 
   useEffect(() => {
     const auth = getAuth();
@@ -153,13 +148,7 @@ export default function AdminPage() {
           return;
         }
         setAuthUid(u.uid);
-
-        // 토큰 최신화(선택) — 커스텀 클레임 사용 대비
-        try {
-          await getIdTokenResult(u, true);
-        } catch (_) {}
-
-        // users/{uid}에서 role 읽기(※ 규칙의 관리자 판정과 동일 소스)
+        try { await getIdTokenResult(u, true); } catch {}
         const uref = doc(db, 'users', u.uid);
         const usnap = await getDoc(uref);
         const r = (usnap.exists() ? (usnap.data() as any)?.role : null) as Role | null;
@@ -171,11 +160,11 @@ export default function AdminPage() {
     return () => unsub();
   }, []);
 
-  /** 이 값 하나만 신뢰해서 관리자 여부를 판정한다(규칙과 동일) */
   const isAdminRole = usersDocRole === 'admin';
 
-  // ── [B] 메뉴 관리 상태
+  // ── [B] 메뉴 관리 상태 + ✅ 구독버튼 전역토글 상태
   const [navDisabled, setNavDisabled] = useState<string[]>([]);
+  const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true); // ✅ 추가
   const [savingNav, setSavingNav] = useState(false);
 
   // 디버그 패널 상태
@@ -191,16 +180,22 @@ export default function AdminPage() {
     lastError?: { code?: any; message?: any; customData?: any } | null;
   }>({});
 
-  // uploadPolicy 구독 — 관리자일 때만
+  // settings/uploadPolicy 실시간 구독 — 관리자일 때만
   useEffect(() => {
     if (roleLoading || !isAdminRole) return;
     const ref = doc(db, 'settings', 'uploadPolicy');
     const unsub = onSnapshot(
       ref,
       (snap) => {
-        const data = snap.data() as any | undefined;
-        const arr = Array.isArray(data?.navigation?.disabled) ? data?.navigation?.disabled : [];
+        const data = (snap.data() as any) || {};
+        const arr = Array.isArray(data?.navigation?.disabled) ? data.navigation.disabled : [];
         setNavDisabled(sanitizeSlugArray(arr));
+        // ✅ 구독버튼 전역 토글 읽기 (기본 true)
+        setSubscribeEnabled(
+          data?.subscribeButtonEnabled === undefined
+            ? true
+            : Boolean(data.subscribeButtonEnabled)
+        );
       },
       (err) => {
         setDbg((d) => ({ ...d, lastError: { code: err?.code, message: err?.message, customData: err?.customData } }));
@@ -218,13 +213,12 @@ export default function AdminPage() {
     });
   };
 
-  // 권한/문서/페이로드 실시간 덤프(디버그 패널용)
+  // 권한/문서/페이로드 덤프(디버그 패널)
   const dumpContext = async () => {
     const auth = getAuth();
     const user = auth.currentUser;
     let authEmail: string | null = null;
     let tokenClaims: any = null;
-    let usersRole: any = usersDocRole;
 
     if (user) {
       authEmail = user.email ?? null;
@@ -239,42 +233,44 @@ export default function AdminPage() {
     const cleaned = sanitizeSlugArray(navDisabled);
     const payload = pruneUndefined({
       navigation: { disabled: cleaned },
+      subscribeButtonEnabled, // ✅ 토글 포함
       updatedAt: serverTimestamp(),
     });
 
     setDbg((d) => ({
       ...d,
-      myRole: myRoleFromContext, // 컨텍스트 역할(참고용)
+      myRole: myRoleFromContext,
       authUid,
       authEmail,
       tokenClaims,
-      usersDocRole: usersRole,   // 규칙과 동일한 판단 근거
+      usersDocRole,
       uploadPolicyPath: 'settings/uploadPolicy',
       uploadPolicyPayload: payload,
     }));
   };
 
-  // 저장 — 관리자(role 기준)일 때만 수행
+  // 저장 — 관리자만
   const saveMenuDisabled = async () => {
     if (!isAdminRole) {
       alert('저장 권한이 없습니다. (users/{uid}.role이 admin이어야 합니다)');
       return;
     }
     setSavingNav(true);
-    await dumpContext(); // 저장 직전 디버그 패널 갱신
+    await dumpContext();
     try {
       const ref = doc(db, 'settings', 'uploadPolicy');
-      const payload = ((): any => {
-        const cleaned = sanitizeSlugArray(navDisabled);
-        return pruneUndefined({
+      const cleaned = sanitizeSlugArray(navDisabled);
+      await setDoc(
+        ref,
+        {
           navigation: { disabled: cleaned },
+          subscribeButtonEnabled, // ✅ 함께 저장
           updatedAt: serverTimestamp(),
-        });
-      })();
-
-      await setDoc(ref, payload, { merge: true });
+        },
+        { merge: true }
+      );
       setDbg((d) => ({ ...d, lastError: null }));
-      alert('메뉴 설정이 저장되었습니다.');
+      alert('메뉴/구독 설정이 저장되었습니다.');
     } catch (e: any) {
       setDbg((d) => ({
         ...d,
@@ -335,7 +331,7 @@ export default function AdminPage() {
       return;
     }
     const startDate = r.subscriptionStartAt?.toDate() ?? todayKST();
-    const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS); // ← 오타 수정
+    const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS);
     const endTs = clampEndAfterStart(startDate, endDate);
     patchRow(r.uid, {
       isSubscribed: true,
@@ -406,7 +402,6 @@ export default function AdminPage() {
     }
   };
 
-  // ── 로딩/권한 가드 (규칙과 동일 기준으로 처리)
   if (userCtxLoading || roleLoading)
     return <main className="p-6 text-sm text-gray-500">로딩 중...</main>;
 
@@ -422,13 +417,30 @@ export default function AdminPage() {
 
   return (
     <main className="p-6 space-y-6">
-      {/* 메뉴 관리 섹션 */}
+      {/* ───────────────── 메뉴 관리 섹션 ───────────────── */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
         <h2 className="text-lg font-bold mb-2">메뉴 관리 (비활성화)</h2>
         <p className="text-sm text-slate-600 mb-4">
           체크된 메뉴는 사이드바에서 <b>보여지되 클릭이 차단</b>됩니다. (<code>settings/uploadPolicy.navigation.disabled: string[]</code>)
         </p>
 
+        {/* ✅ 전역: 구독 버튼 활성화 토글 */}
+        <div className="flex items-center gap-3 mb-4">
+          <span className="font-medium">구독 버튼 활성화</span>
+          <button
+            type="button"
+            className={`px-3 py-1 rounded border ${
+              subscribeEnabled ? 'bg-green-600 text-white' : 'bg-gray-200'
+            }`}
+            onClick={() => setSubscribeEnabled(v => !v)}
+            aria-pressed={subscribeEnabled}
+            aria-label="구독 버튼 활성화 토글"
+          >
+            {subscribeEnabled ? '활성화' : '비활성화'}
+          </button>
+        </div>
+
+        {/* 기존 메뉴 비활성화 체크박스 */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
           {ALL_MENUS.map((m) => {
             const checked = disabledSet.has(m.slug);
@@ -475,7 +487,7 @@ export default function AdminPage() {
         </div>
       </section>
 
-      {/* 사용자 관리 섹션 */}
+      {/* ───────────────── 사용자 관리 섹션 (기존 유지) ───────────────── */}
       <section>
         <h1 className="text-xl font-semibold mb-4">사용자 관리</h1>
         {fetching ? (
@@ -571,7 +583,6 @@ export default function AdminPage() {
           <div className="mb-2 font-semibold">디버그 패널</div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 whitespace-pre-wrap">
             <div>
-              {/* 컨텍스트/문서 역할 동시 노출로 불일치 즉시 확인 */}
               <div>myRole(from context): {String(myRoleFromContext)}</div>
               <div>usersDocRole(from users/{'{'}uid{'}'}): {String(usersDocRole ?? '-')}</div>
               <div>authUid: {authUid ?? '-'}</div>
@@ -584,6 +595,7 @@ export default function AdminPage() {
               <div className="font-semibold">payload</div>
               <pre>{safeStringify(dbg.uploadPolicyPayload ?? {
                 navigation: { disabled: navDisabled },
+                subscribeButtonEnabled, // ✅ 디버그 표시
                 updatedAt: '(serverTimestamp)',
               })}</pre>
             </div>
