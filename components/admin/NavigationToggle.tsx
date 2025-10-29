@@ -5,33 +5,44 @@
  * -----------------------------------------------------------
  * 목적:
  *  - 기존 "메뉴 비활성화(navigation.disabled)" 기능 유지
- *  - 전역 "구독 버튼 활성화(subscribeButtonEnabled)" 토글 추가
+ *  - 전역 "구독 버튼 활성화(subscribeButtonEnabled)" 토글 유지
+ *  - ✅ 새 메뉴: 'PDF Tool'(pdf-tool), 'Pattern Editor'(pattern-editor) 관리 포함
  *
- * 데이터:
- *  - 경로: settings/uploadPolicy
+ * 데이터 (Firestore):
+ *  - 문서 경로: settings/uploadPolicy
  *  - 필드:
- *      navigation.disabled: string[]         // 기존 유지
- *      subscribeButtonEnabled: boolean       // 신규 추가 (기본 true)
+ *      navigation.disabled: string[]         // 체크된 메뉴는 "비활성화"로 저장 (기존 유지)
+ *      subscribeButtonEnabled: boolean       // 전역 구독 버튼 ON/OFF (기본 true)
  *
  * 주의:
- *  - setDoc(..., { merge: true }) → 기존 값 보존
- *  - 변수명/키 이름 혼동 금지: subscribeButtonEnabled ← subscribeEnabled(state)
+ *  - setDoc(..., { merge: true }) 사용으로 기존 값 보존
+ *  - 사이드바 메뉴의 slug와 동일하게 유지해야 동작 일치
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase/firebase';
+import { db } from '@/lib/firebase/firebase'; // ← 프로젝트 경로 유지
 
-type MenuConfig = { slug: string; label: string };
+/** 개별 메뉴 정의 타입 */
+type MenuConfig = { slug: string; label: string; order?: number; adminOnly?: boolean };
 
-// ⚠️ 사이드바 슬러그와 동일하게 유지
+/** 
+ * ✅ 사이드바와 slug를 반드시 일치시켜 주세요.
+ *    순서는 'Data Convert' → 'Compare' → 'PDF Tool' → 'Pattern Editor' → 'Random' → 'Admin'
+ */
 const ALL_MENUS: MenuConfig[] = [
-  { slug: 'convert', label: 'Data Convert' },
-  { slug: 'compare', label: 'Compare' },
-  { slug: 'random',  label: 'Random' },
-  { slug: 'admin',   label: 'Admin' },
+  { slug: 'convert',        label: 'Data Convert',   order: 10 },
+  { slug: 'compare',        label: 'Compare',        order: 20 },
+
+  // ⬇️ 신규 추가 (요청사항)
+  { slug: 'pdf-tool',       label: 'PDF Tool',       order: 30 },
+  { slug: 'pattern-editor', label: 'Pattern Editor', order: 40 },
+
+  { slug: 'random',         label: 'Random',         order: 50 },
+  { slug: 'admin',          label: 'Admin',          order: 90, adminOnly: true },
 ];
 
+/** 배열 sanitize 유틸 (중복/공백 제거, 문자열화) */
 function sanitizeSlugArray(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   const s = new Set<string>();
@@ -42,67 +53,97 @@ function sanitizeSlugArray(input: unknown): string[] {
   return [...s].sort();
 }
 
+/** 컴포넌트 */
 export default function NavigationToggle() {
-  // ── 기존: 메뉴 비활성화 목록
+  // ── 기존: 비활성화(slug) 목록 상태
   const [disabled, setDisabled] = useState<string[]>([]);
-  // ── 신규: 전역 구독 버튼 ON/OFF
+  // ── 기존: 전역 "구독 버튼 활성화" 상태
   const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  // Firestore 실시간 구독 (settings/uploadPolicy)
+  // Firestore 문서 ref
+  const policyRef = doc(db, 'settings', 'uploadPolicy');
+
+  // ── 초기/실시간 로드
   useEffect(() => {
-    const ref = doc(db, 'settings', 'uploadPolicy');
-    return onSnapshot(ref, (snap) => {
+    const unSub = onSnapshot(policyRef, (snap) => {
       const data = (snap.data() as any) || {};
-      setDisabled(sanitizeSlugArray(data?.navigation?.disabled));
+      // disabled 목록 sanitize + 현재 관리 대상 slug로 필터링
+      const known = new Set(ALL_MENUS.map(m => m.slug));
+      const rawDisabled = sanitizeSlugArray(data?.navigation?.disabled);
+      const filtered = rawDisabled.filter(s => known.has(s));
+      setDisabled(filtered);
+
+      // 전역 구독 버튼 기본값: true
       setSubscribeEnabled(
         data?.subscribeButtonEnabled === undefined
           ? true
           : Boolean(data.subscribeButtonEnabled)
       );
-    });
-  }, []);
 
-  // 체크박스 토글(기존 유지)
-  const toggleSlug = (slug: string) =>
-    setDisabled((prev) => {
-      const s = new Set(prev);
-      s.has(slug) ? s.delete(slug) : s.add(slug);
-      return [...s].sort();
+      setLoading(false);
     });
+
+    return () => unSub();
+  }, [policyRef]);
+
+  // 체크 토글 핸들러 (체크=비활성화)
+  const onToggle = (slug: string) => {
+    setDisabled((prev) => {
+      const set = new Set(prev);
+      set.has(slug) ? set.delete(slug) : set.add(slug);
+      return [...set].sort();
+    });
+  };
 
   const disabledSet = useMemo(() => new Set(disabled), [disabled]);
 
-  // 저장: merge=true → 기존 필드 보존
-  const save = async () => {
+  // 저장
+  const onSave = async () => {
     setSaving(true);
     try {
-      const ref = doc(db, 'settings', 'uploadPolicy');
       await setDoc(
-        ref,
+        policyRef,
         {
           navigation: { disabled },
-          subscribeButtonEnabled: subscribeEnabled, // ✅ 신규 필드
+          subscribeButtonEnabled: subscribeEnabled,
           updatedAt: new Date(),
         },
         { merge: true }
       );
       alert('메뉴/구독 설정이 저장되었습니다.');
+    } catch (err) {
+      console.error(err);
+      alert('저장 중 오류가 발생했습니다. 콘솔을 확인해 주세요.');
     } finally {
       setSaving(false);
     }
   };
 
+  // 사이드 설명
+  const HelpNote = () => (
+    <p className="text-xs text-slate-500">
+      체크된 항목은 <code>settings/uploadPolicy.navigation.disabled</code>에 저장되며,
+      사이드바에서 <b>보이되 클릭이 비활성화</b>됩니다.
+    </p>
+  );
+
+  // 정렬된 메뉴 목록
+  const menus = useMemo(
+    () => [...ALL_MENUS].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    []
+  );
+
   return (
     <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-6">
-
-      {/* ✅ 상단에 구독 버튼 활성화 토글 표시 */}
-      <div className="flex items-center gap-3 mb-4">
+      {/* 전역 구독 버튼 토글 */}
+      <div className="flex items-center gap-3 mb-2">
         <span className="font-medium">구독 버튼 활성화</span>
         <button
           type="button"
           className={`px-3 py-1 rounded border ${
-            subscribeEnabled ? 'bg-green-600 text-white' : 'bg-gray-200'
+            subscribeEnabled ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-gray-700 dark:text-white/80'
           }`}
           onClick={() => setSubscribeEnabled(v => !v)}
           aria-pressed={subscribeEnabled}
@@ -112,39 +153,48 @@ export default function NavigationToggle() {
         </button>
       </div>
 
+      {/* 헤더 */}
       <header className="space-y-1">
         <h2 className="text-lg font-bold">메뉴 관리</h2>
-        <p className="text-sm text-slate-500">
-          체크된 메뉴는 사이트바에서 보여지되 클릭이 차단됩니다.
-          <span className="opacity-70"> (settings/uploadPolicy.navigation.disabled)</span>
-        </p>
+        <HelpNote />
       </header>
 
-      {/* ── 기존: 메뉴 비활성화 체크박스 목록 */}
+      {/* 체크박스 목록 */}
       <div className="space-y-2">
-        <div className="text-sm text-slate-600">아래 체크된 메뉴는 비활성화됩니다.</div>
-        <div className="grid grid-cols-2 gap-2">
-          {ALL_MENUS.map(({ slug, label }) => (
-            <label key={slug} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={disabledSet.has(slug)}
-                onChange={() => toggleSlug(slug)}
-              />
-              <span>
-                {label}{' '}
-                <span className="text-xs text-slate-500">({slug})</span>
-              </span>
-            </label>
-          ))}
-        </div>
+        {loading ? (
+          <div className="text-sm text-slate-500">불러오는 중…</div>
+        ) : (
+          <>
+            <div className="text-sm text-slate-600 dark:text-slate-300">아래 체크된 메뉴는 비활성화됩니다.</div>
+            <div className="grid grid-cols-2 gap-2">
+              {menus.map(({ slug, label, adminOnly }) => (
+                <label key={slug} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={disabledSet.has(slug)}
+                    onChange={() => onToggle(slug)}
+                  />
+                  <span>
+                    {label}{' '}
+                    <span className="text-xs text-slate-500">({slug})</span>
+                  </span>
+                  {adminOnly && (
+                    <span className="text-[10px] rounded px-1.5 py-0.5 border border-gray-300 dark:border-gray-700">
+                      admin only
+                    </span>
+                  )}
+                </label>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
       {/* 저장 */}
       <div className="flex items-center justify-between border-t pt-4">
         <button
           type="button"
-          onClick={save}
+          onClick={onSave}
           disabled={saving}
           className={`rounded px-4 py-2 text-sm font-semibold ${
             saving ? 'bg-slate-300 text-slate-600' : 'bg-black text-white hover:opacity-90'
