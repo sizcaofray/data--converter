@@ -84,6 +84,9 @@ type MenuConfig = { slug: string; label: string };
 const ALL_MENUS: MenuConfig[] = [
   { slug: 'convert', label: 'Data Convert' },
   { slug: 'compare', label: 'Compare' },
+    // ✅ 추가: Data Convert ↔ Random 사이
+  { slug: 'pdf-tool',       label: 'PDF Tool' },
+  { slug: 'pattern-editor', label: 'Pattern Editor' },
   { slug: 'random', label: 'Random' },
   { slug: 'admin', label: 'Admin' },
 ];
