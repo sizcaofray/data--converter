@@ -18,10 +18,15 @@ import { doc, onSnapshot } from 'firebase/firestore'
 type RoleNorm = 'admin' | 'user'
 
 const MENU_ITEMS = [
-  { href: '/convert', label: 'Data Convert', requiresSub: false, adminOnly: false },
-  { href: '/compare', label: 'Compare',      requiresSub: true,  adminOnly: false },
-  { href: '/random',  label: 'Random',       requiresSub: true,  adminOnly: false },
-  { href: '/admin',   label: 'Admin',        requiresSub: false, adminOnly: true  },
+  { href: '/convert',        label: 'Data Convert',   requiresSub: false, adminOnly: false },
+  { href: '/compare',        label: 'Compare',        requiresSub: true,  adminOnly: false },
+
+  // ✅ 여기 두 항목이 "Data Convert ↔ Random" 사이에 들어갑니다.
+  { href: '/pdf-tool',       label: 'PDF Tool',       requiresSub: false, adminOnly: false },
+  { href: '/pattern-editor', label: 'Pattern Editor', requiresSub: false, adminOnly: false },
+
+  { href: '/random',         label: 'Random',         requiresSub: true,  adminOnly: false },
+  { href: '/admin',          label: 'Admin',          requiresSub: false, adminOnly: true  },
 ] as const
 
 const hrefToSlug = (href: string) => (href.split('/').filter(Boolean)[0] || '')
