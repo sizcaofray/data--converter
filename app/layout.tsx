@@ -89,7 +89,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <SubscribePopup />
 
             {/* footer: 항상 body 맨 하단에 위치 */}
-            <footer className="border-t border-gray-200 dark:border-gray-800 text-xs">
+            + <footer className="relative border-t border-gray-200 dark:border-gray-800 text-xs
+                before:content-[''] before:absolute before:left-64 before:top-0 before:bottom-0
+                before:w-px before:bg-gray-700/50">
               <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-center gap-3">
                 <a
                   href="/legal/terms"
