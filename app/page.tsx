@@ -21,7 +21,7 @@ export default function Home() {
   return (
     <main
       className="
-        min-h-screen relative bg-gradient-to-br
+        relative bg-gradient-to-br
         from-slate-100 to-gray-200
         dark:from-slate-900 dark:to-gray-950
       "

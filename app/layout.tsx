@@ -11,12 +11,12 @@ export const metadata = {
   description: '구글 계정 로그인 예제',
 }
 
-// 공지 설정
+// 공지 관련 환경변수
 const NOTICE_ENABLED = process.env.NEXT_PUBLIC_NOTICE_ENABLED === 'true'
 const NOTICE_MESSAGE = process.env.NEXT_PUBLIC_NOTICE_MESSAGE || ''
 const NOTICE_LEVEL = process.env.NEXT_PUBLIC_NOTICE_LEVEL || 'info'
 
-// 배너 색상 계산 함수
+// 공지 배너 스타일 선택 함수
 function bannerClass(level: string) {
   switch (level) {
     case 'warn':
@@ -39,23 +39,19 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
 
       {/*
-        ❌ 기존 문제:
-        - body에 min-h-screen(=100vh 강제) 적용
-        - 내부 div에 min-h-[calc(100vh-40px)] 중첩
-        → 항상 100vh 이상이 되어 불필요한 스크롤 발생
-
-        ✅ 수정:
-        - min-h-screen, min-h-[calc(...)] 제거
-        - transition-colors는 유지
-        - 내용이 짧으면 스크롤 없음, 내용이 길면 자연 스크롤
+        핵심 수정:
+        - body에서 min-h-screen 제거
+        - 이후 래퍼 div에서 min-h-[calc(100vh-40px)] 제거
+        => 강제적으로 "항상 100vh 이상"이라는 요구를 없앱니다.
+        => 내용이 짧으면 스크롤바가 사라질 수 있게 됩니다.
       */}
       <body className="transition-colors">
         <UserProvider>
           <SubscribePopupProvider>
-            {/* ✅ Bootpay SDK를 전역에서 한 번만 로드 */}
+            {/* Bootpay SDK 전역 로드 */}
             <BootpayScript />
 
-            {/* 공지 배너: position:fixed/sticky 없이 일반 block으로 유지 */}
+            {/* 공지 배너 (고정/sticky 아님) */}
             {NOTICE_ENABLED && (
               <div className={`${bannerClass(NOTICE_LEVEL)} text-sm`}>
                 <div className="max-w-6xl mx-auto px-4 py-2">
@@ -64,7 +60,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               </div>
             )}
 
-            {/* 앱 콘텐츠: 높이 강제 제거 */}
+            {/* 실제 앱 콘텐츠 - 높이 강제 없음 */}
             <div>
               <Suspense fallback={null}>{children}</Suspense>
             </div>
@@ -72,7 +68,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             {/* 전역 구독 팝업 */}
             <SubscribePopup />
 
-            {/* 하단 푸터 */}
+            {/* 푸터 */}
             <footer className="border-t border-gray-200 dark:border-gray-800 text-xs">
               <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-center gap-3">
                 <a
