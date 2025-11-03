@@ -89,7 +89,7 @@ export default function Sidebar() {
     : MENU_ITEMS.filter(m => (m.adminOnly ? isAdmin : m.requiresSub ? (isAdmin || isPaid) : true))
 
   return (
-    <aside className="w-64 shrink-0 border-r bg-gray-50 dark:bg-gray-900">      
+    <aside className="w-64 shrink-0">      
       <nav className="px-3 py-4">
         <ul className="space-y-1">
           {visible.map((m) => {
