@@ -2,8 +2,9 @@
 'use client'
 /**
  * 변경 요약
- *  - ✅ 기존 '역할/구독' 노출 로직 유지 (adminOnly / requiresSub)
- *  - ➕ settings/uploadPolicy.navigation.disabled 구독 → 포함된 slug는 "보여주되 비활성화"
+ * - 비활성화(disabled) 메뉴는 <Link> 대신 <span>으로 렌더링 → 클릭/탭 포커스 모두 불가
+ * - 시각적 스타일은 동일하게 유지(회색/투명도, not-allowed 커서)
+ * - 기존 권한/구독/관리자 노출 로직, Firestore uploadPolicy 구독 그대로 유지
  */
 
 import Link from 'next/link'
@@ -15,7 +16,6 @@ import { auth, db } from '@/lib/firebase/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, onSnapshot } from 'firebase/firestore'
 
-// === 메뉴 정의(기존 유지) ===
 type MenuItem = {
   slug: string
   label: string
@@ -33,11 +33,8 @@ const MENUS: MenuItem[] = [
   { slug: 'admin', label: 'Admin', href: '/admin', adminOnly: true },
 ]
 
-// settings/uploadPolicy.navigation.disabled 구독용 타입
 type UploadPolicy = {
-  navigation?: {
-    disabled?: string[] // slug 배열
-  }
+  navigation?: { disabled?: string[] }
 }
 
 export default function Sidebar() {
@@ -48,21 +45,16 @@ export default function Sidebar() {
   const [isSubscribed, setIsSubscribed] = useState(false)
   const [disabledSlugs, setDisabledSlugs] = useState<string[]>([])
 
-  // 로그인/유저 상태
+  // 로그인/유저 구독
   useEffect(() => {
     let unsubUser: (() => void) | null = null
-
     const unsubAuth = onAuthStateChanged(auth, (u) => {
       setSignedIn(!!u)
-
       if (!u) {
-        setRole('user')
-        setIsSubscribed(false)
-        setDisabledSlugs([])
+        setRole('user'); setIsSubscribed(false); setDisabledSlugs([])
         if (unsubUser) { unsubUser(); unsubUser = null }
         return
       }
-
       const userRef = doc(db, 'users', u.uid)
       if (unsubUser) { unsubUser(); unsubUser = null }
       unsubUser = onSnapshot(
@@ -76,19 +68,17 @@ export default function Sidebar() {
         () => { setRole('user'); setIsSubscribed(false) }
       )
     })
-
     return () => { unsubAuth(); if (unsubUser) unsubUser() }
   }, [])
 
-  // settings/uploadPolicy 구독(관리자 비활성화 메뉴)
+  // settings/uploadPolicy.navigation.disabled 구독
   useEffect(() => {
     const ref = doc(db, 'settings', 'uploadPolicy')
     const unsub = onSnapshot(
       ref,
       (snap) => {
         const data = (snap.exists() ? (snap.data() as UploadPolicy) : {}) || {}
-        const disabled = data.navigation?.disabled ?? []
-        setDisabledSlugs(disabled.map(String))
+        setDisabledSlugs((data.navigation?.disabled ?? []).map(String))
       },
       () => setDisabledSlugs([])
     )
@@ -100,14 +90,13 @@ export default function Sidebar() {
     return MENUS.map((m) => {
       const isDisabledByAdmin = disabledSlugs.includes(m.slug)
       const hidden =
-        (!signedIn && m.slug !== 'convert') || // 비로그인: convert만
-        (m.adminOnly && role !== 'admin') || // admin 전용
-        (m.requiresSub && !canSeeAll) // 구독 필요
+        (!signedIn && m.slug !== 'convert') ||   // 비로그인: convert만 노출
+        (m.adminOnly && role !== 'admin') ||     // admin 전용
+        (m.requiresSub && !canSeeAll)            // 구독 필요
       return { ...m, hidden, isDisabled: isDisabledByAdmin }
     })
   }, [signedIn, role, isSubscribed, disabledSlugs])
 
-  // ✅ 최상단 aside: 높이/경계/배경 제거 (전역에서 처리)
   return (
     <aside className="w-64 shrink-0">
       <div className="px-3 py-3 text-xs uppercase tracking-wider opacity-60">Menu</div>
@@ -115,23 +104,34 @@ export default function Sidebar() {
         <ul className="space-y-1">
           {menuView.filter((m) => !m.hidden).map((m) => {
             const active = pathname.startsWith(m.href)
-            const isDisabled = m.isDisabled
+            const baseClass =
+              'block rounded-md px-3 py-2 text-sm transition select-none'
+            const enabledClass = active
+              ? 'bg-blue-600 text-white font-semibold'
+              : 'text-gray-900 dark:text-white hover:bg-blue-100/70 dark:hover:bg-blue-800/40'
+            const disabledClass =
+              'opacity-40 cursor-not-allowed' // 클릭/탭 불가 표현
+
             return (
               <li key={m.slug}>
-                <Link
-                  href={isDisabled ? '#' : m.href}
-                  className={clsx(
-                    'block rounded-md px-3 py-2 text-sm transition',
-                    isDisabled
-                      ? 'opacity-40 pointer-events-none'
-                      : active
-                        ? 'bg-blue-600 text-white font-semibold'
-                        : 'text-gray-900 dark:text-white hover:bg-blue-100/70 dark:hover:bg-blue-800/40'
-                  )}
-                  title={isDisabled ? '관리자에 의해 비활성화됨' : m.label}
-                >
-                  {m.label}
-                </Link>
+                {m.isDisabled ? (
+                  // ✅ 완전 비활성: Link 대신 span 렌더 → 클릭/탭 모두 불가
+                  <span
+                    className={clsx(baseClass, disabledClass)}
+                    aria-disabled="true"
+                    title="관리자에 의해 비활성화됨"
+                  >
+                    {m.label}
+                  </span>
+                ) : (
+                  // 활성 메뉴는 Link
+                  <Link
+                    href={m.href}
+                    className={clsx(baseClass, enabledClass)}
+                  >
+                    {m.label}
+                  </Link>
+                )}
               </li>
             )
           })}
