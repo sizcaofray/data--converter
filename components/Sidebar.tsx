@@ -1,10 +1,9 @@
-// components/Sidebar.tsx
 'use client'
 /**
- * 변경 요약
- * - 비활성화(disabled) 메뉴는 <Link> 대신 <span>으로 렌더링 → 클릭/탭 포커스 모두 불가
- * - 시각적 스타일은 동일하게 유지(회색/투명도, not-allowed 커서)
- * - 기존 권한/구독/관리자 노출 로직, Firestore uploadPolicy 구독 그대로 유지
+ * Sidebar
+ * - 관리자 설정(settings/uploadPolicy.navigation.disabled)과 슬러그 정규화 매핑 적용
+ * - 비활성화된 메뉴는 <span> 렌더(클릭/포커스 불가)
+ * - 기존 권한/구독/관리자 노출 로직 유지
  */
 
 import Link from 'next/link'
@@ -17,13 +16,14 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { doc, onSnapshot } from 'firebase/firestore'
 
 type MenuItem = {
-  slug: string
+  slug: string      // 내부 기준 슬러그 (route 기준)
   label: string
   href: string
   adminOnly?: boolean
   requiresSub?: boolean
 }
 
+// 내부 기준 슬러그 정의(변경 없음)
 const MENUS: MenuItem[] = [
   { slug: 'convert', label: 'Data Convert', href: '/convert' },
   { slug: 'compare', label: 'Compare', href: '/compare' },
@@ -33,8 +33,22 @@ const MENUS: MenuItem[] = [
   { slug: 'admin', label: 'Admin', href: '/admin', adminOnly: true },
 ]
 
+// 관리자 문서 타입
 type UploadPolicy = {
   navigation?: { disabled?: string[] }
+}
+
+// ✅ 관리자에서 저장하는 문자열을 내부 슬러그로 정규화
+function normalizeSlug(input: string): string {
+  const s = String(input || '').trim().toLowerCase()
+  switch (s) {
+    case 'pdf-tool':
+      return 'pdf'
+    case 'pattern-editor':
+      return 'pattern'
+    default:
+      return s
+  }
 }
 
 export default function Sidebar() {
@@ -78,21 +92,24 @@ export default function Sidebar() {
       ref,
       (snap) => {
         const data = (snap.exists() ? (snap.data() as UploadPolicy) : {}) || {}
-        setDisabledSlugs((data.navigation?.disabled ?? []).map(String))
+        const list = data.navigation?.disabled ?? []
+        // 👉 normalize 적용
+        setDisabledSlugs(list.map(normalizeSlug))
       },
       () => setDisabledSlugs([])
     )
     return () => unsub()
   }, [])
 
+  // 화면에 뿌릴 메뉴 계산
   const menuView = useMemo(() => {
     const canSeeAll = role === 'admin' || isSubscribed
     return MENUS.map((m) => {
       const isDisabledByAdmin = disabledSlugs.includes(m.slug)
       const hidden =
-        (!signedIn && m.slug !== 'convert') ||   // 비로그인: convert만 노출
-        (m.adminOnly && role !== 'admin') ||     // admin 전용
-        (m.requiresSub && !canSeeAll)            // 구독 필요
+        (!signedIn && m.slug !== 'convert') || // 비로그인: convert만 노출
+        (m.adminOnly && role !== 'admin') ||   // admin 전용
+        (m.requiresSub && !canSeeAll)         // 구독 필요
       return { ...m, hidden, isDisabled: isDisabledByAdmin }
     })
   }, [signedIn, role, isSubscribed, disabledSlugs])
@@ -110,12 +127,12 @@ export default function Sidebar() {
               ? 'bg-blue-600 text-white font-semibold'
               : 'text-gray-900 dark:text-white hover:bg-blue-100/70 dark:hover:bg-blue-800/40'
             const disabledClass =
-              'opacity-40 cursor-not-allowed' // 클릭/탭 불가 표현
+              'opacity-40 cursor-not-allowed'
 
             return (
               <li key={m.slug}>
                 {m.isDisabled ? (
-                  // ✅ 완전 비활성: Link 대신 span 렌더 → 클릭/탭 모두 불가
+                  // ✅ 완전 비활성(클릭·탭 불가)
                   <span
                     className={clsx(baseClass, disabledClass)}
                     aria-disabled="true"
@@ -124,11 +141,7 @@ export default function Sidebar() {
                     {m.label}
                   </span>
                 ) : (
-                  // 활성 메뉴는 Link
-                  <Link
-                    href={m.href}
-                    className={clsx(baseClass, enabledClass)}
-                  >
+                  <Link href={m.href} className={clsx(baseClass, enabledClass)}>
                     {m.label}
                   </Link>
                 )}
