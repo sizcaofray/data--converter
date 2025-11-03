@@ -1,20 +1,18 @@
 ﻿'use client'
 
 /**
- * 내부 레이아웃 (사이드바가 footer 라인까지 자연스럽게 이어지고,
- * 불필요한 스크롤은 다시 생기지 않도록 구성)
- *
- * 변경 포인트
- * - 사이드바 래퍼의 min-h-screen 제거
- * - 최상위 컨테이너에 min-h-full + grid(2열) 적용 → 부모의 높이를 그대로 채택
- * - border-r, 배경은 좌측 컬럼 래퍼에만 적용 (Sidebar.tsx 중복 border/bg는 제거 권장)
- * - main 쪽 overflow-auto 금지(overflow-visible 유지)
+ * 내부 레이아웃
+ * - 좌: 사이드바 컬럼(배경만 담당)
+ * - 우: 로그아웃 헤더 + 본문
+ * - ✅ 불필요 스크롤 방지(overflow-auto 제거)
+ * - ✅ 사이드바 배경/구분선은 전역에서 그리므로 여기서 border 제거
  */
 
 import React, { useEffect, useState } from 'react'
 import Sidebar from '@/components/Sidebar'
 import LogoutHeader from '@/components/LogoutHeader'
 import { usePathname, useRouter } from 'next/navigation'
+
 import { auth, db } from '@/lib/firebase/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, onSnapshot } from 'firebase/firestore'
@@ -28,6 +26,7 @@ export default function ContentsLayout({ children }: { children: React.ReactNode
   const [isSubscribed, setIsSubscribed] = useState(false)
   const [role, setRole] = useState<'admin' | 'user' | undefined>()
 
+  // 로그인/유저 문서 구독
   useEffect(() => {
     let unsubUser: (() => void) | null = null
 
@@ -61,12 +60,16 @@ export default function ContentsLayout({ children }: { children: React.ReactNode
     return () => { unsubAuth(); if (unsubUser) unsubUser() }
   }, [])
 
+  // 접근 가드
   const canSeeAll = role === 'admin' || isSubscribed
   const FREE_ALLOW = ['/convert']
 
   useEffect(() => {
     if (loading) return
-    if (!signedIn) { if (pathname !== '/') router.replace('/'); return }
+    if (!signedIn) {
+      if (pathname !== '/') router.replace('/')
+      return
+    }
     if (!canSeeAll) {
       const allowed = FREE_ALLOW.some((p) => pathname.startsWith(p))
       if (!allowed) router.replace('/convert')
@@ -74,20 +77,17 @@ export default function ContentsLayout({ children }: { children: React.ReactNode
   }, [loading, signedIn, canSeeAll, pathname, router])
 
   return (
-    /**
-     * 부모(body)는 app/layout.tsx 에서 `min-h-screen flex flex-col` 입니다.
-     * 아래 컨테이너가 그 높이를 채택하도록 `min-h-full`을 주고,
-     * 2열 그리드(왼쪽: 16rem, 오른쪽: 나머지)로 분리합니다.
-     */
+    // ✅ 부모(body)의 flex-1 높이를 그대로 채택(h-full) + 2열 그리드
     <div className="w-full h-full grid grid-cols-[16rem_1fr] text-inherit">
-      {/* 좌측 사이드 영역 래퍼: 여기서만 배경/경계 적용 (겹침 방지) */}
-      <div className="h-full bg-gray-50 dark:bg-gray-900 border-r border-gray-700/50">
+      {/* 좌측 컬럼: 배경만 담당(경계선은 전역에서 그림) */}
+      <div className="h-full bg-gray-50 dark:bg-gray-900">
         <Sidebar />
       </div>
 
-      {/* 우측 영역: 헤더 + 본문 */}
+      {/* 우측 컬럼 */}
       <div className="min-w-0 flex flex-col">
         <LogoutHeader />
+        {/* ✅ 내부 이중 스크롤 금지 */}
         <main className="flex-1 p-4 overflow-visible">
           {loading ? (
             <div className="text-sm text-gray-500 dark:text-gray-400">권한 확인 중…</div>
