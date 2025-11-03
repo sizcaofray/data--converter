@@ -79,9 +79,9 @@ export default function ContentsLayout({ children }: { children: React.ReactNode
      * 아래 컨테이너가 그 높이를 채택하도록 `min-h-full`을 주고,
      * 2열 그리드(왼쪽: 16rem, 오른쪽: 나머지)로 분리합니다.
      */
-    <div className="w-full min-h-full grid grid-cols-[16rem_1fr] text-inherit">
+    <div className="w-full h-full grid grid-cols-[16rem_1fr] text-inherit">
       {/* 좌측 사이드 영역 래퍼: 여기서만 배경/경계 적용 (겹침 방지) */}
-      <div className="bg-gray-50 dark:bg-gray-900 border-r border-gray-700/50">
+      <div className="h-full bg-gray-50 dark:bg-gray-900 border-r border-gray-700/50">
         <Sidebar />
       </div>
 
