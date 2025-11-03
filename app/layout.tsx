@@ -10,7 +10,6 @@ export const metadata = {
   description: '구글 계정 로그인 예제',
 }
 
-// 공지 관련
 const NOTICE_ENABLED = process.env.NEXT_PUBLIC_NOTICE_ENABLED === 'true'
 const NOTICE_MESSAGE = process.env.NEXT_PUBLIC_NOTICE_MESSAGE || ''
 const NOTICE_LEVEL = process.env.NEXT_PUBLIC_NOTICE_LEVEL || 'info'
@@ -31,38 +30,34 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ko" suppressHydrationWarning>
       <head>
-        {/* 기존 메타 유지 */}
         <meta
           name="google-site-verification"
           content="pOguJ27pS61Q0gqU9afI8X_wXywspJ5UCMOfsa6XsL4"
         />
       </head>
 
-      {/* ✅ body 한 번만 min-h-screen 부여 → 푸터 하단 고정용 */}
       <body className="min-h-screen flex flex-col transition-colors">
         <UserProvider>
           <SubscribePopupProvider>
-            {/* Bootpay 스크립트 로드 */}
             <BootpayScript />
 
-            {/* 상단 공지 */}
             {NOTICE_ENABLED && (
               <div className={`${bannerClass(NOTICE_LEVEL)} text-sm`}>
                 <div className="max-w-6xl mx-auto px-4 py-2">{NOTICE_MESSAGE}</div>
               </div>
             )}
 
-            {/* 메인+푸터 래퍼 (좌측 구분선 포함) */}
+            {/* 메인 콘텐츠 + 푸터 */}
             <div className="relative flex-1 flex flex-col">
-              {/* ✅ 사이드바 구분선: 사이드바 너비 16rem(left-64) 위치에 전역 1px 라인 */}
+              {/* ✅ 사이드바 구분선: 푸터 위까지만 표시 (bottom-[3rem]) */}
               <div
                 aria-hidden
-                className="pointer-events-none absolute left-64 inset-y-0 w-px bg-gray-700/50 hidden sm:block"
+                className="pointer-events-none absolute left-64 top-0 bottom-[3rem] w-px bg-gray-700/50 hidden sm:block"
               />
 
               <Suspense fallback={null}>{children}</Suspense>
 
-              {/* 푸터: 항상 아래 */}
+              {/* 푸터 */}
               <footer className="mt-auto border-t border-gray-200 dark:border-gray-800 text-xs">
                 <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-center gap-3">
                   <a
@@ -82,7 +77,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               </footer>
             </div>
 
-            {/* 전역 구독 팝업 */}
             <SubscribePopup />
           </SubscribePopupProvider>
         </UserProvider>
