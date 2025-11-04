@@ -9,11 +9,6 @@
  *   · 페이지 지정 예시: "1,3,5-7" → 1페이지, 3페이지, 5~7페이지 묶음 단위로 각각 저장
  *   · "붙여서 저장" 의미: 5-7 입력 시 5~7 페이지를 하나의 PDF로 저장
  * - 저장: 가능하면 File System Access API로 폴더 저장, 미지원 시 ZIP 또는 개별 다운로드
- *
- * ⚠️ 주의
- * - 브라우저 PDF 처리용으로 pdf-lib 사용
- * - 다중 파일 업로드 시, 병합 순서는 리스트에서 변경 가능(HTML5 drag&drop)
- * - 분할은 단일 파일만 대상으로 처리(여러 개 선택 시 첫 번째 파일 사용 안내)
  */
 
 import React, { useCallback, useMemo, useRef, useState } from "react";
@@ -25,6 +20,13 @@ const canUseFS = () =>
   typeof window !== "undefined" &&
   "showDirectoryPicker" in window &&
   typeof (window as any).showDirectoryPicker === "function";
+
+// ---------- 유틸: Uint8Array → Blob 변환 (TS DOM 타입 엄격 모드 대응) ----------
+function bytesToBlob(bytes: Uint8Array, type: string): Blob {
+  // byteOffset/byteLength를 반영해 실제 유효 바이트만 잘라 ArrayBuffer로 변환
+  const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  return new Blob([ab], { type });
+}
 
 // ---------- 유틸: 페이지 문자열 파싱 "1,3,5-7" ----------
 function parsePages(input: string): number[][] {
@@ -189,8 +191,8 @@ export default function PdfToolPage() {
         copied.forEach((p) => mergedPdf.addPage(p));
       }
 
-      const mergedBytes = await mergedPdf.save();
-      const blob = new Blob([mergedBytes], { type: "application/pdf" });
+      const mergedBytes = await mergedPdf.save(); // Uint8Array
+      const blob = bytesToBlob(mergedBytes, "application/pdf");
 
       let dirHandle: FileSystemDirectoryHandle | undefined;
       if (canUseFS()) {
@@ -263,8 +265,8 @@ export default function PdfToolPage() {
         const out = await PDFDocument.create();
         const copied = await out.copyPages(base, group);
         copied.forEach((p) => out.addPage(p));
-        const bytes = await out.save();
-        const blob = new Blob([bytes], { type: "application/pdf" });
+        const bytes = await out.save(); // Uint8Array
+        const blob = bytesToBlob(bytes, "application/pdf");
 
         const fname = (() => {
           // ex) source.pdf -> source_split_001.pdf
