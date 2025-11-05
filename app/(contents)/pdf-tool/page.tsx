@@ -2,33 +2,53 @@
 
 /**
  * 📄 app/(contents)/pdf-tool/page.tsx
- * - PDF 통합/분할 한 페이지 구현 + 디버그 패널/전역 에러 캡처 추가
- * - 변경점:
- *   1) window.onerror / unhandledrejection 캡처하여 UI에 표시
- *   2) 단계별 log()로 진행상황/오류 메시지 기록
- *   3) pdf-lib save() → Blob 변환 시 타입 이슈 우회(bytesToBlob)
- *   4) 파일 타입 검증 강화(확장자도 함께 확인)
- *   5) File System Access API 호출 전 사전 점검 및 예외 처리
+ * - PDF 통합/분할 + 디버그 패널
+ * - 보강: 업로드/실행 시 PDF 유효성(0바이트, %PDF- 헤더) 검사 추가
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PDFDocument } from "pdf-lib";
 import JSZip from "jszip";
 
-// ---------- 유틸: File System Access API 지원 여부 ----------
+// ---------- FS Access 지원 여부 ----------
 const canUseFS = () =>
   typeof window !== "undefined" &&
   "showDirectoryPicker" in window &&
   typeof (window as any).showDirectoryPicker === "function";
 
-// ---------- 유틸: Uint8Array → Blob (TS의 SharedArrayBuffer 추론 이슈 회피) ----------
+// ---------- Uint8Array → Blob (SharedArrayBuffer 추론 이슈 회피) ----------
 function bytesToBlob(bytes: Uint8Array, type: string): Blob {
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
   return new Blob([copy.buffer], { type });
 }
 
-// ---------- 유틸: 페이지 문자열 파싱 "1,3,5-7" ----------
+// ---------- 파일이 PDF인지(타입/확장자) ----------
+function looksLikePdfByNameOrType(file: File) {
+  if (file.type === "application/pdf") return true;
+  return /\.pdf$/i.test(file.name);
+}
+
+// ---------- 파일 헤더 검사: 앞 5바이트 "%PDF-" 확인 ----------
+async function hasPdfHeader(file: File): Promise<boolean> {
+  try {
+    if (file.size < 5) return false;
+    const head = await file.slice(0, 5).arrayBuffer();
+    const view = new Uint8Array(head);
+    // "%PDF-" 의 아스키: 0x25 0x50 0x44 0x46 0x2D
+    return (
+      view[0] === 0x25 &&
+      view[1] === 0x50 &&
+      view[2] === 0x44 &&
+      view[3] === 0x46 &&
+      view[4] === 0x2d
+    );
+  } catch {
+    return false;
+  }
+}
+
+// ---------- 페이지 문자열 파싱 "1,3,5-7" ----------
 function parsePages(input: string): number[][] {
   if (!input?.trim()) return [];
   const chunks = input.split(",").map((s) => s.trim()).filter(Boolean);
@@ -50,31 +70,21 @@ function parsePages(input: string): number[][] {
   return result;
 }
 
-// ---------- 파일이 PDF인지(타입 또는 확장자) ----------
-function isPdfFile(file: File) {
-  if (file.type === "application/pdf") return true;
-  // 일부 브라우저/OS에서 type이 비어올 수 있어 확장자도 체크
-  return /\.pdf$/i.test(file.name);
-}
-
 export default function PdfToolPage() {
-  // 업로드/상태
   const [files, setFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState<string>("");
 
-  // 분할 옵션
   const [splitFile, setSplitFile] = useState<File | null>(null);
   const [splitMode, setSplitMode] = useState<"all" | "custom">("all");
   const [customPages, setCustomPages] = useState<string>("");
 
-  // 디버그 로그
   const [logs, setLogs] = useState<string[]>([]);
   const [showDebug, setShowDebug] = useState<boolean>(true);
 
   const dropRef = useRef<HTMLDivElement | null>(null);
 
-  // ---------- 디버그 로그 유틸 ----------
+  // ---------- 로그 유틸 ----------
   const log = useCallback((...args: any[]) => {
     const line =
       "[" +
@@ -93,9 +103,8 @@ export default function PdfToolPage() {
           return String(a);
         })
         .join(" ");
-    // 콘솔에도 출력
     console.log(line);
-    setLogs((prev) => [line, ...prev].slice(0, 300)); // 최근 300줄만 유지
+    setLogs((prev) => [line, ...prev].slice(0, 400));
   }, []);
 
   // ---------- 전역 에러 캡처 ----------
@@ -116,29 +125,51 @@ export default function PdfToolPage() {
     };
   }, [log]);
 
-  // ---------- 파일 추가 ----------
-  const addFiles = useCallback(
-    (newFiles: FileList | File[]) => {
-      try {
-        const arr = Array.from(newFiles).filter(isPdfFile);
-        if (arr.length === 0) {
-          setMessage("PDF 파일만 업로드할 수 있습니다.");
-          log("addFiles: no valid pdf in selection");
-          return;
-        }
-        setFiles((prev) => {
-          const merged = [...prev, ...arr];
-          log(`addFiles: ${arr.length} added, total ${merged.length}`);
-          return merged;
-        });
-        setMessage(`${arr.length}개 파일 추가됨 (총 ${files.length + arr.length}개)`);
-      } catch (e) {
-        setMessage("파일 추가 중 오류가 발생했습니다.");
-        log("addFiles error:", e);
+  // ---------- 업로드(유효성 검사 포함) ----------
+  async function addFilesWithValidation(newFiles: FileList | File[]) {
+    try {
+      const selected = Array.from(newFiles).filter(looksLikePdfByNameOrType);
+      if (!selected.length) {
+        setMessage("PDF 파일만 업로드할 수 있습니다.");
+        log("add: no pdf-like files");
+        return;
       }
-    },
-    [files.length, log]
-  );
+
+      const accepted: File[] = [];
+      for (const f of selected) {
+        if (f.size === 0) {
+          log(`add: reject ${f.name} (size 0B)`);
+          continue;
+        }
+        const headerOk = await hasPdfHeader(f);
+        log(`add: check ${f.name} size=${f.size} headerOk=${headerOk}`);
+        if (!headerOk) {
+          log(`add: reject ${f.name} (no %PDF- header)`);
+          continue;
+        }
+        accepted.push(f);
+      }
+
+      if (!accepted.length) {
+        setMessage("유효한 PDF가 없습니다. (0B 또는 손상/비정상 헤더)");
+        return;
+      }
+
+      setFiles((prev) => {
+        const merged = [...prev, ...accepted];
+        log(`add: accepted ${accepted.length}, total ${merged.length}`);
+        return merged;
+      });
+      setMessage(`${accepted.length}개 파일 추가됨 (총 ${files.length + accepted.length}개)`);
+    } catch (e) {
+      setMessage("파일 추가 중 오류가 발생했습니다.");
+      log("add error:", e);
+    }
+  }
+
+  const onFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) addFilesWithValidation(e.target.files);
+  };
 
   // ---------- 드래그 앤 드롭 ----------
   const onDragOver = (e: React.DragEvent) => {
@@ -150,7 +181,7 @@ export default function PdfToolPage() {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      addFiles(e.dataTransfer.files);
+      addFilesWithValidation(e.dataTransfer.files);
       e.dataTransfer.clearData();
     }
   };
@@ -185,12 +216,12 @@ export default function PdfToolPage() {
   const removeAt = (idx: number) => {
     setFiles((prev) => {
       const copy = prev.filter((_, i) => i !== idx);
-      log(`removeAt: index ${idx}, total ${copy.length}`);
+      log(`remove: index ${idx}, total ${copy.length}`);
       return copy;
     });
   };
 
-  // ---------- 저장 처리 ----------
+  // ---------- 저장 ----------
   async function saveBlobWithFSOrDownload(
     blob: Blob,
     suggestedName: string,
@@ -198,13 +229,13 @@ export default function PdfToolPage() {
   ) {
     try {
       if (dirHandle) {
-        log("save: using FS API →", suggestedName);
+        log("save: FS API →", suggestedName);
         const fileHandle = await dirHandle.getFileHandle(suggestedName, { create: true });
         const writable = await fileHandle.createWritable();
         await writable.write(blob);
         await writable.close();
       } else {
-        log("save: using download →", suggestedName);
+        log("save: download →", suggestedName);
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -215,7 +246,7 @@ export default function PdfToolPage() {
         URL.revokeObjectURL(url);
       }
     } catch (err) {
-      log("save error(try download fallback):", err);
+      log("save error (fallback download):", err);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -227,6 +258,29 @@ export default function PdfToolPage() {
     }
   }
 
+  // ---------- 업로드 목록 검증(실행 직전) ----------
+  async function validateFilesOrShow(filesToCheck: File[], purpose: "merge" | "split") {
+    const valid: File[] = [];
+    for (const f of filesToCheck) {
+      if (f.size === 0) {
+        log(`${purpose}: reject ${f.name} (size 0B)`);
+        continue;
+      }
+      const headerOk = await hasPdfHeader(f);
+      log(`${purpose}: header ${f.name} headerOk=${headerOk}`);
+      if (!headerOk) continue;
+      valid.push(f);
+    }
+    if (!valid.length) {
+      setMessage(
+        purpose === "merge"
+          ? "통합할 유효한 PDF가 없습니다. (0B/손상/비정상 헤더)"
+          : "분할할 유효한 PDF가 없습니다. (0B/손상/비정상 헤더)"
+      );
+    }
+    return valid;
+  }
+
   // ---------- 통합 ----------
   const handleMerge = async () => {
     try {
@@ -236,10 +290,18 @@ export default function PdfToolPage() {
         log("merge: not enough files");
         return;
       }
-      setMessage("통합 중...");
 
+      // 실행 직전 재검증
+      const validFiles = await validateFilesOrShow(files, "merge");
+      if (validFiles.length < 2) {
+        log("merge: less than 2 valid files");
+        return;
+      }
+
+      setMessage("통합 중...");
       const mergedPdf = await PDFDocument.create();
-      for (const f of files) {
+
+      for (const f of validFiles) {
         log("merge: load", f.name, f.size + "B");
         const buf = await f.arrayBuffer();
         const pdf = await PDFDocument.load(buf);
@@ -248,6 +310,7 @@ export default function PdfToolPage() {
         const copied = await mergedPdf.copyPages(pdf, pages);
         copied.forEach((p) => mergedPdf.addPage(p));
       }
+
       log("merge: saving...");
       const mergedBytes = await mergedPdf.save();
       const blob = bytesToBlob(mergedBytes, "application/pdf");
@@ -261,7 +324,7 @@ export default function PdfToolPage() {
           log("merge: directoryPicker canceled/failed", e);
         }
       } else {
-        log("merge: FS API not available, will download");
+        log("merge: FS API not available → download");
       }
 
       const name = `merged_${new Date().toISOString().replace(/[:.]/g, "-")}.pdf`;
@@ -278,16 +341,22 @@ export default function PdfToolPage() {
   const handleSplit = async () => {
     try {
       log("split: start");
-      if (!splitFile && files.length > 0) {
-        setSplitFile(files[0]);
-        log("split: target set to first uploaded file", files[0]?.name);
-      }
-      const target = splitFile ?? files[0];
+
+      // 분할 타겟 결정
+      let target = splitFile ?? files[0] ?? null;
       if (!target) {
         setMessage("분할할 PDF를 하나 이상 업로드하거나 분할 파일을 선택해 주세요.");
         log("split: no target file");
         return;
       }
+
+      // 실행 직전 타겟 재검증
+      const [validated] = await validateFilesOrShow([target], "split");
+      if (!validated) {
+        log("split: target invalid");
+        return;
+      }
+      target = validated;
       setMessage("분할 중...");
 
       log("split: load", target.name, target.size + "B");
@@ -305,7 +374,7 @@ export default function PdfToolPage() {
           log("split: directoryPicker canceled/failed", e);
         }
       } else {
-        log("split: FS API not available, will zip-download");
+        log("split: FS API not available → zip-download");
       }
 
       const shouldZip = !dirHandle;
@@ -367,21 +436,23 @@ export default function PdfToolPage() {
     }
   };
 
-  // ---------- 입력 핸들러 ----------
-  const onFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) addFiles(e.target.files);
-  };
+  // ---------- 별도 분할 파일 선택 ----------
   const onSplitFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const f = e.target.files[0];
-      if (!isPdfFile(f)) {
+      if (!looksLikePdfByNameOrType(f)) {
         setMessage("분할 대상은 PDF만 선택할 수 있습니다.");
-        log("onSplitFileInput: not pdf", f.name);
+        log("split input: not pdf-like", f.name);
+        return;
+      }
+      if (f.size === 0) {
+        setMessage("선택한 파일이 0바이트입니다. 올바른 PDF를 선택하세요.");
+        log("split input: 0B file", f.name);
         return;
       }
       setSplitFile(f);
       setMessage(`분할 대상: ${f.name}`);
-      log("onSplitFileInput: setSplitFile", f.name);
+      log("split input: setSplitFile", f.name, f.size + "B");
     }
   };
 
@@ -395,14 +466,14 @@ export default function PdfToolPage() {
     <section className="p-4 space-y-6">
       <h1 className="text-2xl font-bold">📄 PDF Tool</h1>
       <p className="text-sm text-gray-600 dark:text-gray-400">
-        * 한 페이지에서 PDF <b>통합</b>과 <b>분할</b>을 처리합니다. (폴더 저장 지원 / 미지원시 자동 다운로드)
+        * 업로드 시 0바이트/손상 PDF는 자동으로 걸러집니다. 오류는 하단 디버그 로그를 확인하세요.
       </p>
 
       {/* 업로더 */}
       <div
         ref={dropRef}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
+        onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+        onDragLeave={() => setIsDragging(false)}
         onDrop={onDrop}
         className={[
           "border-2 border-dashed rounded-xl p-6 transition",
@@ -418,7 +489,7 @@ export default function PdfToolPage() {
       <div className="rounded-xl border p-4 space-y-3">
         <h2 className="font-semibold text-lg">① PDF 통합</h2>
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          업로드된 PDF들을 아래 목록에서 <b>드래그하여 순서 변경</b>한 뒤,&nbsp;<b>[통합 실행]</b>을 누르세요.
+          업로드된 PDF를 <b>드래그로 순서 변경</b> 후 <b>[통합 실행]</b>.
         </p>
 
         <ul className="space-y-2">
@@ -426,13 +497,20 @@ export default function PdfToolPage() {
             <li
               key={`${f.name}-${idx}-${f.size}`}
               draggable
-              onDragStart={handleDragStart(idx)}
-              onDragEnter={handleDragEnter(idx)}
-              onDragEnd={handleDragEnd}
+              onDragStart={(e) => { (dragItemIndex.current = idx); e.dataTransfer.setData("text/plain", `${idx}`); }}
+              onDragEnter={() => { dragOverIndex.current = idx; }}
+              onDragEnd={() => {
+                const from = dragItemIndex.current; const to = dragOverIndex.current;
+                dragItemIndex.current = null; dragOverIndex.current = null;
+                if (from === null || to === null || from === to) return;
+                setFiles((prev) => { const copy = [...prev]; const [moved] = copy.splice(from, 1); copy.splice(to, 0, moved); log(`reorder: ${from} -> ${to}`); return copy; });
+              }}
               className="flex items-center justify-between rounded-lg border p-2 cursor-move hover:bg-gray-50 dark:hover:bg-gray-800"
               title="드래그하여 순서를 변경하세요"
             >
-              <span className="truncate max-w-[70%]">{idx + 1}. {f.name}</span>
+              <span className="truncate max-w-[70%]">
+                {idx + 1}. {f.name} <span className="text-xs text-gray-400">({f.size}B)</span>
+              </span>
               <button className="text-xs px-2 py-1 rounded bg-red-600 text-white" onClick={() => removeAt(idx)} title="목록에서 제거">
                 삭제
               </button>
@@ -457,7 +535,7 @@ export default function PdfToolPage() {
       <div className="rounded-xl border p-4 space-y-3">
         <h2 className="font-semibold text-lg">② PDF 분할</h2>
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          분할 대상은 기본적으로 업로드 목록의 <b>첫 번째 파일</b>을 사용합니다. 특정 파일로 분할하려면 아래에서 선택하세요.
+          기본 분할 대상은 업로드 목록의 <b>첫 번째 파일</b>입니다. 필요하면 아래에서 변경하세요.
         </p>
 
         <div className="flex flex-col gap-2 md:flex-row md:items-center">
@@ -470,7 +548,7 @@ export default function PdfToolPage() {
         <div className="space-y-2">
           <label className="flex items-center gap-2">
             <input type="radio" name="splitMode" value="all" checked={splitMode === "all"} onChange={() => setSplitMode("all")} />
-            <span>모든 페이지를 각각 분할 (각 페이지가 1개의 PDF)</span>
+            <span>모든 페이지를 각각 분할 (각 1개 PDF)</span>
           </label>
 
           <label className="flex items-center gap-2">
@@ -480,7 +558,7 @@ export default function PdfToolPage() {
 
           <input
             type="text"
-            placeholder={`예: 1,3,5-7  (쉼표로 구분, '5-7'은 5~7페이지를 하나의 PDF로 저장)`}
+            placeholder={`예: 1,3,5-7  (쉼표 구분, '5-7'은 5~7페이지를 한 파일로 저장)`}
             className="w-full rounded border px-3 py-2 disabled:bg-gray-100 dark:disabled:bg-gray-800"
             disabled={splitMode !== "custom"}
             value={customPages}
@@ -495,7 +573,7 @@ export default function PdfToolPage() {
         </div>
       </div>
 
-      {/* 상태 메시지 */}
+      {/* 상태 */}
       {!!message && (
         <div className="rounded-lg border p-3 text-sm">
           <b>상태:</b> {message}
@@ -516,17 +594,14 @@ export default function PdfToolPage() {
             {logs.length === 0 ? (
               <div className="text-gray-500">아직 로그가 없습니다. 버튼을 눌러 실행해 보세요.</div>
             ) : (
-              logs.map((l, i) => <div key={i} className="py-0.5 border-b border-dashed border-gray-200 dark:border-gray-700">{l}</div>)
+              logs.map((l, i) => (
+                <div key={i} className="py-0.5 border-b border-dashed border-gray-200 dark:border-gray-700">
+                  {l}
+                </div>
+              ))
             )}
           </div>
         )}
-      </div>
-
-      <div className="text-xs text-gray-500">
-        <ul className="list-disc ml-5 space-y-1">
-          <li><b>폴더 저장</b>: Chrome/Edge 최신 버전에서 폴더 선택 창이 뜹니다. 미지원 브라우저에서는 자동 다운로드(여러 파일은 ZIP)로 저장됩니다.</li>
-          <li><b>페이지 지정</b>: 예) <code>2,4,10-12</code> → 2, 4 페이지는 각각 한 파일로, 10~12 페이지는 한 파일로 저장됩니다.</li>
-        </ul>
       </div>
     </section>
   );
