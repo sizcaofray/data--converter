@@ -3,7 +3,9 @@
 /**
  * 📄 app/(contents)/pdf-tool/page.tsx
  * - PDF 통합/분할 + 디버그 패널
- * - 보강: 업로드/실행 시 PDF 유효성(0바이트, %PDF- 헤더) 검사 추가
+ * - 저장 방식 토글 추가:
+ *   · 자동: File System Access API 지원/허용 시 폴더 저장, 차단/취소 시 자동 다운로드 폴백
+ *   · 바로 다운로드: 폴더 선택 없이 즉시(분할은 ZIP, 통합은 단일 PDF) 다운로드
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -35,7 +37,7 @@ async function hasPdfHeader(file: File): Promise<boolean> {
     if (file.size < 5) return false;
     const head = await file.slice(0, 5).arrayBuffer();
     const view = new Uint8Array(head);
-    // "%PDF-" 의 아스키: 0x25 0x50 0x44 0x46 0x2D
+    // "%PDF-" : 0x25 0x50 0x44 0x46 0x2D
     return (
       view[0] === 0x25 &&
       view[1] === 0x50 &&
@@ -70,15 +72,23 @@ function parsePages(input: string): number[][] {
   return result;
 }
 
+type SaveMode = "auto" | "download";
+
 export default function PdfToolPage() {
+  // 업로드/상태
   const [files, setFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState<string>("");
 
+  // 저장 방식: auto(가능하면 폴더 저장) / download(바로 다운로드)
+  const [saveMode, setSaveMode] = useState<SaveMode>("auto");
+
+  // 분할 옵션
   const [splitFile, setSplitFile] = useState<File | null>(null);
   const [splitMode, setSplitMode] = useState<"all" | "custom">("all");
   const [customPages, setCustomPages] = useState<string>("");
 
+  // 디버그 로그
   const [logs, setLogs] = useState<string[]>([]);
   const [showDebug, setShowDebug] = useState<boolean>(true);
 
@@ -258,6 +268,28 @@ export default function PdfToolPage() {
     }
   }
 
+  // ---------- 디렉토리 선택 (saveMode 적용) ----------
+  async function pickDirectoryIfNeeded(phase: "merge" | "split") {
+    if (saveMode === "download") {
+      log(`${phase}: saveMode=download → skip directory picker`);
+      return undefined;
+    }
+    if (!canUseFS()) {
+      log(`${phase}: FS API not available → download fallback`);
+      return undefined;
+    }
+    try {
+      log(`${phase}: showDirectoryPicker`);
+      const handle = await (window as any).showDirectoryPicker();
+      return handle as FileSystemDirectoryHandle;
+    } catch (e: any) {
+      // Chrome이 "시스템 파일이 포함된 폴더" 등으로 차단/취소했을 때
+      log(`${phase}: directoryPicker blocked/canceled → download fallback`, e?.name ?? "", e?.message ?? "");
+      setMessage("선택한 폴더를 열 수 없어 다운로드로 저장합니다. (다른 일반 폴더를 선택하면 폴더 저장 가능)");
+      return undefined;
+    }
+  }
+
   // ---------- 업로드 목록 검증(실행 직전) ----------
   async function validateFilesOrShow(filesToCheck: File[], purpose: "merge" | "split") {
     const valid: File[] = [];
@@ -291,7 +323,6 @@ export default function PdfToolPage() {
         return;
       }
 
-      // 실행 직전 재검증
       const validFiles = await validateFilesOrShow(files, "merge");
       if (validFiles.length < 2) {
         log("merge: less than 2 valid files");
@@ -315,20 +346,10 @@ export default function PdfToolPage() {
       const mergedBytes = await mergedPdf.save();
       const blob = bytesToBlob(mergedBytes, "application/pdf");
 
-      let dirHandle: FileSystemDirectoryHandle | undefined;
-      if (canUseFS()) {
-        try {
-          log("merge: showDirectoryPicker");
-          dirHandle = await (window as any).showDirectoryPicker();
-        } catch (e) {
-          log("merge: directoryPicker canceled/failed", e);
-        }
-      } else {
-        log("merge: FS API not available → download");
-      }
-
+      const dirHandle = await pickDirectoryIfNeeded("merge");
       const name = `merged_${new Date().toISOString().replace(/[:.]/g, "-")}.pdf`;
       await saveBlobWithFSOrDownload(blob, name, dirHandle);
+
       setMessage("통합 완료!");
       log("merge: done");
     } catch (err) {
@@ -342,7 +363,6 @@ export default function PdfToolPage() {
     try {
       log("split: start");
 
-      // 분할 타겟 결정
       let target = splitFile ?? files[0] ?? null;
       if (!target) {
         setMessage("분할할 PDF를 하나 이상 업로드하거나 분할 파일을 선택해 주세요.");
@@ -350,7 +370,6 @@ export default function PdfToolPage() {
         return;
       }
 
-      // 실행 직전 타겟 재검증
       const [validated] = await validateFilesOrShow([target], "split");
       if (!validated) {
         log("split: target invalid");
@@ -365,19 +384,8 @@ export default function PdfToolPage() {
       const totalPages = base.getPageCount();
       log("split: totalPages", totalPages);
 
-      let dirHandle: FileSystemDirectoryHandle | undefined;
-      if (canUseFS()) {
-        try {
-          log("split: showDirectoryPicker");
-          dirHandle = await (window as any).showDirectoryPicker();
-        } catch (e) {
-          log("split: directoryPicker canceled/failed", e);
-        }
-      } else {
-        log("split: FS API not available → zip-download");
-      }
-
-      const shouldZip = !dirHandle;
+      const dirHandle = await pickDirectoryIfNeeded("split");
+      const shouldZip = !dirHandle; // 폴더 저장 불가/미선택이면 ZIP로 1회 다운로드
       const zip = shouldZip ? new JSZip() : null;
 
       const jobs: number[][] =
@@ -466,8 +474,34 @@ export default function PdfToolPage() {
     <section className="p-4 space-y-6">
       <h1 className="text-2xl font-bold">📄 PDF Tool</h1>
       <p className="text-sm text-gray-600 dark:text-gray-400">
-        * 업로드 시 0바이트/손상 PDF는 자동으로 걸러집니다. 오류는 하단 디버그 로그를 확인하세요.
+        * 저장 방식에서 <b>바로 다운로드</b>를 선택하면 폴더 권한 팝업 없이 저장합니다.
+        (분할은 ZIP, 통합은 단일 PDF)
       </p>
+
+      {/* 저장 방식 토글 */}
+      <div className="rounded-xl border p-4">
+        <p className="mb-2 font-medium">저장 방식</p>
+        <label className="mr-4 inline-flex items-center gap-2">
+          <input
+            type="radio"
+            name="saveMode"
+            value="auto"
+            checked={saveMode === "auto"}
+            onChange={() => setSaveMode("auto")}
+          />
+          <span>자동 (가능하면 폴더 저장, 차단 시 자동 다운로드)</span>
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="radio"
+            name="saveMode"
+            value="download"
+            checked={saveMode === "download"}
+            onChange={() => setSaveMode("download")}
+          />
+          <span>바로 다운로드 (폴더 선택 안 함)</span>
+        </label>
+      </div>
 
       {/* 업로더 */}
       <div
@@ -556,7 +590,7 @@ export default function PdfToolPage() {
             <span>페이지 지정 분할 (예: 1,3,5-7)</span>
           </label>
 
-          <input
+        <input
             type="text"
             placeholder={`예: 1,3,5-7  (쉼표 구분, '5-7'은 5~7페이지를 한 파일로 저장)`}
             className="w-full rounded border px-3 py-2 disabled:bg-gray-100 dark:disabled:bg-gray-800"
