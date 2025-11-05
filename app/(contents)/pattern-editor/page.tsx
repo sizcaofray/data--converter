@@ -2,48 +2,45 @@
 "use client";
 
 /**
- * Pattern Editor v1.1 (에러/경고 정리판)
- * - 수정 요약
- *   1) 미사용 변수 제거: onReplaceOne 내부 're', 'replaced' 제거
- *   2) 매치 카운트 정확화: 항상 g 플래그로 세도록 별도 countMatches 유틸 추가
- *   3) 1개 치환 안정화: g 없는 RegExp를 확실히 만들어 1개만 치환
- *   4) try/catch 범위 강화: 정규식 에러시 UI 메시지 일관 처리
- *   5) 타입 경고 제거: 이벤트 타입, ref, state 모두 확인
- * - 기능
- *   · 파일 드롭/선택 업로드(2MB 제한), 붙여넣기 대용량 허용
- *   · 찾기/바꾸기(1개/전체), 정규식/대소문자/멀티라인 옵션
- *   · 좌측 프리셋 패턴(클릭 시 상단 입력 자동 채움)
- *   · 복사/다운로드, 글자 수 카운트
+ * Pattern Editor v1.2
+ * - 보완 사항
+ *   1) 찾을 패턴 ↔ 바꿀 내용 스왑(양방향 화살표 버튼)
+ *   2) Undo/Redo: Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z (Mac은 ⌘Z / ⌘Y / ⌘⇧Z)
+ *      - 타이핑 변경은 700ms 단위로 히스토리 묶음(coalesce)
+ *      - 명령형 변경(파일 로드, 일괄 바꾸기 등)은 즉시 히스토리 저장
+ * - 기존 기능 유지: 파일 드래그/선택, 대용량 붙여넣기, 찾기/바꾸기(1개/전체),
+ *   정규식/대소문자/멀티라인 옵션, 프리셋, 복사/다운로드, 글자 수 표시
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Preset = {
   id: string;
   title: string;
-  find: string;           // 찾을 패턴(문자열 또는 정규식)
-  replace: string;        // 바꿀 내용
-  regex?: boolean;        // 정규식 기본값
-  caseSensitive?: boolean;// 대소문자 구분 기본값
-  desc?: string;          // 설명(툴팁)
+  find: string;            // 찾을 패턴(문자열 또는 정규식)
+  replace: string;         // 바꿀 내용
+  regex?: boolean;         // 정규식 기본값
+  caseSensitive?: boolean; // 대소문자 구분 기본값
+  desc?: string;           // 설명(툴팁)
 };
 
-// 특수 공백/개행/탭 등 자주 묻는 패턴 프리셋
+// 자주 쓰는 패턴 프리셋(중복 id 방지)
 const PRESETS: Preset[] = [
-  { id: "newline-remove", title: "모든 개행 제거", find: "\\r?\\n", replace: "", regex: true, desc: "줄바꿈 없이 한 줄로 합칩니다." },
-  { id: "newline-collapse", title: "연속 개행 1개로", find: "\\n{2,}", replace: "\n", regex: true, desc: "빈 줄이 여러 개면 1개로 축약합니다." },
-  { id: "period-to-newline", title: "'. '를 개행으로", find: "\\.\\s+", replace: ".\n", regex: true, desc: "문장 끝 점 뒤를 줄바꿈으로 바꿉니다." },
-  { id: "period-to-newline", title: "', '를 개행으로", find: "\\,\\s+", replace: ",\n", regex: true, desc: "문장 끝 쉼표 뒤를 줄바꿈으로 바꿉니다." },
-  { id: "trim-each-line", title: "각 줄 좌우 공백 제거", find: "^[ \\t]+|[ \\t]+$", replace: "", regex: true, desc: "멀티라인(m)과 함께 사용하세요." },
-  { id: "multi-space-collapse", title: "연속 공백 1개로", find: " {2,}", replace: " ", regex: true, desc: "스페이스 2개 이상 → 1개" },
-  { id: "tabs-to-spaces", title: "탭 → 스페이스(4)", find: "\\t", replace: "    ", regex: true, desc: "탭을 공백 4개로" },
-  { id: "spaces-to-tabs", title: "스페이스(4) → 탭", find: " {4}", replace: "\t", regex: true, desc: "공백 4개를 탭으로" },
-  { id: "nbsp-remove", title: "NBSP 제거(\\u00A0)", find: "\\u00A0", replace: "", regex: true, desc: "줄바꿈 없는 특수 공백 제거" },
-  { id: "zero-width-remove", title: "제로폭 문자 제거", find: "[\\u200B\\u200C\\u200D\\uFEFF]", replace: "", regex: true, desc: "ZWS/ZWNJ/ZWJ/BOM 제거" },
-  { id: "comma-korean-space", title: "쉼표 뒤 공백 맞추기", find: ",(\\S)", replace: ", $1", regex: true, desc: "쉼표 뒤 공백 보정" },
+  { id: "newline-remove",       title: "모든 개행 제거",     find: "\\r?\\n",        replace: "",   regex: true, desc: "줄바꿈 없이 한 줄로 합칩니다." },
+  { id: "newline-collapse",     title: "연속 개행 1개로",     find: "\\n{2,}",        replace: "\n", regex: true, desc: "빈 줄이 여러 개면 1개로 축약합니다." },
+  { id: "period-to-newline",    title: "'. '를 개행으로",     find: "\\.\\s+",        replace: ".\n",regex: true, desc: "문장 끝 점 뒤를 줄바꿈으로 바꿉니다." },
+  { id: "comma-to-newline",     title: "', '를 개행으로",     find: ",\\s+",          replace: ",\n",regex: true, desc: "쉼표 뒤를 줄바꿈으로 바꿉니다." },
+  { id: "trim-each-line",       title: "각 줄 좌우 공백 제거", find: "^[ \\t]+|[ \\t]+$", replace: "", regex: true, desc: "멀티라인(m)과 함께 사용하세요." },
+  { id: "multi-space-collapse", title: "연속 공백 1개로",     find: " {2,}",          replace: " ",  regex: true, desc: "스페이스 2개 이상 → 1개" },
+  { id: "tabs-to-spaces",       title: "탭 → 스페이스(4)",    find: "\\t",            replace: "    ", regex: true, desc: "탭을 공백 4개로" },
+  { id: "spaces-to-tabs",       title: "스페이스(4) → 탭",    find: " {4}",           replace: "\t", regex: true, desc: "공백 4개를 탭으로" },
+  { id: "nbsp-remove",          title: "NBSP 제거(\\u00A0)",  find: "\\u00A0",        replace: "",   regex: true, desc: "줄바꿈 없는 특수 공백 제거" },
+  { id: "zero-width-remove",    title: "제로폭 문자 제거",     find: "[\\u200B\\u200C\\u200D\\uFEFF]", replace: "", regex: true, desc: "ZWS/ZWNJ/ZWJ/BOM 제거" },
+  { id: "comma-korean-space",   title: "쉼표 뒤 공백 맞추기",  find: ",(\\S)",         replace: ", $1", regex: true, desc: "쉼표 뒤 공백 보정" },
 ];
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024; // 2MB 제한
+const TYPING_COALESCE_MS = 700;         // 타이핑 히스토리 묶음 기준
 
 /** 클립보드 복사 */
 function useClipboard() {
@@ -106,11 +103,84 @@ export default function PatternEditorPage() {
   const [caseSensitive, setCaseSensitive] = useState<boolean>(false);
   const [multiline, setMultiline] = useState<boolean>(true);
 
-  // 상태
+  // 메시지/업로드
   const [message, setMessage] = useState<string>("");
   const dropRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { copy } = useClipboard();
+
+  // --- Undo/Redo 상태 ---
+  const [past, setPast] = useState<string[]>([]);   // 이전 상태 스택(뒤가 최신)
+  const [future, setFuture] = useState<string[]>([]); // 앞으로 상태 큐(앞이 최신)
+  const lastTypingTsRef = useRef<number>(0);        // 타이핑 히스토리 묶음 기준
+
+  /** 타이핑 중 변경: 700ms 단위로 히스토리 묶기 */
+  const applyTextTyping = useCallback((nextText: string) => {
+    const now = Date.now();
+    setText((prev) => {
+      if (prev === nextText) return prev;
+      if (now - lastTypingTsRef.current > TYPING_COALESCE_MS) {
+        setPast((p) => [...p, prev]); // 새 묶음 시작 시에만 과거에 push
+        setFuture([]);                 // 타이핑 시 redo 단절
+      }
+      lastTypingTsRef.current = now;
+      return nextText;
+    });
+  }, []);
+
+  /** 명령형 변경: 항상 즉시 히스토리에 push */
+  const applyTextCommand = useCallback((nextText: string) => {
+    setText((prev) => {
+      if (prev === nextText) return prev;
+      setPast((p) => [...p, prev]); // 언제나 현재를 과거에 저장
+      setFuture([]);                // redo 단절
+      return nextText;
+    });
+    lastTypingTsRef.current = Date.now();
+  }, []);
+
+  /** Undo */
+  const undo = useCallback(() => {
+    setPast((prevPast) => {
+      if (!prevPast.length) return prevPast;      // 과거 없음
+      const prevText = prevPast[prevPast.length - 1];
+      setFuture((f) => [text, ...f]);             // 현재를 미래로 이동
+      setText(prevText);                           // 과거로 복귀
+      return prevPast.slice(0, -1);
+    });
+  }, [text]);
+
+  /** Redo */
+  const redo = useCallback(() => {
+    setFuture((prevFuture) => {
+      if (!prevFuture.length) return prevFuture;  // 미래 없음
+      const nextText = prevFuture[0];
+      setPast((p) => [...p, text]);               // 현재를 과거로 이동
+      setText(nextText);                           // 미래로 전진
+      return prevFuture.slice(1);
+    });
+  }, [text]);
+
+  /** 단축키: Ctrl/⌘ + Z/Y(또는 Shift+Z) */
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+      const ctrl = isMac ? e.metaKey : e.ctrlKey;
+      if (!ctrl) return;
+
+      const key = e.key.toLowerCase();
+      if (key === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if (key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [undo, redo]);
 
   // 현재 매치 수(실시간)
   const currentMatchCount = useMemo(
@@ -136,7 +206,7 @@ export default function PatternEditorPage() {
     const reader = new FileReader();
     reader.onload = () => {
       const result = (reader.result ?? "") as string;
-      setText(result);
+      applyTextCommand(result); // 파일 로드는 명령형 변경
       setMessage(`✅ "${file.name}" 로딩 완료 (${(file.size / 1024).toFixed(0)}KB)`);
     };
     reader.onerror = () => setMessage("⚠️ 파일 읽기 오류가 발생했습니다.");
@@ -180,7 +250,7 @@ export default function PatternEditorPage() {
       const next = text.replace(reOne, replaceValue);
       if (next === text) setMessage("치환된 항목이 없습니다.");
       else {
-        setText(next);
+        applyTextCommand(next); // 명령형 변경
         setMessage("1개 치환 완료.");
       }
     } catch {
@@ -199,7 +269,7 @@ export default function PatternEditorPage() {
       const next = text.replace(reAll, replaceValue);
       if (next === text) setMessage("치환된 항목이 없습니다.");
       else {
-        setText(next);
+        applyTextCommand(next); // 명령형 변경
         setMessage("✅ 전체 치환 완료.");
       }
     } catch {
@@ -215,6 +285,15 @@ export default function PatternEditorPage() {
     setCaseSensitive(preset.caseSensitive ?? false);
     setMultiline(true);
     setMessage(`패턴 적용: ${preset.title}`);
+  };
+
+  /** 패턴 ↔ 대체어 스왑 */
+  const onSwapPatterns = () => {
+    const f = findValue;
+    const r = replaceValue;
+    setFindValue(r);
+    setReplaceValue(f);
+    setMessage("↔ 찾을 패턴과 바꿀 내용을 교체했습니다.");
   };
 
   /** 복사 */
@@ -308,8 +387,9 @@ export default function PatternEditorPage() {
           </div>
         </div>
 
-        {/* 찾기/바꾸기 바 */}
+        {/* 찾기/바꾸기 바 : 1행(찾기 | 스왑 | 바꾸기), 2행(옵션), 3행(실행 버튼) */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+          {/* 1행: 찾을 패턴 */}
           <div className="lg:col-span-5">
             <label className="block text-sm mb-1">찾을 패턴</label>
             <input
@@ -319,6 +399,19 @@ export default function PatternEditorPage() {
               className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-transparent"
             />
           </div>
+
+          {/* 1행: 스왑 버튼(가운데) */}
+          <div className="lg:col-span-2 flex items-center justify-center">
+            <button
+              onClick={onSwapPatterns}
+              title="내용 교체(양방향)"
+              className="w-full lg:w-auto px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+            >
+              ↔ 내용 교체
+            </button>
+          </div>
+
+          {/* 1행: 바꿀 내용 */}
           <div className="lg:col-span-5">
             <label className="block text-sm mb-1">바꿀 내용</label>
             <input
@@ -328,20 +421,39 @@ export default function PatternEditorPage() {
               className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-transparent"
             />
           </div>
-          <div className="lg:col-span-2 flex gap-2 flex-wrap">
+
+          {/* 2행: 옵션 */}
+          <div className="lg:col-span-12 flex gap-4 flex-wrap pt-1">
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={useRegex} onChange={(e) => setUseRegex(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={useRegex}
+                onChange={(e) => setUseRegex(e.target.checked)}
+              />
               정규식
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={caseSensitive} onChange={(e) => setCaseSensitive(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={caseSensitive}
+                onChange={(e) => setCaseSensitive(e.target.checked)}
+              />
               대소문자
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={multiline} onChange={(e) => setMultiline(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={multiline}
+                onChange={(e) => setMultiline(e.target.checked)}
+              />
               멀티라인(m)
             </label>
+            <span className="text-sm text-gray-500 dark:text-gray-400">
+              단축키: <b>Ctrl/⌘+Z</b> 되돌리기 · <b>Ctrl/⌘+Y</b> / <b>Ctrl/⌘+Shift+Z</b> 다시실행
+            </span>
           </div>
+
+          {/* 3행: 실행 버튼 */}
           <div className="lg:col-span-12 flex gap-2">
             <button
               onClick={onFind}
@@ -387,18 +499,22 @@ export default function PatternEditorPage() {
         {/* 노트 영역 */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-gray-600 dark:text-gray-400">글자 수: {charCount.toLocaleString()}자</span>
-            <button
-              className="text-xs underline text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-              onClick={() => setText("")}
-              title="모든 내용을 지웁니다."
-            >
-              초기화
-            </button>
+            <span className="text-sm text-gray-600 dark:text-gray-400">
+              글자 수: {charCount.toLocaleString()}자
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                className="text-xs underline text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                onClick={() => applyTextCommand("")}
+                title="모든 내용을 지웁니다."
+              >
+                초기화
+              </button>
+            </div>
           </div>
           <textarea
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => applyTextTyping(e.target.value)}
             placeholder="여기에 붙여넣기 또는 파일을 불러오세요."
             className="w-full h-[50vh] md:h-[60vh] resize-y px-3 py-3 rounded-xl border border-gray-300 dark:border-gray-700 bg-transparent font-mono text-sm leading-6"
           />
@@ -411,7 +527,7 @@ export default function PatternEditorPage() {
             <li>정규식을 켜면 <code>\\u200B</code>, <code>\\n</code> 같은 패턴을 사용할 수 있습니다.</li>
             <li>멀티라인(m)을 켜면 줄 기준 패턴(각 줄 공백 정리 등)이 정확히 동작합니다.</li>
             <li>“바꾸기(1개)”는 첫 매치만, “일괄 바꾸기(전체)”는 모든 매치를 치환합니다.</li>
-            <li>대용량 텍스트(수 MB)는 브라우저 성능에 영향을 줄 수 있습니다.</li>
+            <li>단축키: <b>Ctrl/⌘+Z</b> 되돌리기 · <b>Ctrl/⌘+Y</b> 또는 <b>Ctrl/⌘+Shift+Z</b> 다시실행</li>
           </ul>
         </details>
       </div>
