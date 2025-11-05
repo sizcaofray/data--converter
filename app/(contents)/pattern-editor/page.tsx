@@ -33,7 +33,7 @@ const PRESETS: Preset[] = [
   { id: "newline-remove", title: "모든 개행 제거", find: "\\r?\\n", replace: "", regex: true, desc: "줄바꿈 없이 한 줄로 합칩니다." },
   { id: "newline-collapse", title: "연속 개행 1개로", find: "\\n{2,}", replace: "\n", regex: true, desc: "빈 줄이 여러 개면 1개로 축약합니다." },
   { id: "period-to-newline", title: "'. '를 개행으로", find: "\\.\\s+", replace: ".\n", regex: true, desc: "문장 끝 점 뒤를 줄바꿈으로 바꿉니다." },
-  { id: "period-to-newline", title: "', '를 개행으로", find: "\\,\\s+", replace: ".\n", regex: true, desc: "문장 끝 쉼표 뒤를 줄바꿈으로 바꿉니다." },
+  { id: "period-to-newline", title: "', '를 개행으로", find: "\\,\\s+", replace: ",\n", regex: true, desc: "문장 끝 쉼표 뒤를 줄바꿈으로 바꿉니다." },
   { id: "trim-each-line", title: "각 줄 좌우 공백 제거", find: "^[ \\t]+|[ \\t]+$", replace: "", regex: true, desc: "멀티라인(m)과 함께 사용하세요." },
   { id: "multi-space-collapse", title: "연속 공백 1개로", find: " {2,}", replace: " ", regex: true, desc: "스페이스 2개 이상 → 1개" },
   { id: "tabs-to-spaces", title: "탭 → 스페이스(4)", find: "\\t", replace: "    ", regex: true, desc: "탭을 공백 4개로" },
