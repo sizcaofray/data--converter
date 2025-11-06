@@ -1,8 +1,9 @@
 'use client'
 /**
- * Sidebar (유료화 적용 + 초기 로딩 레이스컨디션 방지)
+ * Sidebar (유료화 적용 + 초기 로딩 레이스 방지, 최소 변경)
  * - 관리자 비활성화(settings/uploadPolicy.navigation.disabled) + 유료화(settings/uploadPolicy.navigation.paid)
- * - 🔒 policyLoading 동안: 관리자/구독자 제외, 일반 유저는 임시로 메뉴 비활성화 → 초기 클릭에 의한 리다이렉트 방지
+ * - 정책 로딩 중(policyLoading): 관리자/구독자 제외 일반 유저는 임시 비활성 → 초기 클릭 리다이렉트 방지
+ * - 기존 스타일/표시 그대로 유지
  */
 
 import Link from 'next/link'
@@ -15,12 +16,19 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { doc, onSnapshot } from 'firebase/firestore'
 
 type MenuItem = {
+  /** 내부 기준 슬러그(관리자 비활성화와 1:1 매칭) */
   slug: string
+  /** 화면 라벨 */
   label: string
+  /** 라우트 경로 */
   href: string
+  /** 관리자 전용 여부 */
   adminOnly?: boolean
+  /** 구독 필요 여부(실제 표시 계산에서만 사용) */
+  requiresSub?: boolean
 }
 
+/* 라우트/슬러그를 실제 페이지에 맞춰 통일 (기존 유지) */
 const MENUS: MenuItem[] = [
   { slug: 'convert',         label: 'Data Convert',   href: '/convert' },
   { slug: 'compare',         label: 'Compare',        href: '/compare' },
@@ -30,20 +38,21 @@ const MENUS: MenuItem[] = [
   { slug: 'admin',           label: 'Admin',          href: '/admin', adminOnly: true },
 ]
 
+/** Firestore 문서 형태 */
 type UploadPolicy = {
-  navigation?: { disabled?: string[]; paid?: string[] }
+  navigation?: { disabled?: string[]; paid?: string[] } // ✅ paid 추가
 }
 
 /** 소문자/트림 정규화 */
 const norm = (v: string) => String(v || '').trim().toLowerCase()
 
-/** 과거 키와 혼재 대응 (pdf ↔ pdf-tool, pattern ↔ pattern-editor) */
+/** 관리자 설정 키 혼재 대응 (기존 유지) */
 function normalizeToInternalSlug(input: string): string {
   const s = norm(input)
   switch (s) {
-    case 'pdf': return 'pdf-tool'
+    case 'pdf':     return 'pdf-tool'
     case 'pattern': return 'pattern-editor'
-    default: return s
+    default:        return s
   }
 }
 
@@ -54,39 +63,53 @@ export default function Sidebar() {
   const [role, setRole] = useState<'admin' | 'user'>('user')
   const [isSubscribed, setIsSubscribed] = useState(false)
 
-  // 정책 로딩 상태 (🔥 핵심)
+  /** 관리자에서 비활성화한 슬러그 */
+  const [disabledSlugs, setDisabledSlugs] = useState<string[]>([])
+  /** ✅ 유료화 적용 슬러그 */
+  const [paidSlugs, setPaidSlugs] = useState<string[]>([])
+  /** ✅ 정책 로딩 상태(레이스 방지용) */
   const [policyLoading, setPolicyLoading] = useState(true)
 
-  // 관리자 비활성/유료화 목록
-  const [disabledSlugs, setDisabledSlugs] = useState<string[]>([])
-  const [paidSlugs, setPaidSlugs] = useState<string[]>([])
-
-  // 로그인/프로필 구독 (role, isSubscribed)
+  // 로그인/유저 문서 구독 (역할/구독 여부) — 기존 유지
   useEffect(() => {
     let unsubUser: (() => void) | null = null
+
     const unsubAuth = onAuthStateChanged(auth, (u) => {
       setSignedIn(!!u)
+
       if (!u) {
         setRole('user')
         setIsSubscribed(false)
+        setDisabledSlugs([])
+        setPaidSlugs([])
         if (unsubUser) { unsubUser(); unsubUser = null }
         return
       }
+
       const userRef = doc(db, 'users', u.uid)
       if (unsubUser) { unsubUser(); unsubUser = null }
-      unsubUser = onSnapshot(userRef, (snap) => {
-        const data = snap.exists() ? (snap.data() as any) : {}
-        const roleNorm = norm(data.role ?? 'user')
-        setRole(roleNorm === 'admin' ? 'admin' : 'user')
-        setIsSubscribed(Boolean(data.isSubscribed))
-      })
+
+      unsubUser = onSnapshot(
+        userRef,
+        (snap) => {
+          const data = snap.exists() ? (snap.data() as any) : {}
+          const roleNorm = norm(data.role ?? 'user')
+          setRole(roleNorm === 'admin' ? 'admin' : 'user')
+          setIsSubscribed(Boolean(data.isSubscribed))
+        },
+        () => {
+          setRole('user')
+          setIsSubscribed(false)
+        }
+      )
     })
+
     return () => { unsubAuth(); if (unsubUser) unsubUser() }
   }, [])
 
-  // 관리자 정책(settings/uploadPolicy) 구독
+  // 관리자 비활성/유료화 목록 구독 — ✅ paid 함께 처리 + 로딩 상태 관리
   useEffect(() => {
-    setPolicyLoading(true) // ⏳ 스냅샷 도착 전까지 로딩 상태
+    setPolicyLoading(true)
     const ref = doc(db, 'settings', 'uploadPolicy')
     const unsub = onSnapshot(
       ref,
@@ -96,41 +119,44 @@ export default function Sidebar() {
         const rawPaid = data.navigation?.paid ?? []
         setDisabledSlugs(rawDisabled.map(normalizeToInternalSlug))
         setPaidSlugs(rawPaid.map(normalizeToInternalSlug))
-        setPolicyLoading(false) // ✅ 첫 스냅샷 수신 완료
+        setPolicyLoading(false)
       },
       () => {
         setDisabledSlugs([])
         setPaidSlugs([])
-        setPolicyLoading(false) // 오류여도 로딩 종료
+        setPolicyLoading(false)
       }
     )
     return () => unsub()
   }, [])
 
-  // 메뉴 표시 상태 계산
+  // 화면 출력용 메뉴 계산
   const menuView = useMemo(() => {
+    const canSeeAll = role === 'admin' || isSubscribed
+
     return MENUS.map((m) => {
-      // 관리자 전용 숨김
+      // (기존) 비로그인 정책/관리자 전용
       const hidden =
         (!signedIn && m.slug !== 'convert') ||
         (m.adminOnly && role !== 'admin')
 
-      // 관리자 비활성 스위치
-      const disabledByAdmin = disabledSlugs.includes(m.slug)
+      // ✅ 유료화 적용: paid 배열에 포함되면 구독 필요
+      const requiresSub = paidSlugs.includes(m.slug)
 
-      // 유료화 적용 여부
-      const paidApplied = paidSlugs.includes(m.slug)
-      const disabledByPaid = paidApplied && !(role === 'admin' || isSubscribed)
+      // (기존) 관리자 비활성 스위치
+      const isDisabledByAdmin = disabledSlugs.includes(m.slug)
 
-      // ⏳ 정책 로딩 중 보호: 일반 유저(비관리자/비구독)는 임시 비활성
-      const disabledByLoading =
-        policyLoading && !(role === 'admin' || isSubscribed)
+      // ✅ 유료화에 따른 비활성
+      const isDisabledByPaid = requiresSub && !canSeeAll
+
+      // ✅ 정책 로딩 중: 비관리자·비구독자는 임시 비활성(초기 클릭 리다이렉트 방지)
+      const isDisabledByLoading = policyLoading && !canSeeAll
 
       return {
         ...m,
+        requiresSub,
         hidden,
-        isPaid: paidApplied,
-        isDisabled: disabledByAdmin || disabledByPaid || disabledByLoading,
+        isDisabled: isDisabledByAdmin || isDisabledByPaid || isDisabledByLoading,
       }
     })
   }, [signedIn, role, isSubscribed, disabledSlugs, paidSlugs, policyLoading])
@@ -148,43 +174,43 @@ export default function Sidebar() {
               : 'text-gray-900 dark:text-white hover:bg-blue-100/70 dark:hover:bg-blue-800/40'
             const disabled = 'opacity-40 cursor-not-allowed'
 
-            const label = (
-              <span className="inline-flex items-center gap-2">
-                {m.label}
-                {m.isPaid && (
-                  <span className="text-[10px] rounded px-1.5 py-0.5 border border-amber-300/60 bg-amber-50/60 dark:border-amber-500/40 dark:bg-amber-900/20">
-                    유료
-                  </span>
-                )}
-                {policyLoading && !(role === 'admin' || isSubscribed) && (
-                  <span className="text-[10px] ml-1 opacity-60">로딩중</span>
-                )}
-              </span>
-            )
-
             return (
               <li key={m.slug}>
                 {m.isDisabled ? (
-                  // 보이되 비활성(클릭 차단)
+                  // ✅ 완전 비활성: 클릭/탭 불가
                   <span
                     className={clsx(base, disabled)}
                     aria-disabled="true"
                     title={
                       policyLoading && !(role === 'admin' || isSubscribed)
                         ? '정책 로딩 중'
-                        : m.isPaid
+                        : (m.requiresSub && !(role === 'admin' || isSubscribed))
                         ? '구독이 필요합니다'
                         : '관리자에 의해 비활성화됨'
                     }
                   >
-                    {label}
+                    <span className="inline-flex items-center gap-2">
+                      {m.label}
+                      {m.requiresSub && (
+                        <span className="text-[10px] rounded px-1.5 py-0.5 border border-amber-300/60 bg-amber-50/60 dark:border-amber-500/40 dark:bg-amber-900/20">
+                          유료
+                        </span>
+                      )}
+                      {policyLoading && !(role === 'admin' || isSubscribed) && (
+                        <span className="text-[10px] ml-1 opacity-60">로딩중</span>
+                      )}
+                    </span>
                   </span>
                 ) : (
-                  <Link
-                    href={m.href}
-                    className={clsx(base, enabled)}
-                  >
-                    {label}
+                  <Link href={m.href} className={clsx(base, enabled)}>
+                    <span className="inline-flex items-center gap-2">
+                      {m.label}
+                      {m.requiresSub && (
+                        <span className="text-[10px] rounded px-1.5 py-0.5 border border-amber-300/60 bg-amber-50/60 dark:border-amber-500/40 dark:bg-amber-900/20">
+                          유료
+                        </span>
+                      )}
+                    </span>
                   </Link>
                 )}
               </li>
