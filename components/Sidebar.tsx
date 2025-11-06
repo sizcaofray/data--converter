@@ -1,11 +1,9 @@
 'use client'
 /**
- * Sidebar (최종)
- * - 라우트: /pdf-tool, /pattern-editor 로 통일
- * - 관리자 비활성화(settings/uploadPolicy.navigation.disabled) 키 혼재 대비:
- *   'pdf-tool' <-> 'pdf', 'pattern-editor' <-> 'pattern' 양방향 매핑 지원
- * - 비활성 메뉴는 <span>으로 렌더 → 클릭/포커스 완전 차단
- * - 기존 권한/구독/관리자 노출 로직 유지
+ * Sidebar (유료화 적용 반영)
+ * - 관리자 비활성화(settings/uploadPolicy.navigation.disabled) + ✅ 유료화(settings/uploadPolicy.navigation.paid) 동시 반영
+ * - 비로그인: 기존 정책 유지(예: convert만 노출 등, 필요 시 그대로)
+ * - 결과: '유료화 적용' + 비구독자 → 보이되 비활성(클릭 차단), 관리자/구독자는 활성
  */
 
 import Link from 'next/link'
@@ -18,19 +16,12 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { doc, onSnapshot } from 'firebase/firestore'
 
 type MenuItem = {
-  /** 내부 기준 슬러그(관리자 비활성화와 1:1 매칭) */
   slug: string
-  /** 화면 라벨 */
   label: string
-  /** 라우트 경로 */
   href: string
-  /** 관리자 전용 여부 */
   adminOnly?: boolean
-  /** 구독 필요 여부 */
-  requiresSub?: boolean
 }
 
-/* 라우트/슬러그를 실제 페이지에 맞춰 통일 */
 const MENUS: MenuItem[] = [
   { slug: 'convert',         label: 'Data Convert',   href: '/convert' },
   { slug: 'compare',         label: 'Compare',        href: '/compare' },
@@ -40,29 +31,20 @@ const MENUS: MenuItem[] = [
   { slug: 'admin',           label: 'Admin',          href: '/admin', adminOnly: true },
 ]
 
-/** Firestore 문서 형태 */
 type UploadPolicy = {
-  navigation?: { disabled?: string[] }
+  navigation?: { disabled?: string[]; paid?: string[] } // ✅ paid 추가
 }
 
 /** 소문자/트림 정규화 */
 const norm = (v: string) => String(v || '').trim().toLowerCase()
 
-/**
- * 관리자 설정 키 혼재 대응:
- *  - 'pdf-tool' <-> 'pdf'
- *  - 'pattern-editor' <-> 'pattern'
- * 둘 중 무엇이 와도 내부 기준으로 'pdf-tool' / 'pattern-editor'로 매핑
- */
+/** 과거 키와 혼재 대응 (pdf ↔ pdf-tool, pattern ↔ pattern-editor) */
 function normalizeToInternalSlug(input: string): string {
   const s = norm(input)
   switch (s) {
-    case 'pdf':
-      return 'pdf-tool'
-    case 'pattern':
-      return 'pattern-editor'
-    default:
-      return s
+    case 'pdf': return 'pdf-tool'
+    case 'pattern': return 'pattern-editor'
+    default: return s
   }
 }
 
@@ -73,73 +55,73 @@ export default function Sidebar() {
   const [role, setRole] = useState<'admin' | 'user'>('user')
   const [isSubscribed, setIsSubscribed] = useState(false)
 
-  /** 관리자에서 비활성화한 슬러그(내부 기준으로 정규화된 값) */
+  /** 관리자 비활성/유료화 목록 */
   const [disabledSlugs, setDisabledSlugs] = useState<string[]>([])
+  const [paidSlugs, setPaidSlugs] = useState<string[]>([]) // ✅
 
-  // 로그인/유저 문서 구독 (역할/구독 여부)
+  // 로그인/프로필 구독 (role, isSubscribed)
   useEffect(() => {
     let unsubUser: (() => void) | null = null
-
     const unsubAuth = onAuthStateChanged(auth, (u) => {
       setSignedIn(!!u)
-
       if (!u) {
         setRole('user')
         setIsSubscribed(false)
-        setDisabledSlugs([])
         if (unsubUser) { unsubUser(); unsubUser = null }
         return
       }
-
       const userRef = doc(db, 'users', u.uid)
       if (unsubUser) { unsubUser(); unsubUser = null }
-
-      unsubUser = onSnapshot(
-        userRef,
-        (snap) => {
-          const data = snap.exists() ? (snap.data() as any) : {}
-          const roleNorm = norm(data.role ?? 'user')
-          setRole(roleNorm === 'admin' ? 'admin' : 'user')
-          setIsSubscribed(Boolean(data.isSubscribed))
-        },
-        () => {
-          setRole('user')
-          setIsSubscribed(false)
-        }
-      )
+      unsubUser = onSnapshot(userRef, (snap) => {
+        const data = snap.exists() ? (snap.data() as any) : {}
+        const roleNorm = norm(data.role ?? 'user')
+        setRole(roleNorm === 'admin' ? 'admin' : 'user')
+        setIsSubscribed(Boolean(data.isSubscribed))
+      })
     })
-
     return () => { unsubAuth(); if (unsubUser) unsubUser() }
   }, [])
 
-  // 관리자 비활성 메뉴(settings/uploadPolicy.navigation.disabled) 구독
+  // 관리자 정책(settings/uploadPolicy) 구독
   useEffect(() => {
     const ref = doc(db, 'settings', 'uploadPolicy')
     const unsub = onSnapshot(
       ref,
       (snap) => {
         const data = (snap.exists() ? (snap.data() as UploadPolicy) : {}) || {}
-        const raw = data.navigation?.disabled ?? []
-        // 과거/현재 키 혼재 대응 → 내부 기준으로 통일
-        setDisabledSlugs(raw.map(normalizeToInternalSlug))
+        const rawDisabled = data.navigation?.disabled ?? []
+        const rawPaid = data.navigation?.paid ?? [] // ✅
+        setDisabledSlugs(rawDisabled.map(normalizeToInternalSlug))
+        setPaidSlugs(rawPaid.map(normalizeToInternalSlug))
       },
-      () => setDisabledSlugs([])
+      () => { setDisabledSlugs([]); setPaidSlugs([]) }
     )
     return () => unsub()
   }, [])
 
-  // 화면 출력용 메뉴 계산
+  // 메뉴 표시 상태 계산
   const menuView = useMemo(() => {
-    const canSeeAll = role === 'admin' || isSubscribed
     return MENUS.map((m) => {
+      // 관리자 전용 숨김
       const hidden =
-        (!signedIn && m.slug !== 'convert') ||  // 비로그인: convert만 노출
-        (m.adminOnly && role !== 'admin') ||    // 관리자 전용
-        (m.requiresSub && !canSeeAll)           // 구독 필요
-      const isDisabled = disabledSlugs.includes(m.slug)
-      return { ...m, hidden, isDisabled }
+        (!signedIn && m.slug !== 'convert') ||  // 비로그인 정책 유지 필요 시
+        (m.adminOnly && role !== 'admin')
+
+      // 관리자 비활성 스위치 우선
+      const disabledByAdmin = disabledSlugs.includes(m.slug)
+
+      // ✅ 유료화 적용: paidSlugs에 포함 + (관리자/구독자 아님) → 비활성
+      const paidApplied = paidSlugs.includes(m.slug)
+      const disabledByPaid = paidApplied && !(role === 'admin' || isSubscribed)
+
+      return {
+        ...m,
+        hidden,
+        isDisabled: disabledByAdmin || disabledByPaid,
+        isPaid: paidApplied,
+      }
     })
-  }, [signedIn, role, isSubscribed, disabledSlugs])
+  }, [signedIn, role, isSubscribed, disabledSlugs, paidSlugs])
 
   return (
     <aside className="w-64 shrink-0">
@@ -148,26 +130,34 @@ export default function Sidebar() {
         <ul className="space-y-1">
           {menuView.filter((m) => !m.hidden).map((m) => {
             const active = pathname.startsWith(m.href)
-            const base = 'block rounded-md px-3 py-2 text-sm transition select-none'
+            const base = 'group block rounded-md px-3 py-2 text-sm transition select-none'
             const enabled = active
               ? 'bg-blue-600 text-white font-semibold'
               : 'text-gray-900 dark:text-white hover:bg-blue-100/70 dark:hover:bg-blue-800/40'
             const disabled = 'opacity-40 cursor-not-allowed'
 
+            const label = (
+              <span className="inline-flex items-center gap-2">
+                {m.label}
+                {/* 유료화 배지 표시(선택) */}
+                {m.isPaid && (
+                  <span className="text-[10px] rounded px-1.5 py-0.5 border border-amber-300/60 bg-amber-50/60 dark:border-amber-500/40 dark:bg-amber-900/20">
+                    유료
+                  </span>
+                )}
+              </span>
+            )
+
             return (
               <li key={m.slug}>
                 {m.isDisabled ? (
-                  // ✅ 완전 비활성: 클릭/탭 불가
-                  <span
-                    className={clsx(base, disabled)}
-                    aria-disabled="true"
-                    title="관리자에 의해 비활성화됨"
-                  >
-                    {m.label}
+                  // 보이되 비활성(클릭 차단)
+                  <span className={clsx(base, disabled)} aria-disabled="true" title={m.isPaid ? '구독이 필요합니다' : '관리자에 의해 비활성화됨'}>
+                    {label}
                   </span>
                 ) : (
                   <Link href={m.href} className={clsx(base, enabled)}>
-                    {m.label}
+                    {label}
                   </Link>
                 )}
               </li>

@@ -1,9 +1,12 @@
 'use client';
 
 /**
- * 관리자 페이지 (메뉴 비활성화 + 사용자 관리 + ✅ 구독버튼 전역토글)
- * - 디자인 유지, 로직만 보완
- * - 관리자 판단은 users/{uid}.role === 'admin' 기준(규칙과 동일)
+ * 관리자 페이지 (메뉴 비활성화 + 사용자 관리 + 구독버튼 전역토글 + ✅ 메뉴 유료화 체크)
+ * - 새 파일 추가 없음, 디자인 유지, 로직만 보강
+ * - Firestore 저장 키
+ *   - 비활성 목록: settings/uploadPolicy.navigation.disabled : string[]
+ *   - ✅ 유료화 목록: settings/uploadPolicy.navigation.paid : string[]
+ *   - 구독 버튼: settings/uploadPolicy.subscribeButtonEnabled : boolean
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -36,7 +39,7 @@ interface UserRow {
   remainingDays?: number | null;
 }
 
-/** KST 자정 기준 도우미들 */
+/** KST 자정 기준 도우미들 (기존 유지) */
 function todayKST(): Date {
   const now = new Date();
   const kst = new Date(now.getTime() + 9 * 3600 * 1000);
@@ -79,19 +82,18 @@ function clampEndAfterStart(start: Date | null, end: Date | null) {
 
 const DEFAULT_SUBSCRIPTION_DAYS = 30;
 
-/** 메뉴 메타 */
+/** 메뉴 메타 (페이지 실제 경로/표시명에 맞게 유지) */
 type MenuConfig = { slug: string; label: string };
 const ALL_MENUS: MenuConfig[] = [
-  { slug: 'convert', label: 'Data Convert' },
-  { slug: 'compare', label: 'Compare' },
-    // ✅ 추가: Data Convert ↔ Random 사이
-  { slug: 'pdf-tool',       label: 'PDF Tool' },
-  { slug: 'pattern-editor', label: 'Pattern Editor' },
-  { slug: 'random', label: 'Random' },
-  { slug: 'admin', label: 'Admin' },
+  { slug: 'convert',         label: 'Data Convert' },
+  { slug: 'compare',         label: 'Compare' },
+  { slug: 'pdf-tool',        label: 'PDF Tool' },
+  { slug: 'pattern-editor',  label: 'Pattern Editor' },
+  { slug: 'random',          label: 'Random' },
+  { slug: 'admin',           label: 'Admin' },
 ];
 
-/** 안전 유틸 */
+/** 유틸 */
 function sanitizeSlugArray(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   return input
@@ -135,7 +137,7 @@ function safeStringify(o: any) {
 export default function AdminPage() {
   const { role: myRoleFromContext, loading: userCtxLoading } = useUser();
 
-  // ── [A] users/{uid}.role 로 관리자 판정(규칙과 동일)
+  // ── [A] 관리자 판정 (users/{uid}.role === 'admin')
   const [authUid, setAuthUid] = useState<string | null>(null);
   const [usersDocRole, setUsersDocRole] = useState<Role | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
@@ -165,25 +167,20 @@ export default function AdminPage() {
 
   const isAdminRole = usersDocRole === 'admin';
 
-  // ── [B] 메뉴 관리 상태 + ✅ 구독버튼 전역토글 상태
-  const [navDisabled, setNavDisabled] = useState<string[]>([]);
-  const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true); // ✅ 실제 상태 변수
+  // ── [B] 메뉴 관리 + 전역 구독 버튼 + ✅ 유료화 목록
+  const [navDisabled, setNavDisabled] = useState<string[]>([]);  // 비활성 목록
+  const [navPaid, setNavPaid] = useState<string[]>([]);          // ✅ 유료화 목록
+  const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true); // 구독버튼 전역 토글
   const [savingNav, setSavingNav] = useState(false);
 
   // 디버그 패널 상태
   const [showDebug, setShowDebug] = useState(true);
   const [dbg, setDbg] = useState<{
-    myRole?: any;
-    authUid?: string | null;
-    authEmail?: string | null;
-    tokenClaims?: any;
-    usersDocRole?: any;
-    uploadPolicyPath?: string;
     uploadPolicyPayload?: any;
     lastError?: { code?: any; message?: any; customData?: any } | null;
   }>({});
 
-  // settings/uploadPolicy 실시간 구독 — 관리자일 때만
+  // settings/uploadPolicy 실시간 구독
   useEffect(() => {
     if (roleLoading || !isAdminRole) return;
     const ref = doc(db, 'settings', 'uploadPolicy');
@@ -191,9 +188,10 @@ export default function AdminPage() {
       ref,
       (snap) => {
         const data = (snap.data() as any) || {};
-        const arr = Array.isArray(data?.navigation?.disabled) ? data.navigation.disabled : [];
-        setNavDisabled(sanitizeSlugArray(arr));
-        // ✅ 저장된 키는 subscribeButtonEnabled, 상태는 subscribeEnabled
+        const arrDisabled = Array.isArray(data?.navigation?.disabled) ? data.navigation.disabled : [];
+        const arrPaid = Array.isArray(data?.navigation?.paid) ? data.navigation.paid : []; // ✅ 유료화
+        setNavDisabled(sanitizeSlugArray(arrDisabled));
+        setNavPaid(sanitizeSlugArray(arrPaid));                                            // ✅ 유료화
         setSubscribeEnabled(
           data?.subscribeButtonEnabled === undefined
             ? true
@@ -208,7 +206,10 @@ export default function AdminPage() {
   }, [roleLoading, isAdminRole]);
 
   const disabledSet = useMemo(() => new Set(navDisabled), [navDisabled]);
-  const toggleMenu = (slug: string) => {
+  const paidSet = useMemo(() => new Set(navPaid), [navPaid]);            // ✅
+
+  /** 비활성 체크 토글 */
+  const toggleMenuDisabled = (slug: string) => {
     setNavDisabled((prev) => {
       const s = new Set(prev);
       s.has(slug) ? s.delete(slug) : s.add(slug);
@@ -216,78 +217,58 @@ export default function AdminPage() {
     });
   };
 
-  // 권한/문서/페이로드 덤프(디버그 패널)
-  const dumpContext = async () => {
-    const auth = getAuth();
-    const user = auth.currentUser;
-    let authEmail: string | null = null;
-    let tokenClaims: any = null;
-
-    if (user) {
-      authEmail = user.email ?? null;
-      try {
-        const tokenRes = await getIdTokenResult(user, true);
-        tokenClaims = tokenRes?.claims ?? null;
-      } catch (e: any) {
-        tokenClaims = { error: e?.message || 'token error' };
-      }
-    }
-
-    const cleaned = sanitizeSlugArray(navDisabled);
-    // ❗️핵심 수정: 값은 subscribeEnabled로 저장/표시
-    const payload = pruneUndefined({
-      navigation: { disabled: cleaned },
-      subscribeButtonEnabled: subscribeEnabled, // ✅ FIX
-      updatedAt: serverTimestamp(),
+  /** ✅ 유료화 체크 토글 */
+  const toggleMenuPaid = (slug: string) => {
+    setNavPaid((prev) => {
+      const s = new Set(prev);
+      s.has(slug) ? s.delete(slug) : s.add(slug);
+      return Array.from(s);
     });
-
-    setDbg((d) => ({
-      ...d,
-      myRole: myRoleFromContext,
-      authUid,
-      authEmail,
-      tokenClaims,
-      usersDocRole,
-      uploadPolicyPath: 'settings/uploadPolicy',
-      uploadPolicyPayload: payload,
-    }));
   };
 
-  // 저장 — 관리자만
-  const saveMenuDisabled = async () => {
+  /** 디버그 페이로드 */
+  const dumpPolicyPayload = () => {
+    const payload = pruneUndefined({
+      navigation: { disabled: sanitizeSlugArray(navDisabled), paid: sanitizeSlugArray(navPaid) }, // ✅ paid 포함
+      subscribeButtonEnabled: subscribeEnabled,
+      updatedAt: serverTimestamp(),
+    });
+    setDbg({ uploadPolicyPayload: payload });
+  };
+
+  /** 저장(관리자 전용) */
+  const saveMenuPolicy = async () => {
     if (!isAdminRole) {
       alert('저장 권한이 없습니다. (users/{uid}.role이 admin이어야 합니다)');
       return;
     }
     setSavingNav(true);
-    await dumpContext();
+    dumpPolicyPayload();
     try {
       const ref = doc(db, 'settings', 'uploadPolicy');
-      const cleaned = sanitizeSlugArray(navDisabled);
-      // ❗️핵심 수정: 값은 subscribeEnabled로 저장
       await setDoc(
         ref,
         {
-          navigation: { disabled: cleaned },
-          subscribeButtonEnabled: subscribeEnabled, // ✅ FIX
+          navigation: {
+            disabled: sanitizeSlugArray(navDisabled),
+            paid: sanitizeSlugArray(navPaid),                      // ✅ paid 저장
+          },
+          subscribeButtonEnabled: subscribeEnabled,
           updatedAt: serverTimestamp(),
         },
         { merge: true }
       );
       setDbg((d) => ({ ...d, lastError: null }));
-      alert('메뉴/구독 설정이 저장되었습니다.');
+      alert('메뉴 정책이 저장되었습니다.');
     } catch (e: any) {
-      setDbg((d) => ({
-        ...d,
-        lastError: { code: e?.code, message: e?.message, customData: e?.customData },
-      }));
-      alert(`메뉴 저장 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
+      setDbg((d) => ({ ...d, lastError: { code: e?.code, message: e?.message, customData: e?.customData } }));
+      alert(`저장 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
     } finally {
       setSavingNav(false);
     }
   };
 
-  // ── [C] 사용자 관리(기존 유지) — 관리자일 때만 로드
+  // ── [C] 사용자 관리(기존 유지)
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
@@ -339,10 +320,10 @@ export default function AdminPage() {
     const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS);
     const endTs = clampEndAfterStart(startDate, endDate);
     patchRow(r.uid, {
-      isSubscribed: true,
-      subscriptionStartAt: Timestamp.fromDate(startDate),
-      subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
-      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
+        isSubscribed: true,
+        subscriptionStartAt: Timestamp.fromDate(startDate),
+        subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
+        remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
     });
   };
 
@@ -422,21 +403,16 @@ export default function AdminPage() {
 
   return (
     <main className="p-6 space-y-6">
-      {/* ───────────────── 메뉴 관리 섹션 ───────────────── */}
+      {/* ───────────── 메뉴 관리 섹션: 비활성 + 유료화 + 구독버튼 ───────────── */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
-        <h2 className="text-lg font-bold mb-2">메뉴 관리 (비활성화)</h2>
-        <p className="text-sm text-slate-600 mb-4">
-          체크된 메뉴는 사이드바에서 <b>보여지되 클릭이 차단</b>됩니다. (<code>settings/uploadPolicy.navigation.disabled: string[]</code>)
-        </p>
+        <h2 className="text-lg font-bold mb-2">메뉴 관리</h2>
 
-        {/* ✅ 전역: 구독 버튼 활성화 토글 */}
+        {/* 전역: 구독 버튼 활성화 */}
         <div className="flex items-center gap-3 mb-4">
           <span className="font-medium">구독 버튼 활성화</span>
           <button
             type="button"
-            className={`px-3 py-1 rounded border ${
-              subscribeEnabled ? 'bg-green-600 text-white' : 'bg-gray-200'
-            }`}
+            className={`px-3 py-1 rounded border ${subscribeEnabled ? 'bg-green-600 text-white' : 'bg-gray-200'}`}
             onClick={() => setSubscribeEnabled(v => !v)}
             aria-pressed={subscribeEnabled}
             aria-label="구독 버튼 활성화 토글"
@@ -445,8 +421,12 @@ export default function AdminPage() {
           </button>
         </div>
 
-        {/* 기존 메뉴 비활성화 체크박스 */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+        {/* A. 비활성화(OFF) */}
+        <h3 className="text-sm font-semibold mt-2 mb-2">비활성화(OFF)</h3>
+        <p className="text-xs text-slate-600 mb-3">
+          체크된 메뉴는 사이드바에서 <b>보여지되 클릭이 차단</b>됩니다. (<code>settings/uploadPolicy.navigation.disabled</code>)
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-6">
           {ALL_MENUS.map((m) => {
             const checked = disabledSet.has(m.slug);
             return (
@@ -459,7 +439,7 @@ export default function AdminPage() {
                   type="checkbox"
                   className="h-4 w-4"
                   checked={checked}
-                  onChange={() => toggleMenu(m.slug)}
+                  onChange={() => toggleMenuDisabled(m.slug)}
                 />
                 <span className="text-sm">{m.label}</span>
                 <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800">
@@ -470,13 +450,41 @@ export default function AdminPage() {
           })}
         </div>
 
+        {/* B. ✅ 유료화(구독 필요) */}
+        <h3 className="text-sm font-semibold mt-2 mb-2">유료화(구독 필요)</h3>
+        <p className="text-xs text-slate-600 mb-3">
+          체크된 메뉴는 <b>유료화가 적용</b>되며, <b>구독자/관리자만 활성</b>됩니다. 비구독자는 <b>보이되 비활성</b> 처리됩니다.
+          (<code>settings/uploadPolicy.navigation.paid</code>)
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+          {ALL_MENUS.map((m) => {
+            const checked = paidSet.has(m.slug);
+            return (
+              <label
+                key={m.slug}
+                className="flex items-center gap-2 rounded-lg border border-amber-200 dark:border-amber-800 p-3 cursor-pointer"
+                title={checked ? '유료화 적용됨' : '무료'}
+              >
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={checked}
+                  onChange={() => toggleMenuPaid(m.slug)}
+                />
+                <span className="text-sm">{m.label}</span>
+                <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30">
+                  {checked ? 'PAID' : 'FREE'}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
         <div className="mt-4 flex gap-2">
           <button
-            onClick={saveMenuDisabled}
+            onClick={saveMenuPolicy}
             disabled={savingNav}
-            className={`rounded px-4 py-2 text-sm font-semibold ${
-              savingNav ? 'bg-slate-300 text-slate-600' : 'bg-black text-white hover:opacity-90'
-            }`}
+            className={`rounded px-4 py-2 text-sm font-semibold ${savingNav ? 'bg-slate-300 text-slate-600' : 'bg-black text-white hover:opacity-90'}`}
           >
             {savingNav ? '저장 중…' : '저장'}
           </button>
@@ -492,7 +500,7 @@ export default function AdminPage() {
         </div>
       </section>
 
-      {/* ───────────────── 사용자 관리 섹션 (기존 유지) ───────────────── */}
+      {/* ───────────── 사용자 관리 섹션 (기존 유지) ───────────── */}
       <section>
         <h1 className="text-xl font-semibold mb-4">사용자 관리</h1>
         {fetching ? (
@@ -586,42 +594,19 @@ export default function AdminPage() {
       {showDebug && (
         <section className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-xs text-slate-800 dark:bg-amber-100/30 dark:text-amber-50">
           <div className="mb-2 font-semibold">디버그 패널</div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 whitespace-pre-wrap">
-            <div>
-              <div>myRole(from context): {String(myRoleFromContext)}</div>
-              <div>usersDocRole(from users/{'{'}uid{'}'}): {String(usersDocRole ?? '-')}</div>
-              <div>authUid: {authUid ?? '-'}</div>
-            </div>
-            <div className="overflow-auto max-h-56">
-              <div className="font-semibold">tokenClaims</div>
-              <pre>{safeStringify(dbg.tokenClaims ?? {})}</pre>
-            </div>
-            <div className="overflow-auto max-h-56 md:col-span-2">
-              <div className="font-semibold">payload</div>
-              <pre>{safeStringify(dbg.uploadPolicyPayload ?? {
-                navigation: { disabled: navDisabled },
-                // ❗️표시도 상태 변수 사용
-                subscribeButtonEnabled: subscribeEnabled,
-                updatedAt: '(serverTimestamp)',
-              })}</pre>
-            </div>
-            {dbg.lastError && (
-              <div className="overflow-auto max-h-56 md:col-span-2 text-red-700">
-                <div className="font-semibold">lastError</div>
-                <pre>{safeStringify(dbg.lastError)}</pre>
-              </div>
-            )}
+          <div className="overflow-auto max-h-56 whitespace-pre-wrap">
+            <pre>{safeStringify(dbg.uploadPolicyPayload ?? {
+              navigation: { disabled: navDisabled, paid: navPaid },
+              subscribeButtonEnabled: subscribeEnabled,
+              updatedAt: '(serverTimestamp)',
+            })}</pre>
           </div>
-
-          <div className="mt-3 flex gap-2">
-            <button
-              className="px-3 py-1 rounded border"
-              onClick={dumpContext}
-              title="현재 로그인/권한/문서 상태를 패널에 갱신"
-            >
-              상태 새로고침
-            </button>
-          </div>
+          {dbg.lastError && (
+            <div className="mt-2 text-red-700">
+              <div className="font-semibold">lastError</div>
+              <pre>{safeStringify(dbg.lastError)}</pre>
+            </div>
+          )}
         </section>
       )}
     </main>
