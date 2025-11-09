@@ -4,22 +4,25 @@
  * 홈(/) 커버 페이지 - 공지 Firestore 연동(컬렉션: notice) + 마크다운 모달
  * -----------------------------------------------------------------------------
  * ✅ 유지
- *  - 로그인돼 있으면 /convert 로 이동
- *  - 우상단 Google 로그인/로그아웃 박스 유지
+ *  - 로그인 상태면 /convert 로 리다이렉트
+ *  - 우상단 Google 로그인/로그아웃 박스
  *
  * ✅ 추가
- *  - Firestore의 notice 컬렉션을 실시간(onSnapshot)으로 구독하여 공지 목록 표시
- *  - 항목 클릭 시 모달로 본문을 react-markdown 으로 렌더링
- *  - 정렬: pinned desc → createdAt desc
+ *  - Firestore notice 컬렉션 실시간 구독(onSnapshot)
+ *  - pinned desc → createdAt desc 정렬
+ *  - 항목 클릭 시 마크다운 본문 모달(react-markdown)
  *
- * ⚠️ 참고
- *  - firebase 초기화 모듈(@/lib/firebase/firebase)에 app, auth 가 export 되어있다고 가정합니다.
- *    (만약 db 를 직접 export 하고 있다면, 아래 getFirestore(app) 대신 `import { db } ...` 로 교체하세요.)
+ * ⚠️ 전제
+ *  - '@/lib/firebase/firebase' 모듈에서 `app`, `auth` 를 export 한다고 가정합니다.
+ *    (만약 `db`를 export 중이면 getFirestore(app) 대신 `import { db } ...` 사용으로 교체)
+ *  - Firestore Rules는 notice 컬렉션 read(공개)/write(관리자)로 설정되어 있어야 함.
  */
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+
+// Firebase Auth
 import {
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -27,10 +30,9 @@ import {
   signOut,
   type User,
 } from 'firebase/auth'
-import ReactMarkdown from 'react-markdown'
 
-// ⚙️ Firebase 앱/인증/DB
-import { app, auth } from '@/lib/firebase/firebase' // app, auth 를 export 하는 구조여야 함
+// Firebase App/Auth/Firestore
+import { app, auth } from '@/lib/firebase/firebase' // ← 프로젝트에서 app, auth 를 export 해야 함
 import {
   collection,
   getFirestore,
@@ -41,13 +43,16 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
-// Firestore 인스턴스 생성
+// 마크다운 렌더러
+import ReactMarkdown from 'react-markdown'
+
+// Firestore 인스턴스
 const db = getFirestore(app)
 
-// 로그인 성공 시 이동할 기본 경로(프로젝트 정책 유지)
+// 로그인 성공 시 이동 경로(프로젝트 정책 유지)
 const DEFAULT_AFTER_LOGIN = '/convert'
 
-// 우측 기능 카드 목록(경로는 프로젝트 실제 라우트에 맞게 조정)
+// 우측 기능 카드 목록(실제 라우트에 맞춰 href 수정 가능)
 const FEATURE_LINKS = [
   { href: '/convert', title: 'Data Convert', desc: '엑셀 · CSV · TXT · JSON 변환', emoji: '🔁' },
   { href: '/compare', title: 'Compare', desc: '두 파일 비교 · 결과 내보내기', emoji: '🧮' },
@@ -57,7 +62,7 @@ const FEATURE_LINKS = [
   { href: '/admin', title: 'Admin', desc: '메뉴/제한 설정 (관리자)', emoji: '🛠️' },
 ]
 
-// 공지 타입 정의
+// 공지 타입
 type Notice = {
   id: string
   title: string
@@ -75,13 +80,17 @@ export default function HomePage() {
   const [user, setUser] = useState<User | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // 📢 공지 상태
+  // 📢 공지 목록/상태
   const [notices, setNotices] = useState<Notice[]>([])
   const [loadingNotices, setLoadingNotices] = useState(true)
-  const [activeNotice, setActiveNotice] = useState<Notice | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
-  // 1) 진입 시 로그인 여부 감시: 로그인 상태면 /convert 로 즉시 이동(기존 동작 유지)
+  // 🔍 모달에 표시할 선택 공지
+  const [activeNotice, setActiveNotice] = useState<Notice | null>(null)
+
+  /**
+   * 1) 인증 상태 구독: 로그인 중이면 /convert 로 즉시 이동(기존 동작 유지)
+   */
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
@@ -90,11 +99,15 @@ export default function HomePage() {
     return () => unsub()
   }, [router])
 
-  // 2) Firestore notice 컬렉션 실시간 구독
+  /**
+   * 2) 공지 실시간 구독: notice 컬렉션
+   *    - pinned desc → createdAt desc, 상위 50개
+   *    - 규칙에서 published=false는 차단되나, 클라이언트에서도 한 번 더 필터링
+   *    - 최초 실행 시 복합 인덱스 생성 안내가 뜰 수 있음(한 번 생성)
+   */
   useEffect(() => {
-    // 정렬: pinned desc → createdAt desc, 상위 50개
     const q = query(
-      collection(db, 'notice'),     // ← 컬렉션명을 notice 로 고정
+      collection(db, 'notice'),  // ← 컬렉션명을 notice 로 고정
       orderBy('pinned', 'desc'),
       orderBy('createdAt', 'desc'),
       limit(50)
@@ -106,19 +119,14 @@ export default function HomePage() {
         const rows: Notice[] = []
         snap.forEach((doc) => {
           const data = doc.data() as Omit<Notice, 'id'>
-
-          // 읽기 규칙에서 published=false는 기본적으로 차단되지만
-          // 혹시 모를 혼재를 대비해 클라이언트에서도 한 번 더 필터링
-          if (data.published === false) return
-
+          if (data.published === false) return // 안전상 클라에서도 필터
           rows.push({ id: doc.id, ...data })
         })
         setNotices(rows)
-        setLoadingNotices(false)
         setErrorMsg(null)
+        setLoadingNotices(false)
       },
       (err) => {
-        // 권한/인덱스/네트워크 오류 등은 메시지로 표시(리스트 영역에)
         setErrorMsg(err?.message || '공지 불러오기에 실패했습니다.')
         setLoadingNotices(false)
       }
@@ -127,7 +135,9 @@ export default function HomePage() {
     return () => unsub()
   }, [])
 
-  // 3) 로그인/로그아웃 핸들러(우상단 박스)
+  /**
+   * 3) 로그인/로그아웃 핸들러
+   */
   const handleLogin = async () => {
     try {
       setBusy(true)
@@ -148,7 +158,9 @@ export default function HomePage() {
     }
   }
 
-  // 4) 날짜 포맷(YYYY-MM-DD)
+  /**
+   * 4) 날짜 포맷(YYYY-MM-DD, Asia/Seoul 기준 간단 표기)
+   */
   const formatDate = (ts?: Timestamp) => {
     if (!ts) return ''
     const d = ts.toDate()
@@ -188,7 +200,7 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* 히어로 */}
+      {/* 히어로 섹션 */}
       <section className="w-full max-w-6xl mx-auto pt-16 text-center">
         <h1 className="text-4xl md:text-5xl font-extrabold mb-3">Data Converter</h1>
         <p className="text-gray-300 dark:text-gray-300 max-w-xl mx-auto leading-relaxed">
@@ -199,7 +211,7 @@ export default function HomePage() {
       {/* 본문 2컬럼: 좌 공지 / 우 기능 */}
       <section className="w-full max-w-6xl mx-auto mt-10 mb-16">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* 좌측: 공지 패널 */}
+          {/* 좌측: 공지사항 패널 */}
           <div className="rounded-2xl border border-white/10 bg-white/5 dark:bg-white/5 backdrop-blur p-5 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold">공지사항</h2>
@@ -236,7 +248,7 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* 우측: 기능 카드 */}
+          {/* 우측: 기능 소개 카드 */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {FEATURE_LINKS.map((f) => (
               <Link
@@ -254,16 +266,17 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* 📌 공지 모달(마크다운 렌더) */}
+      {/* 공지 모달: 마크다운 본문 표시 */}
       {activeNotice && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => setActiveNotice(null)}
+          onClick={() => setActiveNotice(null)} // 배경 클릭 시 닫기
         >
           <div
             className="w-[92vw] max-w-2xl max-h-[80vh] overflow-auto rounded-2xl border border-white/15 bg-neutral-900 p-6 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()} // 모달 내부 클릭은 이벤트 버블링 중단
           >
+            {/* 모달 헤더 */}
             <div className="flex items-start justify-between gap-4">
               <h3 className="text-xl font-semibold">
                 {activeNotice.pinned ? '📌 ' : ''}
@@ -277,12 +290,16 @@ export default function HomePage() {
               </button>
             </div>
 
-            <div className="text-xs opacity-60 mt-1">{formatDate(activeNotice.createdAt)}</div>
+            {/* 생성일 표기 */}
+            <div className="text-xs opacity-60 mt-1">
+              {formatDate(activeNotice.createdAt)}
+            </div>
 
+            {/* 마크다운 본문 */}
             <div className="prose prose-invert mt-4">
               <ReactMarkdown
                 components={{
-                  // 링크는 새 창으로 열리도록 처리
+                  // 링크를 새 창으로 열도록 강제
                   a: ({ node, ...props }) => (
                     <a {...props} target="_blank" rel="noopener noreferrer" />
                   ),
