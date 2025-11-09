@@ -264,7 +264,7 @@ export default function HomePage() {
             </div>
 
             <p className="text-xs opacity-60 mt-4">
-              ※ 공지 작성/수정은 관리자 전용 화면에서 진행하세요(마크다운 지원).
+              ※ 클릭하여 상세내용 확인.
             </p>
           </div>
 
