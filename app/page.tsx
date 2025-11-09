@@ -3,23 +3,19 @@
 /**
  * 홈(/) 커버 페이지 - 공지 Firestore 연동(컬렉션: notice) + 마크다운 모달
  * -----------------------------------------------------------------------------
- * ✅ 유지
- *  - 로그인 상태면 /convert 로 리다이렉트
- *  - 우상단 Google 로그인/로그아웃 박스
+ * 변경 사항
+ *  - 우측 기능 카드에서 링크 제거(클릭 불가), "바로가기 →" 문구 삭제
+ *  - next/link import 제거
  *
- * ✅ 추가
- *  - Firestore notice 컬렉션 실시간 구독(onSnapshot)
+ * 유지 사항
+ *  - Firestore notice 실시간 구독(onSnapshot)
  *  - pinned desc → createdAt desc 정렬
  *  - 항목 클릭 시 마크다운 본문 모달(react-markdown)
- *
- * ⚠️ 전제
- *  - '@/lib/firebase/firebase' 모듈에서 `db`, `auth` 를 export 한다고 가정합니다.
- *  - Firestore Rules는 notice 컬렉션 read(공개)/write(관리자)로 설정되어 있어야 함.
+ *  - 로그인 상태면 /convert 리다이렉트, 우상단 로그인 박스
  */
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 
 // Firebase Auth
 import {
@@ -30,7 +26,7 @@ import {
   type User,
 } from 'firebase/auth'
 
-// Firebase: db, auth 만 사용 (app 불필요)
+// Firebase: db, auth 만 사용
 import { db, auth } from '@/lib/firebase/firebase'
 import {
   collection,
@@ -47,14 +43,14 @@ import ReactMarkdown from 'react-markdown'
 // 로그인 성공 시 이동 경로(프로젝트 정책 유지)
 const DEFAULT_AFTER_LOGIN = '/convert'
 
-// 우측 기능 카드 목록(실제 라우트에 맞춰 href 수정 가능)
-const FEATURE_LINKS = [
-  { href: '/convert', title: 'Data Convert', desc: '엑셀 · CSV · TXT · JSON 변환', emoji: '🔁' },
-  { href: '/compare', title: 'Compare', desc: '두 파일 비교 · 결과 내보내기', emoji: '🧮' },
-  { href: '/pdf', title: 'PDF Tool', desc: 'PDF 분할 · 병합 · 암호화', emoji: '📄' },
-  { href: '/(contents)/pattern-editor', title: 'Pattern Editor', desc: '텍스트 치환 · 정규식 편집', emoji: '✍️' },
-  { href: '/random', title: 'Random', desc: '랜덤 데이터 · 샘플 생성', emoji: '🎲' },
-  { href: '/admin', title: 'Admin', desc: '메뉴/제한 설정 (관리자)', emoji: '🛠️' },
+// 우측 기능 카드 목록(표시만; 클릭/링크 없음)
+const FEATURE_CARDS = [
+  { title: 'Data Convert', desc: '엑셀 · CSV · TXT · JSON 변환', emoji: '🔁' },
+  { title: 'Compare', desc: '두 파일 비교 · 결과 내보내기', emoji: '🧮' },
+  { title: 'PDF Tool', desc: 'PDF 분할 · 병합 · 암호화', emoji: '📄' },
+  { title: 'Pattern Editor', desc: '텍스트 치환 · 정규식 편집', emoji: '✍️' },
+  { title: 'Random', desc: '랜덤 데이터 · 샘플 생성', emoji: '🎲' },
+  { title: 'Admin', desc: '메뉴/제한 설정 (관리자)', emoji: '🛠️' },
 ]
 
 // 공지 타입
@@ -83,9 +79,7 @@ export default function HomePage() {
   // 🔍 모달에 표시할 선택 공지
   const [activeNotice, setActiveNotice] = useState<Notice | null>(null)
 
-  /**
-   * 1) 인증 상태 구독: 로그인 중이면 /convert 로 즉시 이동(기존 동작 유지)
-   */
+  // 1) 인증 상태 구독: 로그인 중이면 /convert 로 즉시 이동(기존 동작 유지)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
@@ -94,15 +88,10 @@ export default function HomePage() {
     return () => unsub()
   }, [router])
 
-  /**
-   * 2) 공지 실시간 구독: notice 컬렉션
-   *    - pinned desc → createdAt desc, 상위 50개
-   *    - 규칙에서 published=false는 차단되나, 클라이언트에서도 한 번 더 필터링
-   *    - 최초 실행 시 복합 인덱스 생성 안내가 뜰 수 있음(한 번 생성)
-   */
+  // 2) 공지 실시간 구독: notice 컬렉션
   useEffect(() => {
     const q = query(
-      collection(db, 'notice'),  // ← 컬렉션명을 notice 로 고정
+      collection(db, 'notice'),
       orderBy('pinned', 'desc'),
       orderBy('createdAt', 'desc'),
       limit(50)
@@ -130,9 +119,7 @@ export default function HomePage() {
     return () => unsub()
   }, [])
 
-  /**
-   * 3) 로그인/로그아웃 핸들러
-   */
+  // 3) 로그인/로그아웃 핸들러
   const handleLogin = async () => {
     try {
       setBusy(true)
@@ -153,9 +140,7 @@ export default function HomePage() {
     }
   }
 
-  /**
-   * 4) 날짜 포맷(YYYY-MM-DD, Asia/Seoul 기준 간단 표기)
-   */
+  // 4) 날짜 포맷(YYYY-MM-DD)
   const formatDate = (ts?: Timestamp) => {
     if (!ts) return ''
     const d = ts.toDate()
@@ -169,7 +154,7 @@ export default function HomePage() {
 
   return (
     <main className="relative flex-1 flex flex-col items-center justify-start px-4">
-      {/* 우상단 로그인 박스(기존 유지) */}
+      {/* 우상단 로그인 박스 */}
       <div className="absolute right-6 top-14 z-40">
         <div className="rounded-xl border border-white/15 bg-black/30 dark:bg-white/10 backdrop-blur px-4 py-3 shadow-md">
           {user ? (
@@ -243,19 +228,18 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* 우측: 기능 소개 카드 */}
+          {/* 우측: 기능 소개 카드(링크 제거, 클릭 불가) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {FEATURE_LINKS.map((f) => (
-              <Link
-                key={f.href}
-                href={f.href}
-                className="group rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.03] hover:from-white/10 hover:to-white/[0.06] transition-colors p-5 shadow-sm flex flex-col"
+            {FEATURE_CARDS.map((f) => (
+              <div
+                key={f.title}
+                className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.03] p-5 shadow-sm flex flex-col select-none"
               >
                 <div className="text-3xl mb-3">{f.emoji}</div>
                 <h3 className="text-lg font-semibold">{f.title}</h3>
-                <p className="text-sm opacity-80 mt-1 flex-1">{f.desc}</p>
-                <div className="mt-3 text-sm opacity-70 group-hover:opacity-100">바로가기 →</div>
-              </Link>
+                <p className="text-sm opacity-80 mt-1">{f.desc}</p>
+                {/* 링크/문구 제거됨 */}
+              </div>
             ))}
           </div>
         </div>
@@ -265,11 +249,11 @@ export default function HomePage() {
       {activeNotice && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => setActiveNotice(null)} // 배경 클릭 시 닫기
+          onClick={() => setActiveNotice(null)}
         >
           <div
             className="w-[92vw] max-w-2xl max-h-[80vh] overflow-auto rounded-2xl border border-white/15 bg-neutral-900 p-6 shadow-xl"
-            onClick={(e) => e.stopPropagation()} // 모달 내부 클릭은 이벤트 버블링 중단
+            onClick={(e) => e.stopPropagation()}
           >
             {/* 모달 헤더 */}
             <div className="flex items-start justify-between gap-4">
@@ -286,15 +270,12 @@ export default function HomePage() {
             </div>
 
             {/* 생성일 표기 */}
-            <div className="text-xs opacity-60 mt-1">
-              {formatDate(activeNotice.createdAt)}
-            </div>
+            <div className="text-xs opacity-60 mt-1">{formatDate(activeNotice.createdAt)}</div>
 
             {/* 마크다운 본문 */}
             <div className="prose prose-invert mt-4">
               <ReactMarkdown
                 components={{
-                  // 링크를 새 창으로 열도록 강제
                   a: ({ node, ...props }) => (
                     <a {...props} target="_blank" rel="noopener noreferrer" />
                   ),
