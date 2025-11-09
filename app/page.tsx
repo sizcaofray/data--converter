@@ -1,15 +1,14 @@
 'use client'
 
 /**
- * 홈(/) 커버 페이지 - 공지 Firestore 연동(컬렉션: notice) + 마크다운 모달
- * 수정 요약
- *  - 에러 문구는 "데이터가 0건일 때"만 노출
- *  - 공지 데이터가 1건 이상이면 항상 목록을 렌더 (에러 유무와 무관)
- *  - onSnapshot 성공 시 errorMsg를 즉시 초기화
- *  - 링크 없는 우측 기능 카드 유지
+ * 홈(/) 커버 페이지 - 공지 Firestore 연동
+ * 변경점
+ *  - 에러는 UI에 표시하지 않고 콘솔에만 기록
+ *  - 1차 쿼리 실패 시 2차 폴백 쿼리( createdAt desc )로 자동 재구독 → 목록 항상 노출
+ *  - 우측 기능 카드는 링크 없이 표시만 유지
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   GoogleAuthProvider,
@@ -31,7 +30,7 @@ import ReactMarkdown from 'react-markdown'
 
 const DEFAULT_AFTER_LOGIN = '/convert'
 
-// 우측 카드(표시만; 클릭/링크 없음)
+// 표시용 카드(링크 없음)
 const FEATURE_CARDS = [
   { title: 'Data Convert', desc: '엑셀 · CSV · TXT · JSON 변환', emoji: '🔁' },
   { title: 'Compare', desc: '두 파일 비교 · 결과 내보내기', emoji: '🧮' },
@@ -55,17 +54,21 @@ type Notice = {
 export default function HomePage() {
   const router = useRouter()
 
-  // 인증 상태
+  // 인증
   const [user, setUser] = useState<User | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // 공지 상태
+  // 공지
   const [notices, setNotices] = useState<Notice[]>([])
   const [loadingNotices, setLoadingNotices] = useState(true)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  // 모달
   const [activeNotice, setActiveNotice] = useState<Notice | null>(null)
 
-  // 로그인 상태 감시(로그인 시 /convert 이동 유지)
+  // 폴백 재시도 중복 방지
+  const triedFallbackRef = useRef(false)
+
+  // 로그인 시 /convert 이동(기존 정책 유지)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
@@ -74,31 +77,59 @@ export default function HomePage() {
     return () => unsub()
   }, [router])
 
-  // 공지 실시간 구독
+  // 공지 구독: 1차(복합 인덱스) → 실패 시 2차(폴백)
   useEffect(() => {
-    const qy = query(
-      collection(db, 'notice'),
+    const baseCol = collection(db, 'notice')
+
+    // 1차: pinned desc → createdAt desc
+    const qPrimary = query(
+      baseCol,
       orderBy('pinned', 'desc'),
       orderBy('createdAt', 'desc'),
       limit(50)
     )
 
     const unsub = onSnapshot(
-      qy,
+      qPrimary,
       (snap) => {
         const rows: Notice[] = []
         snap.forEach((d) => {
           const data = d.data() as Omit<Notice, 'id'>
-          if (data.published === false) return // 안전 필터
+          if (data.published === false) return
           rows.push({ id: d.id, ...data })
         })
         setNotices(rows)
-        setErrorMsg(null)              // ✅ 성공하면 에러 즉시 초기화
         setLoadingNotices(false)
       },
       (err) => {
-        setErrorMsg(err?.message || '공지 불러오기에 실패했습니다.')
-        setLoadingNotices(false)
+        // 1차 실패 → 폴백으로 자동 재구독
+        console.warn('[notice] primary query failed, fallback to createdAt desc:', err?.message || err)
+        if (triedFallbackRef.current) {
+          setLoadingNotices(false)
+          return
+        }
+        triedFallbackRef.current = true
+
+        const qFallback = query(baseCol, orderBy('createdAt', 'desc'), limit(50))
+        const unsubFallback = onSnapshot(
+          qFallback,
+          (snap2) => {
+            const rows: Notice[] = []
+            snap2.forEach((d) => {
+              const data = d.data() as Omit<Notice, 'id'>
+              if (data.published === false) return
+              rows.push({ id: d.id, ...data })
+            })
+            setNotices(rows)
+            setLoadingNotices(false)
+          },
+          (err2) => {
+            console.error('[notice] fallback query failed:', err2?.message || err2)
+            setLoadingNotices(false)
+          }
+        )
+        // 폴백 구독 정리
+        return () => unsubFallback()
       }
     )
 
@@ -135,9 +166,7 @@ export default function HomePage() {
     return `${yyyy}-${mm}-${dd}`
   }
 
-  // 표시 조건
   const hasData = notices.length > 0
-  const showErrorOnlyWhenEmpty = !loadingNotices && !hasData && !!errorMsg
 
   return (
     <main className="relative flex-1 flex flex-col items-center justify-start px-4">
@@ -187,17 +216,10 @@ export default function HomePage() {
             <div className="max-h-72 overflow-auto pr-1">
               {loadingNotices && <p className="text-sm opacity-70">불러오는 중…</p>}
 
-              {/* 에러는 데이터가 0건일 때만 보여줌 */}
-              {showErrorOnlyWhenEmpty && (
-                <p className="text-sm text-red-400">{errorMsg}</p>
-              )}
-
-              {/* 데이터가 없고 에러도 없을 때의 안내 */}
-              {!loadingNotices && !hasData && !errorMsg && (
+              {!loadingNotices && !hasData && (
                 <p className="text-sm opacity-70">등록된 공지가 없습니다.</p>
               )}
 
-              {/* ✅ 데이터가 있으면 항상 목록 표시 */}
               {hasData && (
                 <ul className="divide-y divide-white/10">
                   {notices.map((n) => (
