@@ -1,12 +1,21 @@
 'use client';
 
 /**
- * 관리자 페이지 (메뉴 비활성화 + 사용자 관리 + 구독버튼 전역토글 + ✅ 메뉴 유료화 체크)
- * - 새 파일 추가 없음, 디자인 유지, 로직만 보강
- * - Firestore 저장 키
- *   - 비활성 목록: settings/uploadPolicy.navigation.disabled : string[]
- *   - ✅ 유료화 목록: settings/uploadPolicy.navigation.paid : string[]
- *   - 구독 버튼: settings/uploadPolicy.subscribeButtonEnabled : boolean
+ * 관리자 페이지
+ * -----------------------------------------------------------------------------
+ * 추가: [공지사항 관리] 섹션
+ *  - 컬렉션: notice
+ *  - 필드: title(string), content_md(string), pinned(boolean), published(boolean),
+ *          createdAt(timestamp), updatedAt(timestamp)
+ *  - 기능: 새 글 작성, 목록(최신 50개), 클릭 로드/수정, 삭제
+ *
+ * 기존 섹션:
+ *  - 메뉴 비활성화/유료화 + 구독 버튼 전역토글
+ *  - 사용자 관리(역할/구독)
+ *
+ * 주의:
+ *  - Firestore Rules에 notice 컬렉션 관리자 쓰기 권한이 있어야 함.
+ *  - createdAt은 생성 시 1회만 설정, 업데이트 시 변경 금지.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -16,14 +25,21 @@ import {
   collection,
   getDocs,
   updateDoc,
+  addDoc,
+  deleteDoc,
   doc,
   Timestamp,
   onSnapshot,
   setDoc,
   serverTimestamp,
   getDoc,
+  orderBy,
+  query,
+  limit,
 } from 'firebase/firestore';
 import { getAuth, getIdTokenResult, onAuthStateChanged } from 'firebase/auth';
+
+/* ========================= 공용 타입/유틸 ========================= */
 
 type Role = 'free' | 'basic' | 'premium' | 'admin';
 
@@ -38,6 +54,17 @@ interface UserRow {
   subscriptionEndAt?: Timestamp | null;
   remainingDays?: number | null;
 }
+
+/** 공지 타입 */
+type NoticeDoc = {
+  id: string;
+  title: string;
+  content_md?: string;
+  pinned?: boolean;
+  published?: boolean;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+};
 
 /** KST 자정 기준 도우미들 (기존 유지) */
 function todayKST(): Date {
@@ -79,8 +106,6 @@ function clampEndAfterStart(start: Date | null, end: Date | null) {
   if (!start || !end) return end;
   return end.getTime() < start.getTime() ? start : end;
 }
-
-const DEFAULT_SUBSCRIPTION_DAYS = 30;
 
 /** 메뉴 메타 (페이지 실제 경로/표시명에 맞게 유지) */
 type MenuConfig = { slug: string; label: string };
@@ -134,11 +159,12 @@ function safeStringify(o: any) {
   }
 }
 
+/* ========================= 컴포넌트 ========================= */
+
 export default function AdminPage() {
   const { role: myRoleFromContext, loading: userCtxLoading } = useUser();
 
   // ── [A] 관리자 판정 (users/{uid}.role === 'admin')
-  const [authUid, setAuthUid] = useState<string | null>(null);
   const [usersDocRole, setUsersDocRole] = useState<Role | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
@@ -148,11 +174,9 @@ export default function AdminPage() {
       setRoleLoading(true);
       try {
         if (!u) {
-          setAuthUid(null);
           setUsersDocRole(null);
           return;
         }
-        setAuthUid(u.uid);
         try { await getIdTokenResult(u, true); } catch {}
         const uref = doc(db, 'users', u.uid);
         const usnap = await getDoc(uref);
@@ -167,13 +191,146 @@ export default function AdminPage() {
 
   const isAdminRole = usersDocRole === 'admin';
 
-  // ── [B] 메뉴 관리 + 전역 구독 버튼 + ✅ 유료화 목록
+  /* ========== [섹션 1] 공지사항 관리(작성/수정/삭제 + 목록) ========== */
+
+  // 폼 상태
+  const [noticeId, setNoticeId] = useState<string | null>(null);            // null이면 새 글
+  const [nTitle, setNTitle] = useState('');
+  const [nContent, setNContent] = useState('');
+  const [nPinned, setNPinned] = useState(false);
+  const [nPublished, setNPublished] = useState(true);
+  const [nSaving, setNSaving] = useState(false);
+
+  // 목록 상태
+  const [noticeRows, setNoticeRows] = useState<NoticeDoc[]>([]);
+  const [nLoading, setNLoading] = useState(false);
+  const [nError, setNError] = useState<string | null>(null);
+
+  // 공지 목록 실시간 구독 (pinned desc, createdAt desc, 최대 50)
+  useEffect(() => {
+    if (roleLoading || !isAdminRole) return;
+    setNLoading(true);
+    const qy = query(
+      collection(db, 'notice'),
+      orderBy('pinned', 'desc'),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
+    const unsub = onSnapshot(
+      qy,
+      (snap) => {
+        const rows: NoticeDoc[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as Omit<NoticeDoc, 'id'>;
+          rows.push({ id: d.id, ...data });
+        });
+        setNoticeRows(rows);
+        setNLoading(false);
+        setNError(null);
+      },
+      (err) => {
+        setNError(err?.message || '공지 목록 로드 실패');
+        setNLoading(false);
+      }
+    );
+    return () => unsub();
+  }, [roleLoading, isAdminRole]);
+
+  /** 폼 초기화(새 글) */
+  const resetNoticeForm = () => {
+    setNoticeId(null);
+    setNTitle('');
+    setNContent('');
+    setNPinned(false);
+    setNPublished(true);
+  };
+
+  /** 목록 클릭 → 폼에 로드 */
+  const loadNoticeToForm = (row: NoticeDoc) => {
+    setNoticeId(row.id);
+    setNTitle(row.title || '');
+    setNContent(row.content_md || '');
+    setNPinned(!!row.pinned);
+    setNPublished(row.published !== false);
+    // createdAt은 표시만 필요하면 여기서 별도 상태로 뽑아 표시 가능(지금은 생략)
+  };
+
+  /** 저장(새 글: addDoc / 수정: updateDoc) */
+  const saveNotice = async () => {
+    if (!isAdminRole) {
+      alert('권한이 없습니다.');
+      return;
+    }
+    if (!nTitle.trim()) {
+      alert('제목을 입력하세요.');
+      return;
+    }
+
+    setNSaving(true);
+    try {
+      if (!noticeId) {
+        // 생성
+        await addDoc(collection(db, 'notice'), {
+          title: nTitle.trim(),
+          content_md: nContent,
+          pinned: !!nPinned,
+          published: !!nPublished,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        resetNoticeForm();
+        alert('공지사항이 등록되었습니다.');
+      } else {
+        // 업데이트(createdAt은 변경 금지)
+        const ref = doc(db, 'notice', noticeId);
+        await updateDoc(ref, {
+          title: nTitle.trim(),
+          content_md: nContent,
+          pinned: !!nPinned,
+          published: !!nPublished,
+          updatedAt: serverTimestamp(),
+        });
+        alert('공지사항이 수정되었습니다.');
+      }
+    } catch (e: any) {
+      alert(`저장 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
+    } finally {
+      setNSaving(false);
+    }
+  };
+
+  /** 삭제 */
+  const deleteNotice = async () => {
+    if (!isAdminRole || !noticeId) return;
+    if (!confirm('정말로 이 공지사항을 삭제하시겠습니까?')) return;
+    try {
+      await deleteDoc(doc(db, 'notice', noticeId));
+      resetNoticeForm();
+      alert('삭제되었습니다.');
+    } catch (e: any) {
+      alert(`삭제 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
+    }
+  };
+
+  /** 날짜 표기 유틸 */
+  const fmtDate = (ts?: Timestamp) => {
+    if (!ts) return '';
+    const d = ts.toDate();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+  };
+
+  /* ========== [섹션 2] 메뉴 관리 + 전역 구독 버튼 + 유료화 ========== */
+
   const [navDisabled, setNavDisabled] = useState<string[]>([]);  // 비활성 목록
-  const [navPaid, setNavPaid] = useState<string[]>([]);          // ✅ 유료화 목록
+  const [navPaid, setNavPaid] = useState<string[]>([]);          // 유료화 목록
   const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true); // 구독버튼 전역 토글
   const [savingNav, setSavingNav] = useState(false);
 
-  // 디버그 패널 상태
   const [showDebug, setShowDebug] = useState(true);
   const [dbg, setDbg] = useState<{
     uploadPolicyPayload?: any;
@@ -189,9 +346,9 @@ export default function AdminPage() {
       (snap) => {
         const data = (snap.data() as any) || {};
         const arrDisabled = Array.isArray(data?.navigation?.disabled) ? data.navigation.disabled : [];
-        const arrPaid = Array.isArray(data?.navigation?.paid) ? data.navigation.paid : []; // ✅ 유료화
+        const arrPaid = Array.isArray(data?.navigation?.paid) ? data.navigation.paid : [];
         setNavDisabled(sanitizeSlugArray(arrDisabled));
-        setNavPaid(sanitizeSlugArray(arrPaid));                                            // ✅ 유료화
+        setNavPaid(sanitizeSlugArray(arrPaid));
         setSubscribeEnabled(
           data?.subscribeButtonEnabled === undefined
             ? true
@@ -206,30 +363,12 @@ export default function AdminPage() {
   }, [roleLoading, isAdminRole]);
 
   const disabledSet = useMemo(() => new Set(navDisabled), [navDisabled]);
-  const paidSet = useMemo(() => new Set(navPaid), [navPaid]);            // ✅
-
-  /** 비활성 체크 토글 */
-  const toggleMenuDisabled = (slug: string) => {
-    setNavDisabled((prev) => {
-      const s = new Set(prev);
-      s.has(slug) ? s.delete(slug) : s.add(slug);
-      return Array.from(s);
-    });
-  };
-
-  /** ✅ 유료화 체크 토글 */
-  const toggleMenuPaid = (slug: string) => {
-    setNavPaid((prev) => {
-      const s = new Set(prev);
-      s.has(slug) ? s.delete(slug) : s.add(slug);
-      return Array.from(s);
-    });
-  };
+  const paidSet = useMemo(() => new Set(navPaid), [navPaid]);
 
   /** 디버그 페이로드 */
   const dumpPolicyPayload = () => {
     const payload = pruneUndefined({
-      navigation: { disabled: sanitizeSlugArray(navDisabled), paid: sanitizeSlugArray(navPaid) }, // ✅ paid 포함
+      navigation: { disabled: sanitizeSlugArray(navDisabled), paid: sanitizeSlugArray(navPaid) },
       subscribeButtonEnabled: subscribeEnabled,
       updatedAt: serverTimestamp(),
     });
@@ -251,7 +390,7 @@ export default function AdminPage() {
         {
           navigation: {
             disabled: sanitizeSlugArray(navDisabled),
-            paid: sanitizeSlugArray(navPaid),                      // ✅ paid 저장
+            paid: sanitizeSlugArray(navPaid),
           },
           subscribeButtonEnabled: subscribeEnabled,
           updatedAt: serverTimestamp(),
@@ -268,7 +407,8 @@ export default function AdminPage() {
     }
   };
 
-  // ── [C] 사용자 관리(기존 유지)
+  /* ========== [섹션 3] 사용자 관리(기존 유지) ========== */
+
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
@@ -317,13 +457,13 @@ export default function AdminPage() {
       return;
     }
     const startDate = r.subscriptionStartAt?.toDate() ?? todayKST();
-    const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(DEFAULT_SUBSCRIPTION_DAYS);
+    const endDate = r.subscriptionEndAt?.toDate() ?? kstTodayPlusDays(30);
     const endTs = clampEndAfterStart(startDate, endDate);
     patchRow(r.uid, {
-        isSubscribed: true,
-        subscriptionStartAt: Timestamp.fromDate(startDate),
-        subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
-        remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
+      isSubscribed: true,
+      subscriptionStartAt: Timestamp.fromDate(startDate),
+      subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
+      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
     });
   };
 
@@ -388,6 +528,8 @@ export default function AdminPage() {
     }
   };
 
+  /* ========================= 렌더 ========================= */
+
   if (userCtxLoading || roleLoading)
     return <main className="p-6 text-sm text-gray-500">로딩 중...</main>;
 
@@ -396,14 +538,145 @@ export default function AdminPage() {
       <main className="p-6">
         <h1 className="text-xl font-semibold mb-4">관리자 페이지</h1>
         <p className="text-red-600 dark:text-red-400">
-          ⛔ 관리자 권한이 없습니다. (<code>users/{'{'}uid{'}'}.role</code> 기준)
+          ⛔ 관리자 권한이 없습니다. (<code>users/&#123;uid&#125;.role</code> 기준)
         </p>
       </main>
     );
 
   return (
     <main className="p-6 space-y-6">
-      {/* ───────────── 메뉴 관리 섹션: 비활성 + 유료화 + 구독버튼 ───────────── */}
+      {/* ───────────── [섹션 1] 공지사항 관리 ───────────── */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
+        <h2 className="text-lg font-bold mb-2">공지사항 관리</h2>
+        <p className="text-xs text-slate-600 mb-4">
+          제목/본문(마크다운)·고정·게시 여부를 설정해 저장합니다. 생성 시 <code>createdAt</code>, 수정 시 <code>updatedAt</code>가 자동 기록됩니다.
+        </p>
+
+        {/* 폼 */}
+        <div className="grid grid-cols-1 gap-3">
+          <div className="flex items-center gap-2">
+            <label className="w-24 text-sm">상태</label>
+            <span className="text-xs px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800">
+              {noticeId ? '수정' : '새 글'}
+            </span>
+            {noticeId && (
+              <button
+                className="ml-2 text-xs px-2 py-1 rounded border hover:bg-slate-100 dark:hover:bg-slate-800"
+                onClick={resetNoticeForm}
+                type="button"
+                title="새 글 작성으로 전환"
+              >
+                새 글
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="w-24 text-sm">제목</label>
+            <input
+              className="flex-1 border rounded px-2 py-1 bg-white text-gray-900 dark:bg-transparent dark:text-gray-100"
+              value={nTitle}
+              onChange={(e) => setNTitle(e.target.value)}
+              placeholder="공지 제목을 입력하세요"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm mb-1">본문(마크다운)</label>
+            <textarea
+              className="w-full min-h-[160px] border rounded px-2 py-2 bg-white text-gray-900 dark:bg-transparent dark:text-gray-100"
+              value={nContent}
+              onChange={(e) => setNContent(e.target.value)}
+              placeholder={`예)
+## 점검 안내
+- 11/10(월) 02:00~03:00
+- 서비스 일시 중지
+
+자세한 내용은 [공지 링크](https://example.com) 참고`}
+            />
+          </div>
+
+          <div className="flex items-center gap-6">
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={nPinned} onChange={(e) => setNPinned(e.target.checked)} />
+              상단 고정(📌)
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={nPublished} onChange={(e) => setNPublished(e.target.checked)} />
+              게시(published)
+            </label>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={saveNotice}
+              disabled={nSaving}
+              className={`rounded px-4 py-2 text-sm font-semibold ${
+                nSaving ? 'bg-slate-300 text-slate-600' : 'bg-black text-white hover:opacity-90'
+              }`}
+            >
+              {noticeId ? '수정 저장' : '등록'}
+            </button>
+
+            {noticeId && (
+              <button
+                onClick={deleteNotice}
+                type="button"
+                className="rounded px-4 py-2 text-sm font-semibold border border-red-500 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+              >
+                삭제
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 목록 */}
+        <div className="mt-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold">최근 공지(최대 50)</h3>
+            {nLoading && <span className="text-xs text-slate-500">불러오는 중…</span>}
+          </div>
+          {nError && <p className="text-xs text-red-600">{nError}</p>}
+          <div className="border rounded overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-900/40 text-left">
+                  <th className="py-2 px-3 w-14">고정</th>
+                  <th className="py-2 px-3">제목</th>
+                  <th className="py-2 px-3 w-24">게시</th>
+                  <th className="py-2 px-3 w-40">작성일</th>
+                  <th className="py-2 px-3 w-40">수정일</th>
+                </tr>
+              </thead>
+              <tbody>
+                {noticeRows.map((n) => (
+                  <tr
+                    key={n.id}
+                    className="border-t hover:bg-slate-50/60 dark:hover:bg-slate-900/30 cursor-pointer"
+                    onClick={() => loadNoticeToForm(n)}
+                    title="클릭하여 폼에 불러오기"
+                  >
+                    <td className="py-2 px-3">{n.pinned ? '📌' : ''}</td>
+                    <td className="py-2 px-3 truncate">{n.title}</td>
+                    <td className="py-2 px-3">{n.published === false ? '숨김' : '게시'}</td>
+                    <td className="py-2 px-3 text-xs">{fmtDate(n.createdAt)}</td>
+                    <td className="py-2 px-3 text-xs">{fmtDate(n.updatedAt)}</td>
+                  </tr>
+                ))}
+                {noticeRows.length === 0 && !nLoading && (
+                  <tr>
+                    <td className="py-4 px-3 text-center text-xs text-slate-500" colSpan={5}>
+                      등록된 공지가 없습니다.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      {/* ───────────── [섹션 2] 메뉴 관리: 비활성 + 유료화 + 구독버튼 ───────────── */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
         <h2 className="text-lg font-bold mb-2">메뉴 관리</h2>
 
@@ -439,7 +712,11 @@ export default function AdminPage() {
                   type="checkbox"
                   className="h-4 w-4"
                   checked={checked}
-                  onChange={() => toggleMenuDisabled(m.slug)}
+                  onChange={() => setNavDisabled((prev) => {
+                    const s = new Set(prev);
+                    s.has(m.slug) ? s.delete(m.slug) : s.add(m.slug);
+                    return Array.from(s);
+                  })}
                 />
                 <span className="text-sm">{m.label}</span>
                 <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800">
@@ -450,7 +727,7 @@ export default function AdminPage() {
           })}
         </div>
 
-        {/* B. ✅ 유료화(구독 필요) */}
+        {/* B. 유료화(구독 필요) */}
         <h3 className="text-sm font-semibold mt-2 mb-2">유료화(구독 필요)</h3>
         <p className="text-xs text-slate-600 mb-3">
           체크된 메뉴는 <b>유료화가 적용</b>되며, <b>구독자/관리자만 활성</b>됩니다. 비구독자는 <b>보이되 비활성</b> 처리됩니다.
@@ -469,7 +746,11 @@ export default function AdminPage() {
                   type="checkbox"
                   className="h-4 w-4"
                   checked={checked}
-                  onChange={() => toggleMenuPaid(m.slug)}
+                  onChange={() => setNavPaid((prev) => {
+                    const s = new Set(prev);
+                    s.has(m.slug) ? s.delete(m.slug) : s.add(m.slug);
+                    return Array.from(s);
+                  })}
                 />
                 <span className="text-sm">{m.label}</span>
                 <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30">
@@ -500,7 +781,7 @@ export default function AdminPage() {
         </div>
       </section>
 
-      {/* ───────────── 사용자 관리 섹션 (기존 유지) ───────────── */}
+      {/* ───────────── [섹션 3] 사용자 관리 (기존 유지) ───────────── */}
       <section>
         <h1 className="text-xl font-semibold mb-4">사용자 관리</h1>
         {fetching ? (
