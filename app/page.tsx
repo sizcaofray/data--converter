@@ -1,14 +1,14 @@
 'use client'
 
 /**
- * 홈(/) 커버 페이지 - 공지 Firestore 연동
- * 변경점
- *  - 에러는 UI에 표시하지 않고 콘솔에만 기록
- *  - 1차 쿼리 실패 시 2차 폴백 쿼리( createdAt desc )로 자동 재구독 → 목록 항상 노출
- *  - 우측 기능 카드는 링크 없이 표시만 유지
+ * 홈(/) 커버 페이지 - 공지 Firestore 연동(컬렉션: notice)
+ * 안정화 전략
+ *  - 서버 쿼리: where(published==true) + orderBy(createdAt desc) + limit(50)
+ *  - 클라이언트 정렬: pinned(true) 우선 → createdAt 내림차순
+ *  - 복합 인덱스 불필요, 목록은 항상 렌더
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   GoogleAuthProvider,
@@ -24,13 +24,14 @@ import {
   onSnapshot,
   orderBy,
   query,
+  where,
   Timestamp,
 } from 'firebase/firestore'
 import ReactMarkdown from 'react-markdown'
 
 const DEFAULT_AFTER_LOGIN = '/convert'
 
-// 표시용 카드(링크 없음)
+// 우측 카드(표시만)
 const FEATURE_CARDS = [
   { title: 'Data Convert', desc: '엑셀 · CSV · TXT · JSON 변환', emoji: '🔁' },
   { title: 'Compare', desc: '두 파일 비교 · 결과 내보내기', emoji: '🧮' },
@@ -40,7 +41,7 @@ const FEATURE_CARDS = [
   { title: 'Admin', desc: '메뉴/제한 설정 (관리자)', emoji: '🛠️' },
 ]
 
-// 공지 타입
+// 타입
 type Notice = {
   id: string
   title: string
@@ -59,16 +60,13 @@ export default function HomePage() {
   const [busy, setBusy] = useState(false)
 
   // 공지
-  const [notices, setNotices] = useState<Notice[]>([])
+  const [rawNotices, setRawNotices] = useState<Notice[]>([])
   const [loadingNotices, setLoadingNotices] = useState(true)
 
   // 모달
   const [activeNotice, setActiveNotice] = useState<Notice | null>(null)
 
-  // 폴백 재시도 중복 방지
-  const triedFallbackRef = useRef(false)
-
-  // 로그인 시 /convert 이동(기존 정책 유지)
+  // 로그인 시 /convert 이동(프로젝트 정책 유지)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
@@ -77,64 +75,50 @@ export default function HomePage() {
     return () => unsub()
   }, [router])
 
-  // 공지 구독: 1차(복합 인덱스) → 실패 시 2차(폴백)
+  // 공지: 공개글만 + 생성일 최신순 (복합 인덱스 없이)
   useEffect(() => {
     const baseCol = collection(db, 'notice')
-
-    // 1차: pinned desc → createdAt desc
-    const qPrimary = query(
+    const qy = query(
       baseCol,
-      orderBy('pinned', 'desc'),
+      where('published', '==', true),
       orderBy('createdAt', 'desc'),
       limit(50)
     )
 
     const unsub = onSnapshot(
-      qPrimary,
+      qy,
       (snap) => {
         const rows: Notice[] = []
         snap.forEach((d) => {
           const data = d.data() as Omit<Notice, 'id'>
-          if (data.published === false) return
           rows.push({ id: d.id, ...data })
         })
-        setNotices(rows)
+        setRawNotices(rows)
         setLoadingNotices(false)
       },
       (err) => {
-        // 1차 실패 → 폴백으로 자동 재구독
-        console.warn('[notice] primary query failed, fallback to createdAt desc:', err?.message || err)
-        if (triedFallbackRef.current) {
-          setLoadingNotices(false)
-          return
-        }
-        triedFallbackRef.current = true
-
-        const qFallback = query(baseCol, orderBy('createdAt', 'desc'), limit(50))
-        const unsubFallback = onSnapshot(
-          qFallback,
-          (snap2) => {
-            const rows: Notice[] = []
-            snap2.forEach((d) => {
-              const data = d.data() as Omit<Notice, 'id'>
-              if (data.published === false) return
-              rows.push({ id: d.id, ...data })
-            })
-            setNotices(rows)
-            setLoadingNotices(false)
-          },
-          (err2) => {
-            console.error('[notice] fallback query failed:', err2?.message || err2)
-            setLoadingNotices(false)
-          }
-        )
-        // 폴백 구독 정리
-        return () => unsubFallback()
+        console.error('[notice] query failed:', err?.code, err?.message)
+        setRawNotices([]) // 안전 폴백
+        setLoadingNotices(false)
       }
     )
 
     return () => unsub()
   }, [])
+
+  // 클라 정렬: pinned(true) 우선 → createdAt desc
+  const notices = useMemo(() => {
+    const arr = [...rawNotices]
+    arr.sort((a, b) => {
+      const ap = a.pinned ? 1 : 0
+      const bp = b.pinned ? 1 : 0
+      if (ap !== bp) return bp - ap // pinned 우선
+      const at = a.createdAt?.toMillis?.() ?? 0
+      const bt = b.createdAt?.toMillis?.() ?? 0
+      return bt - at // 최신 우선
+    })
+    return arr
+  }, [rawNotices])
 
   // 로그인/로그아웃
   const handleLogin = async () => {
