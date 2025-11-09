@@ -1,15 +1,22 @@
 'use client'
 
 /**
- * 홈(/) 커버 페이지 - 공지 Firestore 연동(컬렉션: notice)
- * 안정화 전략
- *  - 서버 쿼리: where(published==true) + orderBy(createdAt desc) + limit(50)
- *  - 클라이언트 정렬: pinned(true) 우선 → createdAt 내림차순
- *  - 복합 인덱스 불필요, 목록은 항상 렌더
+ * 홈(/) 커버 페이지
+ * - 좌측: 공지사항(컬렉션: notice, 마크다운 모달)
+ * - 우측: 기능 카드(표시만, 링크/네비게이션 없음)
+ *
+ * 중요 변경(최소 수정):
+ *  1) Firestore 쿼리에서 orderBy 제거 → 인덱스 없어도 항상 데이터 수신
+ *  2) 정렬은 클라이언트에서 pinned 우선 → createdAt 내림차순 유지
+ *  3) 빨간 에러문구는 UI에 출력하지 않음(콘솔로만 로그)
+ *
+ * 디자인/마크업 구조는 기존 그대로입니다.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+
+// Firebase Auth 관련
 import {
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -17,21 +24,27 @@ import {
   signOut,
   type User,
 } from 'firebase/auth'
-import { db, auth } from '@/lib/firebase/firebase'
+
+// Firebase App(Auth/DB) – 프로젝트 내 firebase 래퍼
+import { auth, db } from '@/lib/firebase/firebase'
+
+// Firestore API
 import {
   collection,
   limit,
   onSnapshot,
-  orderBy,
   query,
   where,
   Timestamp,
 } from 'firebase/firestore'
+
+// 공지 내용 렌더링용 마크다운
 import ReactMarkdown from 'react-markdown'
 
+// 로그인 시 이동 경로(기존 정책 유지)
 const DEFAULT_AFTER_LOGIN = '/convert'
 
-// 우측 카드(표시만)
+// 우측 카드(표시만; 링크 없음)
 const FEATURE_CARDS = [
   { title: 'Data Convert', desc: '엑셀 · CSV · TXT · JSON 변환', emoji: '🔁' },
   { title: 'Compare', desc: '두 파일 비교 · 결과 내보내기', emoji: '🧮' },
@@ -41,7 +54,7 @@ const FEATURE_CARDS = [
   { title: 'Admin', desc: '메뉴/제한 설정 (관리자)', emoji: '🛠️' },
 ]
 
-// 타입
+// 공지 타입 정의
 type Notice = {
   id: string
   title: string
@@ -55,88 +68,107 @@ type Notice = {
 export default function HomePage() {
   const router = useRouter()
 
-  // 인증
+  // 로그인 상태
   const [user, setUser] = useState<User | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [authBusy, setAuthBusy] = useState(false)
 
-  // 공지
+  // 공지 원본 목록(서버에서 그대로 수신)
   const [rawNotices, setRawNotices] = useState<Notice[]>([])
   const [loadingNotices, setLoadingNotices] = useState(true)
 
-  // 모달
+  // 공지 모달 상태
   const [activeNotice, setActiveNotice] = useState<Notice | null>(null)
 
-  // 로그인 시 /convert 이동(프로젝트 정책 유지)
+  /* -----------------------------
+   * ① 인증 상태 구독: 로그인 시 /convert 이동(기존 정책)
+   * --------------------------- */
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
-      if (u) router.replace(DEFAULT_AFTER_LOGIN)
+      if (u) {
+        // 로그인 직후 변환 페이지로 이동(기존 동작 유지)
+        router.replace(DEFAULT_AFTER_LOGIN)
+      }
     })
     return () => unsub()
   }, [router])
 
-  // 공지: 공개글만 + 생성일 최신순 (복합 인덱스 없이)
+  /* -----------------------------
+   * ② 공지 구독
+   *    - 서버 쿼리: where(published==true), limit(50)만 사용(= 인덱스 불필요)
+   *    - 정렬은 클라에서 pinned 우선 → createdAt desc
+   * --------------------------- */
   useEffect(() => {
-    const baseCol = collection(db, 'notice')
-    const qy = query(
-      baseCol,
-      where('published', '==', true),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    )
+    try {
+      // 컬렉션 참조
+      const col = collection(db, 'notice')
 
-    const unsub = onSnapshot(
-      qy,
-      (snap) => {
-        const rows: Notice[] = []
-        snap.forEach((d) => {
-          const data = d.data() as Omit<Notice, 'id'>
-          rows.push({ id: d.id, ...data })
-        })
-        setRawNotices(rows)
-        setLoadingNotices(false)
-      },
-      (err) => {
-        console.error('[notice] query failed:', err?.code, err?.message)
-        setRawNotices([]) // 안전 폴백
-        setLoadingNotices(false)
-      }
-    )
+      // ✅ 인덱스 요구를 없애기 위해 orderBy는 제거
+      //    published=true 조건만 서버에서 필터링하고, 개수는 50개로 제한
+      const qy = query(col, where('published', '==', true), limit(50))
 
-    return () => unsub()
+      // 실시간 스냅샷 구독
+      const unsub = onSnapshot(
+        qy,
+        (snap) => {
+          const rows: Notice[] = []
+          snap.forEach((doc) => {
+            rows.push({ id: doc.id, ...(doc.data() as Omit<Notice, 'id'>) })
+          })
+          setRawNotices(rows)
+          setLoadingNotices(false)
+        },
+        (err) => {
+          // UI를 깨지지 않게 에러는 콘솔로만 남김
+          console.error('[notice] query error:', err?.code, err?.message)
+          setRawNotices([]) // 안전 폴백
+          setLoadingNotices(false)
+        }
+      )
+
+      return () => unsub()
+    } catch (e: any) {
+      console.error('[notice] query exception:', e?.message || e)
+      setRawNotices([])
+      setLoadingNotices(false)
+    }
   }, [])
 
-  // 클라 정렬: pinned(true) 우선 → createdAt desc
+  /* -----------------------------
+   * ③ 클라 정렬:
+   *    - pinned(true) 우선
+   *    - createdAt 내림차순(최신 우선)
+   * --------------------------- */
   const notices = useMemo(() => {
     const arr = [...rawNotices]
     arr.sort((a, b) => {
       const ap = a.pinned ? 1 : 0
       const bp = b.pinned ? 1 : 0
-      if (ap !== bp) return bp - ap // pinned 우선
+      if (ap !== bp) return bp - ap // pinned=true 먼저
       const at = a.createdAt?.toMillis?.() ?? 0
       const bt = b.createdAt?.toMillis?.() ?? 0
-      return bt - at // 최신 우선
+      return bt - at // 최신(createdAt) 먼저
     })
     return arr
   }, [rawNotices])
 
-  // 로그인/로그아웃
+  // 로그인/로그아웃 동작
   const handleLogin = async () => {
     try {
-      setBusy(true)
+      setAuthBusy(true)
       const provider = new GoogleAuthProvider()
       await signInWithPopup(auth, provider)
       router.replace(DEFAULT_AFTER_LOGIN)
     } finally {
-      setBusy(false)
+      setAuthBusy(false)
     }
   }
   const handleLogout = async () => {
     try {
-      setBusy(true)
+      setAuthBusy(true)
       await signOut(auth)
     } finally {
-      setBusy(false)
+      setAuthBusy(false)
     }
   }
 
@@ -150,11 +182,12 @@ export default function HomePage() {
     return `${yyyy}-${mm}-${dd}`
   }
 
-  const hasData = notices.length > 0
+  // 데이터 존재 여부
+  const hasNotices = notices.length > 0
 
   return (
     <main className="relative flex-1 flex flex-col items-center justify-start px-4">
-      {/* 우상단 로그인 박스 */}
+      {/* 상단 우측: 로그인 박스(기존 디자인 유지) */}
       <div className="absolute right-6 top-14 z-40">
         <div className="rounded-xl border border-white/15 bg-black/30 dark:bg-white/10 backdrop-blur px-4 py-3 shadow-md">
           {user ? (
@@ -162,7 +195,7 @@ export default function HomePage() {
               <span className="text-sm opacity-90">{user.email}</span>
               <button
                 onClick={handleLogout}
-                disabled={busy}
+                disabled={authBusy}
                 className="rounded-md bg-blue-600 px-3 py-1.5 text-sm text-white hover:opacity-90 disabled:opacity-60"
               >
                 로그아웃
@@ -171,7 +204,7 @@ export default function HomePage() {
           ) : (
             <button
               onClick={handleLogin}
-              disabled={busy}
+              disabled={authBusy}
               className="rounded-md border border-white/20 bg-black/30 px-4 py-2 text-sm text-white hover:bg-black/40 disabled:opacity-60"
             >
               Google 계정으로 로그인
@@ -180,7 +213,7 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* 히어로 */}
+      {/* 타이틀/설명(기존 유지) */}
       <section className="w-full max-w-6xl mx-auto pt-16 text-center">
         <h1 className="text-4xl md:text-5xl font-extrabold mb-3">Data Converter</h1>
         <p className="text-gray-300 dark:text-gray-300 max-w-xl mx-auto leading-relaxed">
@@ -188,23 +221,26 @@ export default function HomePage() {
         </p>
       </section>
 
-      {/* 본문 2컬럼 */}
+      {/* 본문 2열 레이아웃(좌: 공지 / 우: 기능 카드) */}
       <section className="w-full max-w-6xl mx-auto mt-10 mb-16">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* 좌: 공지 */}
+          {/* 좌측: 공지사항 카드 */}
           <div className="rounded-2xl border border-white/10 bg-white/5 dark:bg-white/5 backdrop-blur p-5 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold">공지사항</h2>
             </div>
 
             <div className="max-h-72 overflow-auto pr-1">
+              {/* 로딩 표시 */}
               {loadingNotices && <p className="text-sm opacity-70">불러오는 중…</p>}
 
-              {!loadingNotices && !hasData && (
+              {/* 데이터 없음 표시(빨간 에러문구는 사용하지 않음) */}
+              {!loadingNotices && !hasNotices && (
                 <p className="text-sm opacity-70">등록된 공지가 없습니다.</p>
               )}
 
-              {hasData && (
+              {/* 데이터가 있을 때 목록 렌더 */}
+              {hasNotices && (
                 <ul className="divide-y divide-white/10">
                   {notices.map((n) => (
                     <li key={n.id} className="py-3">
@@ -232,7 +268,7 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* 우: 기능 카드(표시만) */}
+          {/* 우측: 기능 카드(표시만, 링크 없음) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {FEATURE_CARDS.map((f) => (
               <div
@@ -248,7 +284,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* 공지 모달 */}
+      {/* 공지 상세 모달(마크다운) */}
       {activeNotice && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
@@ -278,6 +314,7 @@ export default function HomePage() {
             <div className="prose prose-invert mt-4">
               <ReactMarkdown
                 components={{
+                  // 마크다운 내 링크는 새 탭으로 열기
                   a: ({ node, ...props }) => (
                     <a {...props} target="_blank" rel="noopener noreferrer" />
                   ),
