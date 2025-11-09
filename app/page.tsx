@@ -13,8 +13,7 @@
  *  - 항목 클릭 시 마크다운 본문 모달(react-markdown)
  *
  * ⚠️ 전제
- *  - '@/lib/firebase/firebase' 모듈에서 `app`, `auth` 를 export 한다고 가정합니다.
- *    (만약 `db`를 export 중이면 getFirestore(app) 대신 `import { db } ...` 사용으로 교체)
+ *  - '@/lib/firebase/firebase' 모듈에서 `db`, `auth` 를 export 한다고 가정합니다.
  *  - Firestore Rules는 notice 컬렉션 read(공개)/write(관리자)로 설정되어 있어야 함.
  */
 
@@ -31,11 +30,10 @@ import {
   type User,
 } from 'firebase/auth'
 
-// Firebase App/Auth/Firestore
-import { app, auth } from '@/lib/firebase/firebase' // ← 프로젝트에서 app, auth 를 export 해야 함
+// Firebase: db, auth 만 사용 (app 불필요)
+import { db, auth } from '@/lib/firebase/firebase'
 import {
   collection,
-  getFirestore,
   limit,
   onSnapshot,
   orderBy,
@@ -45,9 +43,6 @@ import {
 
 // 마크다운 렌더러
 import ReactMarkdown from 'react-markdown'
-
-// Firestore 인스턴스
-const db = getFirestore(app)
 
 // 로그인 성공 시 이동 경로(프로젝트 정책 유지)
 const DEFAULT_AFTER_LOGIN = '/convert'
