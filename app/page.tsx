@@ -2,7 +2,11 @@
 
 /**
  * 홈(/) 커버 페이지 - 공지 Firestore 연동(컬렉션: notice) + 마크다운 모달
- * 변경점: 에러 문구는 "데이터가 0건일 때만" 노출하도록 조건 수정
+ * 수정 요약
+ *  - 에러 문구는 "데이터가 0건일 때"만 노출
+ *  - 공지 데이터가 1건 이상이면 항상 목록을 렌더 (에러 유무와 무관)
+ *  - onSnapshot 성공 시 errorMsg를 즉시 초기화
+ *  - 링크 없는 우측 기능 카드 유지
  */
 
 import { useEffect, useState } from 'react'
@@ -27,7 +31,7 @@ import ReactMarkdown from 'react-markdown'
 
 const DEFAULT_AFTER_LOGIN = '/convert'
 
-// 우측 카드(표시만, 링크 없음)
+// 우측 카드(표시만; 클릭/링크 없음)
 const FEATURE_CARDS = [
   { title: 'Data Convert', desc: '엑셀 · CSV · TXT · JSON 변환', emoji: '🔁' },
   { title: 'Compare', desc: '두 파일 비교 · 결과 내보내기', emoji: '🧮' },
@@ -61,7 +65,7 @@ export default function HomePage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [activeNotice, setActiveNotice] = useState<Notice | null>(null)
 
-  // 로그인 상태 감시(로그인 시 /convert로 유지 이동)
+  // 로그인 상태 감시(로그인 시 /convert 이동 유지)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
@@ -89,11 +93,10 @@ export default function HomePage() {
           rows.push({ id: d.id, ...data })
         })
         setNotices(rows)
-        setErrorMsg(null)              // ✅ 성공 시 에러 초기화
+        setErrorMsg(null)              // ✅ 성공하면 에러 즉시 초기화
         setLoadingNotices(false)
       },
       (err) => {
-        // 에러 저장(인덱스/권한 등). 단, 표시 조건은 아래에서 제한.
         setErrorMsg(err?.message || '공지 불러오기에 실패했습니다.')
         setLoadingNotices(false)
       }
@@ -133,8 +136,8 @@ export default function HomePage() {
   }
 
   // 표시 조건
-  const showEmpty = !loadingNotices && notices.length === 0
-  const showError = !loadingNotices && notices.length === 0 && !!errorMsg // ✅ 데이터가 0건일 때만 에러 노출
+  const hasData = notices.length > 0
+  const showErrorOnlyWhenEmpty = !loadingNotices && !hasData && !!errorMsg
 
   return (
     <main className="relative flex-1 flex flex-col items-center justify-start px-4">
@@ -184,34 +187,38 @@ export default function HomePage() {
             <div className="max-h-72 overflow-auto pr-1">
               {loadingNotices && <p className="text-sm opacity-70">불러오는 중…</p>}
 
-              {/* ❗에러는 "데이터가 0건일 때만" 노출 */}
-              {showError && <p className="text-sm text-red-400">{errorMsg}</p>}
+              {/* 에러는 데이터가 0건일 때만 보여줌 */}
+              {showErrorOnlyWhenEmpty && (
+                <p className="text-sm text-red-400">{errorMsg}</p>
+              )}
 
-              {/* 데이터가 0건일 때의 안내 */}
-              {showEmpty && !errorMsg && (
+              {/* 데이터가 없고 에러도 없을 때의 안내 */}
+              {!loadingNotices && !hasData && !errorMsg && (
                 <p className="text-sm opacity-70">등록된 공지가 없습니다.</p>
               )}
 
-              {/* 목록 */}
-              <ul className="divide-y divide-white/10">
-                {notices.map((n) => (
-                  <li key={n.id} className="py-3">
-                    <button
-                      onClick={() => setActiveNotice(n)}
-                      className="group flex items-start justify-between gap-3 w-full text-left"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate group-hover:underline">
-                          {n.pinned ? '📌 ' : ''}
-                          {n.title}
-                        </p>
-                        <p className="text-xs opacity-60 mt-1">{formatDate(n.createdAt)}</p>
-                      </div>
-                      <span className="text-sm opacity-60 shrink-0">열기 ›</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              {/* ✅ 데이터가 있으면 항상 목록 표시 */}
+              {hasData && (
+                <ul className="divide-y divide-white/10">
+                  {notices.map((n) => (
+                    <li key={n.id} className="py-3">
+                      <button
+                        onClick={() => setActiveNotice(n)}
+                        className="group flex items-start justify-between gap-3 w-full text-left"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate group-hover:underline">
+                            {n.pinned ? '📌 ' : ''}
+                            {n.title}
+                          </p>
+                          <p className="text-xs opacity-60 mt-1">{formatDate(n.createdAt)}</p>
+                        </div>
+                        <span className="text-sm opacity-60 shrink-0">열기 ›</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             <p className="text-xs opacity-60 mt-4">
