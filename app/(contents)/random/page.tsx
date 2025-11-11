@@ -1,18 +1,23 @@
 "use client";
 
 /**
- * Random 데이터 눈가림 (미리보기 모달 포함)
+ * Random 데이터 눈가림 (시트별 미리보기 + 고정문자+랜덤 채움)
  * - 단일 파일(.xlsx/.xls/.csv/.xml) 업로드
- * - 시트별 필드 마스킹 규칙 + (옵션) 행 순서 섞기 + (옵션) 복원 키 생성
- * - (신규) 미리보기: 지정한 개수만 처리해서 모달로 출력
- * - 결과 다운로드: 전체 데이터 다시 처리하여 XLSX 저장
- * - 색상은 전역 테마 상속(라이트/다크 자동 적응)
+ * - 시트별 필드 마스킹 + (옵션) 행 순서 섞기 + (옵션) 복원 키 시트
+ * - 미리보기: 전체 / 시트별 버튼 제공
+ * - 신규: fixedPart(고정 문자열) 지원
+ *   · randomString: fixedPart + 나머지 길이만큼 랜덤문자
+ *   · randomInt: fixedPart(숫자) + 남은 자리수만큼 랜덤숫자
+ *   · fakeEmail: local-part 앞부분 fixedPart + 남은 길이 랜덤문자
+ *   · fakePhone: '010-' 형태 유지, fixedPart가 숫자면 뒤쪽 채움
+ *   · randomDate: fixedPart가 'YYYY' 또는 'YYYY-MM'이면 해당 범위로 랜덤
  */
 
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { XMLParser } from "fast-xml-parser";
 
+/* ---------- 타입 ---------- */
 type Row = Record<string, any>;
 type SheetData = { name: string; rows: Row[]; fields: string[] };
 
@@ -30,12 +35,13 @@ type RuleKind =
 type FieldRule = {
   field: string;
   kind: RuleKind;
-  strLen?: number;
-  intMin?: number;
+  strLen?: number;     // 문자열 목표 길이(미지정시 원본 길이 기반)
+  intMin?: number;     // randomInt 범위(고정문자 없을 때만 사용)
   intMax?: number;
-  dateStart?: string;
+  dateStart?: string;  // randomDate 범위(YYYY-MM-DD)
   dateEnd?: string;
-  customList?: string;
+  customList?: string; // 콤마 분리 목록: 있으면 우선 픽
+  fixedPart?: string;  // 신규: 접두/고정 문자열(선택)
 };
 
 /* ---------- 유틸 ---------- */
@@ -43,45 +49,51 @@ const randInt = (min: number, max: number) =>
   Math.floor(Math.random() * (max - min + 1)) + min;
 
 const randString = (len: number) => {
-  const chars =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let out = "";
   for (let i = 0; i < len; i++) out += chars.charAt(randInt(0, chars.length - 1));
   return out;
 };
 
+const randDigits = (len: number) => {
+  let out = "";
+  for (let i = 0; i < len; i++) out += String(randInt(i === 0 ? 0 : 0, 9)); // 선행 0 허용
+  return out;
+};
+
+const onlyDigits = (s: string) => (s || "").replace(/\D+/g, "");
+
 const pickFromList = (csv?: string) => {
   if (!csv) return undefined;
-  const list = csv
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const list = csv.split(",").map((s) => s.trim()).filter(Boolean);
   if (!list.length) return undefined;
   return list[randInt(0, list.length - 1)];
 };
 
 const fakeName = () => {
   const first = ["Kim", "Lee", "Park", "Choi", "Jung", "Han", "Yoon", "Kang"];
-  const last = [
-    "Minsoo",
-    "Jiwon",
-    "Seojin",
-    "Hyunwoo",
-    "Jisoo",
-    "Yuna",
-    "Haneul",
-    "Taeyang",
-  ];
+  const last = ["Minsoo", "Jiwon", "Seojin", "Hyunwoo", "Jisoo", "Yuna", "Haneul", "Taeyang"];
   return `${first[randInt(0, first.length - 1)]} ${last[randInt(0, last.length - 1)]}`;
 };
 
-const fakeEmail = () => {
-  const user = randString(8).toLowerCase();
+const fakeEmailWithFixed = (fixedPart?: string, targetLocalLen?: number) => {
   const domains = ["example.com", "mail.com", "test.org", "anon.dev"];
-  return `${user}@${domains[randInt(0, domains.length - 1)]}`;
+  const dom = domains[randInt(0, domains.length - 1)];
+  const fixed = (fixedPart || "").replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32);
+  const tLen = Math.max(4, Math.min(32, targetLocalLen ?? 12)); // local-part 길이(4~32)
+  const remain = Math.max(0, tLen - fixed.length);
+  const local = fixed + randString(remain).toLowerCase();
+  return `${local}@${dom}`;
 };
 
-const fakePhone = () => `010-${randInt(1000, 9999)}-${randInt(1000, 9999)}`;
+const fakePhoneWithFixed = (fixedPart?: string) => {
+  // 기본: 010-XXXX-XXXX (총 11자리, 구분 포함)
+  const fixedDigits = onlyDigits(fixedPart || "");
+  // 010 고정, 나머지 8자리 랜덤. fixedDigits가 있으면 앞에서부터 채움
+  const remain = Math.max(0, 8 - fixedDigits.length);
+  const tail = fixedDigits + randDigits(remain);
+  return `010-${tail.slice(0, 4)}-${tail.slice(4, 8)}`;
+};
 
 const randDate = (start: Date, end: Date) => {
   const t = randInt(start.getTime(), end.getTime());
@@ -101,7 +113,7 @@ const sha256Hex = async (input: string) => {
 
 const uuidv4 = () =>
   "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (crypto.getRandomValues(new Uint8Array(1))[0] & 0xf) >> 0;
+    const r = crypto.getRandomValues(new Uint8Array(1))[0] & 0xf;
     const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
@@ -113,21 +125,9 @@ const shuffleInPlace = <T,>(arr: T[]) => {
   }
 };
 
-const safeSheetName = (name: string) => {
-  const invalid = /[\\/?*\[\]:]/g;
-  let n = name.replace(invalid, "_");
-  if (n.length > 31) n = n.slice(0, 31);
-  if (!n.trim()) n = "Sheet";
-  return n;
-};
-
 /* ---------- XML → 표 ---------- */
 const xmlToRows = (xmlText: string): { rows: Row[]; fields: string[] } => {
-  const parser = new XMLParser({
-    ignoreAttributes: false,
-    attributeNamePrefix: "@",
-    allowBooleanAttributes: true,
-  });
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@", allowBooleanAttributes: true });
   const json = parser.parse(xmlText);
 
   const findArrayNode = (obj: any): any[] | null => {
@@ -144,9 +144,7 @@ const xmlToRows = (xmlText: string): { rows: Row[]; fields: string[] } => {
   const arr = findArrayNode(json) || [];
   const flat = (obj: any, prefix = "", out: Row = {}): Row => {
     if (obj && typeof obj === "object" && !Array.isArray(obj)) {
-      for (const [k, v] of Object.entries(obj)) {
-        flat(v, prefix ? `${prefix}.${k}` : k, out);
-      }
+      for (const [k, v] of Object.entries(obj)) flat(v, prefix ? `${prefix}.${k}` : k, out);
     } else {
       out[prefix] = obj;
     }
@@ -159,21 +157,115 @@ const xmlToRows = (xmlText: string): { rows: Row[]; fields: string[] } => {
   return { rows, fields: Array.from(fieldSet) };
 };
 
-/* ---------- 메인 ---------- */
+const safeSheetName = (name: string) => {
+  const invalid = /[\\/?*\[\]:]/g;
+  let n = name.replace(invalid, "_");
+  if (n.length > 31) n = n.slice(0, 31);
+  if (!n.trim()) n = "Sheet";
+  return n;
+};
+
+/* ---------- 규칙 적용기 (fixedPart 지원) ---------- */
+async function applyRule(
+  value: any,
+  rule: FieldRule
+): Promise<any> {
+  const src = String(value ?? "");
+  const fixed = rule.fixedPart?.toString() ?? "";
+  const picked = pickFromList(rule.customList);
+
+  switch (rule.kind) {
+    case "blank":
+      return "";
+
+    case "randomString": {
+      // 우선순위: picked → fixedPart+랜덤
+      if (picked) return picked;
+      const targetLen = Math.max(1, rule.strLen ?? (src.length || 8));
+      const remain = Math.max(0, targetLen - fixed.length);
+      return (fixed || "") + randString(remain);
+    }
+
+    case "randomInt": {
+      if (picked) return picked;
+      const digitsInSrc = onlyDigits(src).length || 4;
+      // fixedPart가 숫자면 접두로 쓰고, 나머지 자릿수 랜덤으로 채움
+      const fixedDigits = onlyDigits(fixed);
+      if (fixedDigits) {
+        const targetLen = Math.max(fixedDigits.length + 1, rule.strLen ?? digitsInSrc);
+        const remain = Math.max(0, targetLen - fixedDigits.length);
+        return fixedDigits + randDigits(remain);
+      }
+      // 범위 기반
+      const min = Number.isFinite(rule.intMin) ? (rule.intMin as number) : 0;
+      const max = Number.isFinite(rule.intMax) ? (rule.intMax as number) : 9999;
+      return String(randInt(min, max));
+    }
+
+    case "randomDate": {
+      if (picked) return picked;
+      // fixedPart가 'YYYY' 또는 'YYYY-MM'이면 그 범위로 랜덤
+      const yMatch = fixed.match(/^(\d{4})(?:-(\d{2}))?$/);
+      if (yMatch) {
+        const y = Number(yMatch[1]);
+        if (yMatch[2]) {
+          const m = Number(yMatch[2]);
+          const start = new Date(y, m - 1, 1);
+          const end = new Date(y, m, 0);
+          return randDate(start, end);
+        } else {
+          const start = new Date(y, 0, 1);
+          const end = new Date(y, 11, 31);
+          return randDate(start, end);
+        }
+      }
+      const s = rule.dateStart ? new Date(rule.dateStart) : new Date("2000-01-01");
+      const e = rule.dateEnd ? new Date(rule.dateEnd) : new Date("2030-12-31");
+      return randDate(s, e);
+    }
+
+    case "fakeName": {
+      if (picked) return picked;
+      // fixedPart가 있으면 "fixedPart + 공백 + 랜덤성" 형식
+      return fixed ? `${fixed} ${fakeName().split(" ").pop()}` : fakeName();
+    }
+
+    case "fakeEmail": {
+      if (picked) return picked;
+      const targetLocalLen = Math.max(6, rule.strLen ?? (src.split("@")[0]?.length || 10));
+      return fakeEmailWithFixed(fixed, targetLocalLen);
+    }
+
+    case "fakePhone": {
+      if (picked) return picked;
+      return fakePhoneWithFixed(fixed);
+    }
+
+    case "hashSHA256": {
+      return await sha256Hex(src);
+    }
+
+    default:
+      return src;
+  }
+}
+
+/* ========== 메인 컴포넌트 ========== */
 export default function RandomMaskPage() {
   const [fileName, setFileName] = useState("");
   const [sheets, setSheets] = useState<SheetData[]>([]);
   const [fieldRules, setFieldRules] = useState<Record<string, FieldRule>>({});
   const [recovery, setRecovery] = useState(true);
   const [shuffleRowsOpt, setShuffleRowsOpt] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  // 미리보기 전용 상태
+  // 미리보기 상태: 전체 / 특정 시트
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewCount, setPreviewCount] = useState<number>(30);
   const [previewSheets, setPreviewSheets] = useState<SheetData[]>([]);
   const [activePreviewTab, setActivePreviewTab] = useState(0);
+  const [previewScope, setPreviewScope] = useState<"all" | { sheet: string }>({ sheet: "" } as any);
 
-  const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   /* 파일 로드 */
@@ -195,9 +287,7 @@ export default function RandomMaskPage() {
         setSheets(newSheets);
 
         const fr: Record<string, FieldRule> = {};
-        newSheets.forEach((s) =>
-          s.fields.forEach((field) => (fr[`${s.name}::${field}`] = { field, kind: "none" }))
-        );
+        newSheets.forEach((s) => s.fields.forEach((field) => (fr[`${s.name}::${field}`] = { field, kind: "none" })));
         setFieldRules(fr);
       } else if (ext.endsWith(".xml")) {
         const text = new TextDecoder().decode(new Uint8Array(buf));
@@ -223,50 +313,37 @@ export default function RandomMaskPage() {
     }
   }, []);
 
-  const onDrop = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const f = e.dataTransfer.files?.[0];
-      if (f) onFile(f);
-    },
-    [onFile]
-  );
-  const onBrowse = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const f = e.target.files?.[0];
-      if (f) onFile(f);
-    },
-    [onFile]
-  );
+  const onDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault(); e.stopPropagation();
+    const f = e.dataTransfer.files?.[0];
+    if (f) onFile(f);
+  }, [onFile]);
 
-  /* 규칙 수정 */
+  const onBrowse = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) onFile(f);
+  }, [onFile]);
+
+  /* 규칙 저장 */
   const setRule = (sheet: string, field: string, patch: Partial<FieldRule>) => {
     const key = `${sheet}::${field}`;
-    setFieldRules((prev) => ({
-      ...prev,
-      [key]: { ...(prev[key] || { field, kind: "none" }), ...patch },
-    }));
+    setFieldRules((prev) => ({ ...prev, [key]: { ...(prev[key] || { field, kind: "none" }), ...patch } }));
   };
 
-  /* 공통 처리기: 시트 마스킹(+옵션) - limit 지정 시 미리보기용 */
+  /* 공통 처리기: 시트 마스킹(+옵션) - limitPerSheet 지정 시 미리보기용 */
   const buildMaskedSheets = useCallback(
-    async (limitPerSheet?: number): Promise<{ masked: SheetData[]; keys: SheetData[] }> => {
+    async (limitPerSheet?: number, onlySheet?: string): Promise<{ masked: SheetData[]; keys: SheetData[] }> => {
       const masked: SheetData[] = [];
       const keys: SheetData[] = [];
 
-      for (const sheet of sheets) {
-        // 원본 복사
+      const workSheets = onlySheet ? sheets.filter((s) => s.name === onlySheet) : sheets;
+
+      for (const sheet of workSheets) {
         let rows = sheet.rows.map((r) => ({ ...r }));
         const fields = [...sheet.fields];
 
-        // 셔플 체크 시, 다운로드/미리보기 동일 규칙으로 셔플
         if (shuffleRowsOpt) shuffleInPlace(rows);
-
-        // 미리보기면 앞쪽 N개만 사용
-        if (limitPerSheet && limitPerSheet > 0) {
-          rows = rows.slice(0, limitPerSheet);
-        }
+        if (limitPerSheet && limitPerSheet > 0) rows = rows.slice(0, limitPerSheet);
 
         const keyRows: Row[] = [];
 
@@ -285,65 +362,21 @@ export default function RandomMaskPage() {
               rowKey["ANON_ROW_ID"] = anonId;
             }
 
-            const sourceVal = String(row[field] ?? "");
-            const picked = pickFromList(rule.customList);
-
-            switch (rule.kind) {
-              case "blank":
-                row[field] = "";
-                if (recovery) rowKey[field] = sourceVal;
-                break;
-              case "randomString":
-                row[field] = picked ?? randString(Math.max(1, rule.strLen ?? 8));
-                if (recovery) rowKey[field] = sourceVal;
-                break;
-              case "randomInt": {
-                const min = Number.isFinite(rule.intMin) ? (rule.intMin as number) : 0;
-                const max = Number.isFinite(rule.intMax) ? (rule.intMax as number) : 9999;
-                row[field] = picked ?? String(randInt(min, max));
-                if (recovery) rowKey[field] = sourceVal;
-                break;
-              }
-              case "randomDate": {
-                const s = rule.dateStart ? new Date(rule.dateStart) : new Date("2000-01-01");
-                const e = rule.dateEnd ? new Date(rule.dateEnd) : new Date("2030-12-31");
-                row[field] = picked ?? randDate(s, e);
-                if (recovery) rowKey[field] = sourceVal;
-                break;
-              }
-              case "fakeName":
-                row[field] = picked ?? fakeName();
-                if (recovery) rowKey[field] = sourceVal;
-                break;
-              case "fakeEmail":
-                row[field] = picked ?? fakeEmail();
-                if (recovery) rowKey[field] = sourceVal;
-                break;
-              case "fakePhone":
-                row[field] = picked ?? fakePhone();
-                if (recovery) rowKey[field] = sourceVal;
-                break;
-              case "hashSHA256":
-                row[field] = await sha256Hex(sourceVal);
-                if (recovery) rowKey[field] = sourceVal;
-                break;
-            }
+            const newVal = await applyRule(row[field], rule);
+            if (recovery) rowKey[field] = String(row[field] ?? "");
+            row[field] = newVal;
           }
 
           if (recovery && Object.keys(rowKey).length) keyRows.push(rowKey);
         }
 
         const maskedFields = [...fields];
-        if (recovery && !maskedFields.includes("ANON_ROW_ID")) {
-          maskedFields.push("ANON_ROW_ID");
-        }
+        if (recovery && !maskedFields.includes("ANON_ROW_ID")) maskedFields.push("ANON_ROW_ID");
         masked.push({ name: sheet.name, rows, fields: maskedFields });
 
-        if (recovery && sheet.rows.length && keys) {
-          if (keyRows.length) {
-            const keyFields = Array.from(new Set(keyRows.flatMap((r) => Object.keys(r))));
-            keys.push({ name: `ANON__KEY_${sheet.name}`, rows: keyRows, fields: keyFields });
-          }
+        if (recovery && keyRows.length) {
+          const keyFields = Array.from(new Set(keyRows.flatMap((r) => Object.keys(r))));
+          keys.push({ name: `ANON__KEY_${sheet.name}`, rows: keyRows, fields: keyFields });
         }
       }
       return { masked, keys };
@@ -351,12 +384,12 @@ export default function RandomMaskPage() {
     [sheets, fieldRules, recovery, shuffleRowsOpt]
   );
 
-  /* 다운로드 */
+  /* 다운로드 (전체) */
   const runDownload = useCallback(async () => {
     if (!sheets.length) return alert("먼저 파일을 업로드하세요.");
     setBusy(true);
     try {
-      const { masked, keys } = await buildMaskedSheets(); // 전체 처리
+      const { masked, keys } = await buildMaskedSheets(); // 전체
       const wb = XLSX.utils.book_new();
       for (const s of masked) {
         const ws = XLSX.utils.json_to_sheet(s.rows, { header: s.fields });
@@ -378,14 +411,15 @@ export default function RandomMaskPage() {
     }
   }, [sheets, recovery, fileName, buildMaskedSheets]);
 
-  /* 미리보기 */
-  const runPreview = useCallback(async () => {
+  /* 미리보기: 전체 */
+  const runPreviewAll = useCallback(async () => {
     if (!sheets.length) return alert("먼저 파일을 업로드하세요.");
     setBusy(true);
     try {
-      const { masked } = await buildMaskedSheets(previewCount); // 제한 처리
+      const { masked } = await buildMaskedSheets(previewCount); // 제한
       setPreviewSheets(masked);
       setActivePreviewTab(0);
+      setPreviewScope("all");
       setPreviewOpen(true);
     } catch (e) {
       console.error(e);
@@ -395,17 +429,57 @@ export default function RandomMaskPage() {
     }
   }, [sheets, previewCount, buildMaskedSheets]);
 
+  /* 미리보기: 특정 시트 */
+  const runPreviewSheet = useCallback(
+    async (sheetName: string) => {
+      if (!sheets.length) return alert("먼저 파일을 업로드하세요.");
+      setBusy(true);
+      try {
+        const { masked } = await buildMaskedSheets(previewCount, sheetName);
+        setPreviewSheets(masked);
+        setActivePreviewTab(0);
+        setPreviewScope({ sheet: sheetName });
+        setPreviewOpen(true);
+      } catch (e) {
+        console.error(e);
+        alert("미리보기 생성 중 오류가 발생했습니다.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sheets, previewCount, buildMaskedSheets]
+  );
+
   /* 필드 규칙 UI */
   const ui = useMemo(() => {
     if (!sheets.length)
       return <p className="text-sm opacity-80">파일을 업로드하면 필드 구성이 표시됩니다.</p>;
 
     return sheets.map((s) => (
-      <div
-        key={s.name}
-        className="border rounded-2xl p-4 mb-6 shadow-sm border-gray-300 dark:border-gray-700"
-      >
-        <h3 className="font-semibold text-lg mb-2">{s.name}</h3>
+      <div key={s.name} className="border rounded-2xl p-4 mb-6 shadow-sm border-gray-300 dark:border-gray-700">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-semibold text-lg">{s.name}</h3>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="opacity-70">이 시트 미리보기:</span>
+            <select
+              className="border rounded px-2 py-1 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
+              value={previewCount}
+              onChange={(e) => setPreviewCount(Number(e.target.value))}
+            >
+              <option value={10}>10</option>
+              <option value={30}>30</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+            <button
+              onClick={() => runPreviewSheet(s.name)}
+              className="px-3 py-1.5 rounded border border-gray-500"
+            >
+              미리보기
+            </button>
+          </div>
+        </div>
+
         {s.fields.length === 0 ? (
           <p className="text-sm opacity-80">데이터가 없습니다.</p>
         ) : (
@@ -425,18 +499,13 @@ export default function RandomMaskPage() {
                   return (
                     <tr key={key} className="border-b last:border-b-0 border-gray-100 dark:border-gray-800">
                       <td className="py-2 pr-2 align-top">
-                        <span className="px-2 py-0.5 rounded text-xs border border-current/30">
-                          {field}
-                        </span>
+                        <span className="px-2 py-0.5 rounded text-xs border border-current/30">{field}</span>
                       </td>
                       <td className="py-2 pr-2 align-top">
                         <select
-                          className="border rounded px-2 py-1 bg-transparent text-inherit
-                                     border-gray-400 dark:border-gray-600"
+                          className="border rounded px-2 py-1 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
                           value={rule.kind}
-                          onChange={(e) =>
-                            setRule(s.name, field, { kind: e.target.value as RuleKind })
-                          }
+                          onChange={(e) => setRule(s.name, field, { kind: e.target.value as RuleKind })}
                         >
                           <option value="none">변경 없음</option>
                           <option value="blank">공백 처리</option>
@@ -451,52 +520,45 @@ export default function RandomMaskPage() {
                       </td>
                       <td className="py-2 pr-2">
                         <div className="flex flex-wrap gap-2">
+                          {/* 신규: 고정 문자열 */}
                           <input
-                            className="border rounded px-2 py-1 bg-transparent text-inherit
-                                       placeholder:opacity-60
-                                       border-gray-400 dark:border-gray-600"
+                            className="border rounded px-2 py-1 bg-transparent text-inherit placeholder:opacity-60 border-gray-400 dark:border-gray-600"
+                            placeholder="(선택) 고정 문자열/숫자/연도"
+                            value={rule.fixedPart || ""}
+                            onChange={(e) => setRule(s.name, field, { fixedPart: e.target.value })}
+                          />
+                          {/* 공통: 목록 랜덤 픽 */}
+                          <input
+                            className="border rounded px-2 py-1 bg-transparent text-inherit placeholder:opacity-60 border-gray-400 dark:border-gray-600"
                             placeholder="(선택) 목록에서 랜덤: a,b,c"
                             value={rule.customList || ""}
-                            onChange={(e) =>
-                              setRule(s.name, field, { customList: e.target.value })
-                            }
+                            onChange={(e) => setRule(s.name, field, { customList: e.target.value })}
                           />
                           {rule.kind === "randomString" && (
                             <input
                               type="number"
                               min={1}
-                              className="border rounded px-2 py-1 w-28 bg-transparent text-inherit
-                                         border-gray-400 dark:border-gray-600"
-                              placeholder="길이"
-                              value={rule.strLen ?? 8}
-                              onChange={(e) =>
-                                setRule(s.name, field, {
-                                  strLen: Math.max(1, Number(e.target.value || 8)),
-                                })
-                              }
+                              className="border rounded px-2 py-1 w-28 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
+                              placeholder="문자 길이"
+                              value={rule.strLen ?? ""}
+                              onChange={(e) => setRule(s.name, field, { strLen: Number(e.target.value || 0) })}
                             />
                           )}
                           {rule.kind === "randomInt" && (
                             <>
                               <input
                                 type="number"
-                                className="border rounded px-2 py-1 w-28 bg-transparent text-inherit
-                                           border-gray-400 dark:border-gray-600"
+                                className="border rounded px-2 py-1 w-28 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
                                 placeholder="최소"
-                                value={rule.intMin ?? 0}
-                                onChange={(e) =>
-                                  setRule(s.name, field, { intMin: Number(e.target.value) })
-                                }
+                                value={rule.intMin ?? ""}
+                                onChange={(e) => setRule(s.name, field, { intMin: Number(e.target.value || 0) })}
                               />
                               <input
                                 type="number"
-                                className="border rounded px-2 py-1 w-28 bg-transparent text-inherit
-                                           border-gray-400 dark:border-gray-600"
+                                className="border rounded px-2 py-1 w-28 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
                                 placeholder="최대"
-                                value={rule.intMax ?? 9999}
-                                onChange={(e) =>
-                                  setRule(s.name, field, { intMax: Number(e.target.value) })
-                                }
+                                value={rule.intMax ?? ""}
+                                onChange={(e) => setRule(s.name, field, { intMax: Number(e.target.value || 0) })}
                               />
                             </>
                           )}
@@ -504,47 +566,40 @@ export default function RandomMaskPage() {
                             <>
                               <input
                                 type="date"
-                                className="border rounded px-2 py-1 bg-transparent text-inherit
-                                           border-gray-400 dark:border-gray-600"
+                                className="border rounded px-2 py-1 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
                                 value={rule.dateStart || ""}
-                                onChange={(e) =>
-                                  setRule(s.name, field, { dateStart: e.target.value })
-                                }
+                                onChange={(e) => setRule(s.name, field, { dateStart: e.target.value })}
                               />
                               <span className="self-center opacity-70">~</span>
                               <input
                                 type="date"
-                                className="border rounded px-2 py-1 bg-transparent text-inherit
-                                           border-gray-400 dark:border-gray-600"
+                                className="border rounded px-2 py-1 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
                                 value={rule.dateEnd || ""}
-                                onChange={(e) =>
-                                  setRule(s.name, field, { dateEnd: e.target.value })
-                                }
+                                onChange={(e) => setRule(s.name, field, { dateEnd: e.target.value })}
                               />
                             </>
                           )}
                         </div>
+                        <p className="text-xs opacity-60 mt-1">
+                          · fixedPart 예시: 문자열 접두("AB"), 숫자 접두("82"), 연도("2024"), 연-월("2024-07")
+                        </p>
                       </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
-            <p className="text-xs opacity-70 mt-2">
-              * 모든 무작위 기능은 **시트 단위 내부**에서만 동작합니다.
-            </p>
+            <p className="text-xs opacity-70 mt-2">* 모든 무작위 기능은 **시트 단위 내부**에서만 동작합니다.</p>
           </div>
         )}
       </div>
     ));
-  }, [sheets, fieldRules]);
+  }, [sheets, fieldRules, runPreviewSheet, previewCount]);
 
   return (
     <div className="p-6 space-y-6">
       <h1 className="text-2xl font-bold">Random 데이터 눈가림</h1>
-      <p className="text-sm opacity-80">
-        필드별 무작위 눈가림 및(옵션) 행 순서 섞기. 결과는 XLSX로 저장하며, 일부만 미리보기가 가능합니다.
-      </p>
+      <p className="text-sm opacity-80">필드별 무작위 눈가림 및(옵션) 행 순서 섞기. 시트별/전체 미리보기 제공.</p>
 
       {/* 업로드 박스 */}
       <div
@@ -552,49 +607,27 @@ export default function RandomMaskPage() {
         onDrop={onDrop}
         className="border-2 border-dashed rounded-2xl p-8 text-center border-gray-400 dark:border-gray-600"
       >
-        <p className="mb-2">
-          <span className="font-medium">여기에 파일을 드래그</span>하거나 아래 버튼으로 선택하세요.
-        </p>
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".xlsx,.xls,.csv,.xml"
-          className="hidden"
-          onChange={onBrowse}
-        />
-        <button
-          onClick={() => inputRef.current?.click()}
-          className="px-4 py-2 rounded-xl border shadow-sm transition border-gray-500"
-        >
+        <p className="mb-2"><span className="font-medium">여기에 파일을 드래그</span>하거나 아래 버튼으로 선택하세요.</p>
+        <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,.xml" className="hidden" onChange={onBrowse} />
+        <button onClick={() => inputRef.current?.click()} className="px-4 py-2 rounded-xl border shadow-sm transition border-gray-500">
           파일 선택
         </button>
         {fileName && <p className="text-sm opacity-70 mt-2">선택됨: {fileName}</p>}
       </div>
 
-      {/* 옵션 */}
+      {/* 옵션 & 전체 미리보기 */}
       <div className="flex flex-wrap gap-4 items-center">
         <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="w-4 h-4"
-            checked={recovery}
-            onChange={(e) => setRecovery(e.target.checked)}
-          />
+          <input type="checkbox" className="w-4 h-4" checked={recovery} onChange={(e) => setRecovery(e.target.checked)} />
           복원 옵션(ANON_ROW_ID &amp; ANON__KEY 시트 생성)
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="w-4 h-4"
-            checked={shuffleRowsOpt}
-            onChange={(e) => setShuffleRowsOpt(e.target.checked)}
-          />
+          <input type="checkbox" className="w-4 h-4" checked={shuffleRowsOpt} onChange={(e) => setShuffleRowsOpt(e.target.checked)} />
           행 순서 섞기(시트별 독립)
         </label>
 
-        {/* 미리보기 개수 */}
         <div className="flex items-center gap-2 text-sm ml-auto">
-          <span>미리보기</span>
+          <span>전체 미리보기</span>
           <select
             className="border rounded px-2 py-1 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
             value={previewCount}
@@ -605,17 +638,13 @@ export default function RandomMaskPage() {
             <option value={50}>50행</option>
             <option value={100}>100행</option>
           </select>
-          <button
-            onClick={runPreview}
-            disabled={!sheets.length || busy}
-            className="px-3 py-1.5 rounded border border-gray-500 disabled:opacity-50"
-          >
-            미리보기
+          <button onClick={runPreviewAll} disabled={!sheets.length || busy} className="px-3 py-1.5 rounded border border-gray-500 disabled:opacity-50">
+            미리보기(전체)
           </button>
         </div>
       </div>
 
-      {/* 규칙 UI */}
+      {/* 규칙 UI (시트별 미리보기 버튼 포함) */}
       {ui}
 
       {/* 실행 */}
@@ -623,55 +652,33 @@ export default function RandomMaskPage() {
         <button
           disabled={!sheets.length || busy}
           onClick={runDownload}
-          className="px-4 py-2 rounded-xl disabled:opacity-50
-                     bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
+          className="px-4 py-2 rounded-xl disabled:opacity-50 bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
         >
           {busy ? "처리 중..." : "눈가림 실행 & 다운로드"}
         </button>
         {!sheets.length && <span className="text-sm opacity-70">먼저 파일을 업로드하세요.</span>}
       </div>
 
-      <div className="text-xs opacity-70">
-        * 미리보기는 처리량을 줄이기 위해 각 시트의 일부 행만 랜덤 적용 결과를 표시합니다. 실제 다운로드는 전체 데이터로 다시 계산됩니다.
-      </div>
-
       {/* ======= 미리보기 모달 ======= */}
       {previewOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center"
-          aria-modal
-          role="dialog"
-        >
-          {/* 배경 */}
-          <div
-            className="absolute inset-0 bg-black/50"
-            onClick={() => setPreviewOpen(false)}
-          />
-          {/* 카드 */}
+        <div className="fixed inset-0 z-50 flex items-center justify-center" aria-modal role="dialog">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setPreviewOpen(false)} />
           <div className="relative max-w-[90vw] max-h-[85vh] w-[1100px] rounded-2xl border border-gray-400 dark:border-gray-600 bg-white dark:bg-gray-900 p-4 shadow-xl overflow-hidden">
-            {/* 헤더 */}
             <div className="flex items-center justify-between mb-3">
               <div className="font-semibold">
-                미리보기 · 각 시트 상위 {previewCount}행
+                미리보기 · {previewScope === "all" ? "전체 시트" : `시트: ${(previewScope as any).sheet}`} · 상위 {previewCount}행
               </div>
-              <button
-                onClick={() => setPreviewOpen(false)}
-                className="px-3 py-1 rounded border border-gray-500"
-              >
-                닫기
-              </button>
+              <button onClick={() => setPreviewOpen(false)} className="px-3 py-1 rounded border border-gray-500">닫기</button>
             </div>
 
-            {/* 탭 */}
+            {/* 탭: 전체 미리보기면 탭 표시, 시트 단독이면 탭 1개 */}
             <div className="flex flex-wrap gap-2 mb-3">
               {previewSheets.map((s, idx) => (
                 <button
                   key={s.name}
                   onClick={() => setActivePreviewTab(idx)}
                   className={`px-3 py-1 rounded border ${
-                    activePreviewTab === idx
-                      ? "border-gray-900 dark:border-gray-100"
-                      : "border-gray-400 dark:border-gray-600 opacity-80"
+                    activePreviewTab === idx ? "border-gray-900 dark:border-gray-100" : "border-gray-400 dark:border-gray-600 opacity-80"
                   }`}
                 >
                   {s.name}
@@ -679,7 +686,6 @@ export default function RandomMaskPage() {
               ))}
             </div>
 
-            {/* 테이블 */}
             <div className="overflow-auto border rounded-xl border-gray-300 dark:border-gray-700">
               {previewSheets[activePreviewTab] ? (
                 <PreviewTable sheet={previewSheets[activePreviewTab]} />
@@ -694,7 +700,7 @@ export default function RandomMaskPage() {
   );
 }
 
-/* 미리보기용 테이블 컴포넌트 */
+/* 미리보기 테이블 */
 function PreviewTable({ sheet }: { sheet: SheetData }) {
   const { fields, rows } = sheet;
   return (
@@ -702,9 +708,7 @@ function PreviewTable({ sheet }: { sheet: SheetData }) {
       <thead className="border-b border-gray-200 dark:border-gray-700">
         <tr>
           {fields.map((f) => (
-            <th key={f} className="text-left py-2 px-2 font-medium opacity-80">
-              {f}
-            </th>
+            <th key={f} className="text-left py-2 px-2 font-medium opacity-80">{f}</th>
           ))}
         </tr>
       </thead>
@@ -712,9 +716,7 @@ function PreviewTable({ sheet }: { sheet: SheetData }) {
         {rows.map((r, i) => (
           <tr key={i} className="border-b last:border-b-0 border-gray-100 dark:border-gray-800">
             {fields.map((f) => (
-              <td key={f} className="py-1.5 px-2 align-top">
-                {String(r[f] ?? "")}
-              </td>
+              <td key={f} className="py-1.5 px-2 align-top">{String(r[f] ?? "")}</td>
             ))}
           </tr>
         ))}
