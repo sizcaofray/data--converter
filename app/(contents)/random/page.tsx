@@ -1,16 +1,14 @@
 "use client";
 
 /**
- * Random 데이터 눈가림 (시트별 미리보기 + 고정문자+랜덤 채움)
+ * Random 데이터 눈가림 (customList 제거 → fixedPart + 길이 + 채움형태)
  * - 단일 파일(.xlsx/.xls/.csv/.xml) 업로드
  * - 시트별 필드 마스킹 + (옵션) 행 순서 섞기 + (옵션) 복원 키 시트
- * - 미리보기: 전체 / 시트별 버튼 제공
- * - 신규: fixedPart(고정 문자열) 지원
- *   · randomString: fixedPart + 나머지 길이만큼 랜덤문자
- *   · randomInt: fixedPart(숫자) + 남은 자리수만큼 랜덤숫자
- *   · fakeEmail: local-part 앞부분 fixedPart + 남은 길이 랜덤문자
- *   · fakePhone: '010-' 형태 유지, fixedPart가 숫자면 뒤쪽 채움
- *   · randomDate: fixedPart가 'YYYY' 또는 'YYYY-MM'이면 해당 범위로 랜덤
+ * - 미리보기: 전체 / 시트별 (상위 N행만 처리하여 모달로 표시)
+ * - 규칙 변경:
+ *    · customList(목록 랜덤 선택) 제거
+ *    · fixedPart(접두 고정) + strLen(목표 길이) + fillKind(숫자/문자/무작위)로 남은 길이 채움
+ * - 색상은 전역 테마 상속(라이트/다크 자동 적응)
  */
 
 import React, { useCallback, useMemo, useRef, useState } from "react";
@@ -32,16 +30,26 @@ type RuleKind =
   | "fakePhone"
   | "hashSHA256";
 
+type FillKind = "digits" | "letters" | "alnum"; // 숫자/문자/무작위
+
 type FieldRule = {
   field: string;
   kind: RuleKind;
-  strLen?: number;     // 문자열 목표 길이(미지정시 원본 길이 기반)
-  intMin?: number;     // randomInt 범위(고정문자 없을 때만 사용)
+
+  // 공통 옵션
+  fixedPart?: string;   // 접두 고정값(문자/숫자/연-월 등)
+
+  // 길이/범위 옵션(규칙별로 의미가 다름)
+  strLen?: number;      // 목표 길이: randomString, fakeEmail(local-part), randomInt(자리수 기반 사용)
+  fillKind?: FillKind;  // 남는 길이 채움 형태: digits | letters | alnum
+
+  // randomInt 범위(자리수 기반을 사용하지 않을 때만 의미)
+  intMin?: number;
   intMax?: number;
-  dateStart?: string;  // randomDate 범위(YYYY-MM-DD)
-  dateEnd?: string;
-  customList?: string; // 콤마 분리 목록: 있으면 우선 픽
-  fixedPart?: string;  // 신규: 접두/고정 문자열(선택)
+
+  // randomDate 범위(고정 연도/연-월이 없을 때 의미)
+  dateStart?: string;   // YYYY-MM-DD
+  dateEnd?: string;     // YYYY-MM-DD
 };
 
 /* ---------- 유틸 ---------- */
@@ -55,19 +63,27 @@ const randString = (len: number) => {
   return out;
 };
 
+const randLetters = (len: number) => {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars.charAt(randInt(0, chars.length - 1));
+  return out;
+};
+
 const randDigits = (len: number) => {
   let out = "";
-  for (let i = 0; i < len; i++) out += String(randInt(i === 0 ? 0 : 0, 9)); // 선행 0 허용
+  for (let i = 0; i < len; i++) out += String(randInt(0, 9));
   return out;
 };
 
 const onlyDigits = (s: string) => (s || "").replace(/\D+/g, "");
 
-const pickFromList = (csv?: string) => {
-  if (!csv) return undefined;
-  const list = csv.split(",").map((s) => s.trim()).filter(Boolean);
-  if (!list.length) return undefined;
-  return list[randInt(0, list.length - 1)];
+const fillByKind = (len: number, kind: FillKind, lowercase = false) => {
+  let raw =
+    kind === "digits" ? randDigits(len) :
+    kind === "letters" ? randLetters(len) :
+    randString(len);
+  return lowercase ? raw.toLowerCase() : raw;
 };
 
 const fakeName = () => {
@@ -76,20 +92,18 @@ const fakeName = () => {
   return `${first[randInt(0, first.length - 1)]} ${last[randInt(0, last.length - 1)]}`;
 };
 
-const fakeEmailWithFixed = (fixedPart?: string, targetLocalLen?: number) => {
+const fakeEmailLocal = (fixed: string, remainLen: number, fill: FillKind) =>
+  (fixed || "") + fillByKind(remainLen, fill, true /* 소문자 */);
+
+const fakeEmail = (local: string) => {
   const domains = ["example.com", "mail.com", "test.org", "anon.dev"];
   const dom = domains[randInt(0, domains.length - 1)];
-  const fixed = (fixedPart || "").replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32);
-  const tLen = Math.max(4, Math.min(32, targetLocalLen ?? 12)); // local-part 길이(4~32)
-  const remain = Math.max(0, tLen - fixed.length);
-  const local = fixed + randString(remain).toLowerCase();
   return `${local}@${dom}`;
 };
 
 const fakePhoneWithFixed = (fixedPart?: string) => {
-  // 기본: 010-XXXX-XXXX (총 11자리, 구분 포함)
+  // 기본: 010-XXXX-XXXX, 총 8자리 테일
   const fixedDigits = onlyDigits(fixedPart || "");
-  // 010 고정, 나머지 8자리 랜덤. fixedDigits가 있으면 앞에서부터 채움
   const remain = Math.max(0, 8 - fixedDigits.length);
   const tail = fixedDigits + randDigits(remain);
   return `010-${tail.slice(0, 4)}-${tail.slice(4, 8)}`;
@@ -165,34 +179,31 @@ const safeSheetName = (name: string) => {
   return n;
 };
 
-/* ---------- 규칙 적용기 (fixedPart 지원) ---------- */
-async function applyRule(
-  value: any,
-  rule: FieldRule
-): Promise<any> {
+/* ---------- 규칙 적용기 (customList 제거판) ---------- */
+async function applyRule(value: any, rule: FieldRule): Promise<any> {
   const src = String(value ?? "");
   const fixed = rule.fixedPart?.toString() ?? "";
-  const picked = pickFromList(rule.customList);
+  const fill = rule.fillKind ?? "alnum";
 
   switch (rule.kind) {
     case "blank":
       return "";
 
     case "randomString": {
-      // 우선순위: picked → fixedPart+랜덤
-      if (picked) return picked;
+      // 목표 길이: strLen > 원본 길이 > 8
       const targetLen = Math.max(1, rule.strLen ?? (src.length || 8));
       const remain = Math.max(0, targetLen - fixed.length);
-      return (fixed || "") + randString(remain);
+      return (fixed || "") + fillByKind(remain, fill);
     }
 
     case "randomInt": {
-      if (picked) return picked;
-      const digitsInSrc = onlyDigits(src).length || 4;
-      // fixedPart가 숫자면 접두로 쓰고, 나머지 자릿수 랜덤으로 채움
       const fixedDigits = onlyDigits(fixed);
-      if (fixedDigits) {
-        const targetLen = Math.max(fixedDigits.length + 1, rule.strLen ?? digitsInSrc);
+      // 자리수 기반(고정 접두 숫자 있거나 strLen 지정 시)
+      if (fixedDigits || rule.strLen) {
+        const targetLen = Math.max(
+          (fixedDigits ? fixedDigits.length + 1 : 1),
+          rule.strLen ?? (onlyDigits(src).length || 4)
+        );
         const remain = Math.max(0, targetLen - fixedDigits.length);
         return fixedDigits + randDigits(remain);
       }
@@ -203,8 +214,7 @@ async function applyRule(
     }
 
     case "randomDate": {
-      if (picked) return picked;
-      // fixedPart가 'YYYY' 또는 'YYYY-MM'이면 그 범위로 랜덤
+      // fixedPart: 'YYYY' 또는 'YYYY-MM'이면 그 구간에서 랜덤
       const yMatch = fixed.match(/^(\d{4})(?:-(\d{2}))?$/);
       if (yMatch) {
         const y = Number(yMatch[1]);
@@ -219,25 +229,27 @@ async function applyRule(
           return randDate(start, end);
         }
       }
+      // 범위 기반
       const s = rule.dateStart ? new Date(rule.dateStart) : new Date("2000-01-01");
       const e = rule.dateEnd ? new Date(rule.dateEnd) : new Date("2030-12-31");
       return randDate(s, e);
     }
 
     case "fakeName": {
-      if (picked) return picked;
-      // fixedPart가 있으면 "fixedPart + 공백 + 랜덤성" 형식
+      // fixedPart가 있으면 "fixedPart + (랜덤 성/이름 일부)" 형태로 간단 보정
       return fixed ? `${fixed} ${fakeName().split(" ").pop()}` : fakeName();
     }
 
     case "fakeEmail": {
-      if (picked) return picked;
-      const targetLocalLen = Math.max(6, rule.strLen ?? (src.split("@")[0]?.length || 10));
-      return fakeEmailWithFixed(fixed, targetLocalLen);
+      // 목표 로컬 길이: strLen > 원본 로컬 길이 > 10
+      const srcLocal = src.split("@")[0] || "";
+      const targetLocalLen = Math.max(6, rule.strLen ?? (srcLocal.length || 10));
+      const remain = Math.max(0, targetLocalLen - fixed.length);
+      const local = fakeEmailLocal(fixed, remain, fill);
+      return fakeEmail(local);
     }
 
     case "fakePhone": {
-      if (picked) return picked;
       return fakePhoneWithFixed(fixed);
     }
 
@@ -259,7 +271,7 @@ export default function RandomMaskPage() {
   const [shuffleRowsOpt, setShuffleRowsOpt] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // 미리보기 상태: 전체 / 특정 시트
+  // 미리보기 상태
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewCount, setPreviewCount] = useState<number>(30);
   const [previewSheets, setPreviewSheets] = useState<SheetData[]>([]);
@@ -287,7 +299,11 @@ export default function RandomMaskPage() {
         setSheets(newSheets);
 
         const fr: Record<string, FieldRule> = {};
-        newSheets.forEach((s) => s.fields.forEach((field) => (fr[`${s.name}::${field}`] = { field, kind: "none" })));
+        newSheets.forEach((s) =>
+          s.fields.forEach((field) => {
+            fr[`${s.name}::${field}`] = { field, kind: "none", fillKind: "alnum" };
+          })
+        );
         setFieldRules(fr);
       } else if (ext.endsWith(".xml")) {
         const text = new TextDecoder().decode(new Uint8Array(buf));
@@ -296,7 +312,7 @@ export default function RandomMaskPage() {
         setSheets(newSheets);
 
         const fr: Record<string, FieldRule> = {};
-        fields.forEach((field) => (fr[`XML::${field}`] = { field, kind: "none" }));
+        fields.forEach((field) => (fr[`XML::${field}`] = { field, kind: "none", fillKind: "alnum" }));
         setFieldRules(fr);
       } else {
         alert("지원 확장자: .xlsx, .xls, .csv, .xml");
@@ -471,10 +487,7 @@ export default function RandomMaskPage() {
               <option value={50}>50</option>
               <option value={100}>100</option>
             </select>
-            <button
-              onClick={() => runPreviewSheet(s.name)}
-              className="px-3 py-1.5 rounded border border-gray-500"
-            >
+            <button onClick={() => runPreviewSheet(s.name)} className="px-3 py-1.5 rounded border border-gray-500">
               미리보기
             </button>
           </div>
@@ -495,7 +508,7 @@ export default function RandomMaskPage() {
               <tbody>
                 {s.fields.map((field) => {
                   const key = `${s.name}::${field}`;
-                  const rule = fieldRules[key] || { field, kind: "none" };
+                  const rule = fieldRules[key] || { field, kind: "none", fillKind: "alnum" };
                   return (
                     <tr key={key} className="border-b last:border-b-0 border-gray-100 dark:border-gray-800">
                       <td className="py-2 pr-2 align-top">
@@ -520,30 +533,45 @@ export default function RandomMaskPage() {
                       </td>
                       <td className="py-2 pr-2">
                         <div className="flex flex-wrap gap-2">
-                          {/* 신규: 고정 문자열 */}
+                          {/* 고정 접두값 */}
                           <input
                             className="border rounded px-2 py-1 bg-transparent text-inherit placeholder:opacity-60 border-gray-400 dark:border-gray-600"
-                            placeholder="(선택) 고정 문자열/숫자/연도"
+                            placeholder="(선택) 고정 문자열/숫자/연도(YYYY 또는 YYYY-MM)"
                             value={rule.fixedPart || ""}
                             onChange={(e) => setRule(s.name, field, { fixedPart: e.target.value })}
                           />
-                          {/* 공통: 목록 랜덤 픽 */}
-                          <input
-                            className="border rounded px-2 py-1 bg-transparent text-inherit placeholder:opacity-60 border-gray-400 dark:border-gray-600"
-                            placeholder="(선택) 목록에서 랜덤: a,b,c"
-                            value={rule.customList || ""}
-                            onChange={(e) => setRule(s.name, field, { customList: e.target.value })}
-                          />
-                          {rule.kind === "randomString" && (
-                            <input
-                              type="number"
-                              min={1}
-                              className="border rounded px-2 py-1 w-28 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
-                              placeholder="문자 길이"
-                              value={rule.strLen ?? ""}
-                              onChange={(e) => setRule(s.name, field, { strLen: Number(e.target.value || 0) })}
-                            />
+
+                          {/* 길이 + 채움 형태: randomString / fakeEmail / (자리수 기반 randomInt)에서 사용 */}
+                          {(rule.kind === "randomString" || rule.kind === "fakeEmail" || rule.kind === "randomInt") && (
+                            <>
+                              <input
+                                type="number"
+                                min={1}
+                                className="border rounded px-2 py-1 w-28 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
+                                placeholder={rule.kind === "randomInt" ? "자리수(숫자)" : "문자 길이"}
+                                value={rule.strLen ?? ""}
+                                onChange={(e) => setRule(s.name, field, { strLen: Number(e.target.value || 0) })}
+                                title={
+                                  rule.kind === "randomInt"
+                                    ? "자리수 기반(고정 접두 숫자 또는 자리수 지정 시)으로 숫자를 채웁니다."
+                                    : "fixedPart 뒤를 채울 총 길이"
+                                }
+                              />
+                              {/* 채움 형태 셀렉트: randomInt 에서는 자리수 기반일 때만 사실상 의미가 있으나, UI는 통일 */}
+                              <select
+                                className="border rounded px-2 py-1 bg-transparent text-inherit border-gray-400 dark:border-gray-600"
+                                value={rule.fillKind ?? "alnum"}
+                                onChange={(e) => setRule(s.name, field, { fillKind: e.target.value as FillKind })}
+                                title="남은 길이를 채울 문자 종류"
+                              >
+                                <option value="digits">숫자</option>
+                                <option value="letters">문자</option>
+                                <option value="alnum">무작위(문자+숫자)</option>
+                              </select>
+                            </>
                           )}
+
+                          {/* randomInt 범위(자리수 기반을 쓰지 않을 때만 사용됨) */}
                           {rule.kind === "randomInt" && (
                             <>
                               <input
@@ -552,6 +580,7 @@ export default function RandomMaskPage() {
                                 placeholder="최소"
                                 value={rule.intMin ?? ""}
                                 onChange={(e) => setRule(s.name, field, { intMin: Number(e.target.value || 0) })}
+                                title="자리수 기반을 사용하지 않으면 범위(min~max)로 생성"
                               />
                               <input
                                 type="number"
@@ -559,9 +588,12 @@ export default function RandomMaskPage() {
                                 placeholder="최대"
                                 value={rule.intMax ?? ""}
                                 onChange={(e) => setRule(s.name, field, { intMax: Number(e.target.value || 0) })}
+                                title="자리수 기반을 사용하지 않으면 범위(min~max)로 생성"
                               />
                             </>
                           )}
+
+                          {/* randomDate 범위(고정 연/연-월 없을 때 사용) */}
                           {rule.kind === "randomDate" && (
                             <>
                               <input
@@ -581,7 +613,8 @@ export default function RandomMaskPage() {
                           )}
                         </div>
                         <p className="text-xs opacity-60 mt-1">
-                          · fixedPart 예시: 문자열 접두("AB"), 숫자 접두("82"), 연도("2024"), 연-월("2024-07")
+                          · 예시) 코드: fixedPart="AB", 길이=8, 채움=문자 → <code>AB******</code> 형식<br />
+                          · randomInt: fixedPart가 숫자이거나 자리수를 지정하면 **숫자 자리수 기반**으로 채움(범위 설정은 무시)
                         </p>
                       </td>
                     </tr>
