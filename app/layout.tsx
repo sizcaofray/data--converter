@@ -4,11 +4,10 @@ import UserProvider from '@/contexts/UserContext'
 import { SubscribePopupProvider } from '@/contexts/SubscribePopupContext'
 import SubscribePopup from '@/components/SubscribePopup'
 import BootpayScript from '@/components/BootpayScript'
-import ShowWhenContentsRoute from '@/components/ShowWhenContentsRoute' // ✅ 추가
 
 export const metadata = {
-  title: '로그인 페이지',
-  description: '구글 계정 로그인 예제',
+  title: 'Data Converter',
+  description: '다양한 파일 변환 서비스',
 }
 
 const NOTICE_ENABLED = process.env.NEXT_PUBLIC_NOTICE_ENABLED === 'true'
@@ -47,19 +46,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               </div>
             )}
 
-            {/* 메인 + 푸터 컨테이너 */}
-            <div className="relative flex-1 flex flex-col">
-              {/* ✅ 사이드바가 있는 내부 경로에서만 세로 구분선 표시 */}
-              <ShowWhenContentsRoute>
-                <div
-                  aria-hidden
-                  className="pointer-events-none absolute left-64 top-0 bottom-[3rem] w-px bg-gray-700/50 hidden sm:block"
-                />
-              </ShowWhenContentsRoute>
-
+            {/* 전역에서는 세로 구분선(absolute) 없음 */}
+            <div className="flex-1 flex flex-col">
               <Suspense fallback={null}>{children}</Suspense>
 
-              {/* 푸터 */}
               <footer className="mt-auto border-t border-gray-200 dark:border-gray-800 text-xs">
                 <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-center gap-3">
                   <a href="/legal/terms" className="underline underline-offset-2 hover:opacity-80">
