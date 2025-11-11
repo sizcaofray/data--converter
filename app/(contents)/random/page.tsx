@@ -1,23 +1,15 @@
 "use client";
 
 /**
- * Random 데이터 눈가림 페이지
- * - 단일 파일 업로드(Excel, CSV, XML)
- * - 모든 시트/테이블 로드(CSV는 단일 시트 가정, XML은 최상위 반복 노드 추정)
- * - 필드별 눈가림 규칙 적용(여러 필드 가능)
- * - 복원 옵션: 시트에 ANON_ROW_ID 추가 + 키 시트(ANON__KEY_<시트명>) 생성
- * - 결과는 단일 XLSX로 다운로드
- *
- * 주의:
- * - 디자인/마크업은 단순 유지 (Tailwind 사용)
- * - 클라이언트 전용 컴포넌트
+ * Random 데이터 눈가림 페이지 (다크/라이트 자동 적응 버전)
+ * - 디자인/레이아웃 그대로, 색상 지정만 '상속·투명' 중심으로 정리
+ * - 배경 강제 지정 제거(bg-white, bg-gray-100 등) → 전역 테마와 자연스럽게 동작
  */
 
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx"; // SheetJS - 브라우저 사용 가능
-import { XMLParser } from "fast-xml-parser"; // 경량 XML 파서
+import * as XLSX from "xlsx";
+import { XMLParser } from "fast-xml-parser";
 
-// --------- 타입 정의 ---------
 type Row = Record<string, any>;
 type SheetData = { name: string; rows: Row[]; fields: string[] };
 
@@ -35,16 +27,14 @@ type RuleKind =
 type FieldRule = {
   field: string;
   kind: RuleKind;
-  // 규칙별 매개변수
-  strLen?: number; // randomString
-  intMin?: number; // randomInt
-  intMax?: number; // randomInt
-  dateStart?: string; // randomDate (YYYY-MM-DD)
-  dateEnd?: string; // randomDate (YYYY-MM-DD)
-  customList?: string; // (선택) 콤마구분 목록에서 랜덤 픽
+  strLen?: number;
+  intMin?: number;
+  intMax?: number;
+  dateStart?: string;
+  dateEnd?: string;
+  customList?: string;
 };
 
-// --------- 유틸: 난수/난문자/가짜데이터/날짜/해시 ---------
 const randInt = (min: number, max: number) =>
   Math.floor(Math.random() * (max - min + 1)) + min;
 
@@ -87,24 +77,17 @@ const fakeEmail = () => {
   return `${user}@${domains[randInt(0, domains.length - 1)]}`;
 };
 
-const fakePhone = () => {
-  // 한국형 형식 대략: 010-XXXX-XXXX
-  return `010-${randInt(1000, 9999)}-${randInt(1000, 9999)}`;
-};
+const fakePhone = () => `010-${randInt(1000, 9999)}-${randInt(1000, 9999)}`;
 
 const randDate = (start: Date, end: Date) => {
-  const s = start.getTime();
-  const e = end.getTime();
-  const t = randInt(s, e);
+  const t = randInt(start.getTime(), end.getTime());
   const d = new Date(t);
-  // YYYY-MM-DD로 출력(시간 불필요)
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 };
 
-// Web Crypto API로 SHA-256 해시(hex)
 const sha256Hex = async (input: string) => {
   const enc = new TextEncoder().encode(input ?? "");
   const buf = await crypto.subtle.digest("SHA-256", enc);
@@ -112,7 +95,6 @@ const sha256Hex = async (input: string) => {
   return arr.map((b) => b.toString(16).padStart(2, "0")).join("");
 };
 
-// 간단 UUIDv4
 const uuidv4 = () =>
   "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (crypto.getRandomValues(new Uint8Array(1))[0] & 0xf) >> 0;
@@ -120,13 +102,6 @@ const uuidv4 = () =>
     return v.toString(16);
   });
 
-// --------- XML → 표 구조 추정(flat) ---------
-/**
- * 매우 일반적인 형태의 XML을 표로 변환:
- * - 최상위에서 "배열로 반복되는 첫 번째 노드"를 레코드로 간주
- * - 각 레코드는 객체. 중첩 객체는 'a.b.c'로 평탄화
- * - 복잡 XML의 경우 사용자가 변환 후 필드명만 골라서 규칙 적용 가능
- */
 const xmlToRows = (xmlText: string): { rows: Row[]; fields: string[] } => {
   const parser = new XMLParser({
     ignoreAttributes: false,
@@ -135,7 +110,6 @@ const xmlToRows = (xmlText: string): { rows: Row[]; fields: string[] } => {
   });
   const json = parser.parse(xmlText);
 
-  // 첫 번째 "배열" 노드 찾아서 사용
   const findArrayNode = (obj: any): any[] | null => {
     if (Array.isArray(obj)) return obj;
     if (obj && typeof obj === "object") {
@@ -150,9 +124,7 @@ const xmlToRows = (xmlText: string): { rows: Row[]; fields: string[] } => {
   const arr = findArrayNode(json) || [];
   const flat = (obj: any, prefix = "", out: Row = {}): Row => {
     if (obj && typeof obj === "object" && !Array.isArray(obj)) {
-      for (const [k, v] of Object.entries(obj)) {
-        flat(v, prefix ? `${prefix}.${k}` : k, out);
-      }
+      for (const [k, v] of Object.entries(obj)) flat(v, prefix ? `${prefix}.${k}` : k, out);
     } else {
       out[prefix] = obj;
     }
@@ -162,31 +134,26 @@ const xmlToRows = (xmlText: string): { rows: Row[]; fields: string[] } => {
   const rows = arr.map((it) => flat(it));
   const fieldSet = new Set<string>();
   rows.forEach((r) => Object.keys(r).forEach((k) => fieldSet.add(k)));
-
   return { rows, fields: Array.from(fieldSet) };
 };
 
-// --------- 메인 컴포넌트 ---------
 export default function RandomMaskPage() {
-  const [fileName, setFileName] = useState<string>("");
+  const [fileName, setFileName] = useState("");
   const [sheets, setSheets] = useState<SheetData[]>([]);
   const [fieldRules, setFieldRules] = useState<Record<string, FieldRule>>({});
-  const [recovery, setRecovery] = useState<boolean>(true); // 기본 ON
-  const [busy, setBusy] = useState<boolean>(false);
+  const [recovery, setRecovery] = useState(true);
+  const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // 파일 드롭/선택 처리
   const onFile = useCallback(async (f: File) => {
     setBusy(true);
     try {
       setFileName(f.name);
-
       const ext = f.name.toLowerCase();
-      const arrayBuffer = await f.arrayBuffer();
+      const buf = await f.arrayBuffer();
 
       if (ext.endsWith(".xlsx") || ext.endsWith(".xls") || ext.endsWith(".csv")) {
-        // Excel/CSV: SheetJS로 통합 처리 (CSV도 read 가능)
-        const wb = XLSX.read(arrayBuffer, { type: "array" });
+        const wb = XLSX.read(buf, { type: "array" });
         const newSheets: SheetData[] = wb.SheetNames.map((name) => {
           const ws = wb.Sheets[name];
           const rows: Row[] = XLSX.utils.sheet_to_json(ws, { defval: "" }) as Row[];
@@ -195,36 +162,30 @@ export default function RandomMaskPage() {
         });
         setSheets(newSheets);
 
-        // 규칙 초기화(모든 시트의 모든 필드 none)
         const fr: Record<string, FieldRule> = {};
         newSheets.forEach((s) =>
-          s.fields.forEach((field) => {
-            const key = `${s.name}::${field}`;
-            fr[key] = { field, kind: "none" };
-          })
+          s.fields.forEach((field) => (fr[`${s.name}::${field}`] = { field, kind: "none" }))
         );
         setFieldRules(fr);
       } else if (ext.endsWith(".xml")) {
-        // XML: 한 개 시트로 구성
-        const text = new TextDecoder().decode(new Uint8Array(arrayBuffer));
+        const text = new TextDecoder().decode(new Uint8Array(buf));
         const { rows, fields } = xmlToRows(text);
         const newSheets: SheetData[] = [{ name: "XML", rows, fields }];
         setSheets(newSheets);
+
         const fr: Record<string, FieldRule> = {};
-        fields.forEach((field) => {
-          fr[`XML::${field}`] = { field, kind: "none" };
-        });
+        fields.forEach((field) => (fr[`XML::${field}`] = { field, kind: "none" }));
         setFieldRules(fr);
       } else {
         alert("지원 확장자: .xlsx, .xls, .csv, .xml");
         setSheets([]);
         setFieldRules({});
       }
-    } catch (e: any) {
+    } catch (e) {
       console.error(e);
-      alert("파일을 읽는 중 오류가 발생했습니다. 콘솔을 확인하세요.");
       setSheets([]);
       setFieldRules({});
+      alert("파일 읽기 중 오류가 발생했습니다.");
     } finally {
       setBusy(false);
     }
@@ -240,12 +201,14 @@ export default function RandomMaskPage() {
     [onFile]
   );
 
-  const onBrowse = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) onFile(f);
-  }, [onFile]);
+  const onBrowse = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const f = e.target.files?.[0];
+      if (f) onFile(f);
+    },
+    [onFile]
+  );
 
-  // 규칙 변경 핸들러
   const setRule = (sheet: string, field: string, patch: Partial<FieldRule>) => {
     const key = `${sheet}::${field}`;
     setFieldRules((prev) => ({
@@ -254,29 +217,16 @@ export default function RandomMaskPage() {
     }));
   };
 
-  // 눈가림 실행
   const runMasking = useCallback(async () => {
-    if (!sheets.length) {
-      alert("먼저 파일을 업로드하세요.");
-      return;
-    }
+    if (!sheets.length) return alert("먼저 파일을 업로드하세요.");
     setBusy(true);
     try {
-      // 원본 보관(복원용 시트 생성 시 필요)
-      const originalSheets = sheets.map((s) => ({
-        name: s.name,
-        rows: s.rows.map((r) => ({ ...r })),
-        fields: [...s.fields],
-      }));
-
-      // 마스킹 처리
       const maskedSheets: SheetData[] = [];
-      const keySheets: SheetData[] = []; // 복원 키(선택)
-      for (const sheet of sheets) {
-        const rows = sheet.rows.map((row) => ({ ...row }));
-        const fields = [...sheet.fields];
+      const keySheets: SheetData[] = [];
 
-        // 복원용 키시트 구성 데이터(선택)
+      for (const sheet of sheets) {
+        const rows = sheet.rows.map((r) => ({ ...r }));
+        const fields = [...sheet.fields];
         const keyRows: Row[] = [];
 
         for (let i = 0; i < rows.length; i++) {
@@ -284,12 +234,10 @@ export default function RandomMaskPage() {
           const rowKey: Row = {};
           let anonId = "";
 
-          // 각 필드에 대해 규칙 적용
           for (const field of fields) {
             const rule = fieldRules[`${sheet.name}::${field}`];
             if (!rule || rule.kind === "none") continue;
 
-            // 복원용이면 첫 적용 시 ID 생성
             if (recovery && !anonId) {
               anonId = uuidv4();
               row["ANON_ROW_ID"] = anonId;
@@ -297,8 +245,6 @@ export default function RandomMaskPage() {
             }
 
             const sourceVal = String(row[field] ?? "");
-
-            // (선택) 커스텀 목록에서 먼저 랜덤 픽
             const picked = pickFromList(rule.customList);
 
             switch (rule.kind) {
@@ -338,39 +284,24 @@ export default function RandomMaskPage() {
                 break;
               case "hashSHA256":
                 row[field] = await sha256Hex(sourceVal);
-                // 해시는 원복 불가하므로 복원 키에 원본값 보관(선택)
                 if (recovery) rowKey[field] = sourceVal;
                 break;
             }
           }
 
-          if (recovery && Object.keys(rowKey).length) {
-            keyRows.push(rowKey);
-          }
+          if (recovery && Object.keys(rowKey).length) keyRows.push(rowKey);
         }
 
-        // 결과 시트 구성
         const maskedFields = [...fields];
-        if (recovery && !maskedFields.includes("ANON_ROW_ID")) {
-          maskedFields.push("ANON_ROW_ID");
-        }
-
+        if (recovery && !maskedFields.includes("ANON_ROW_ID")) maskedFields.push("ANON_ROW_ID");
         maskedSheets.push({ name: sheet.name, rows, fields: maskedFields });
 
-        // 복원용 키 시트(선택)
         if (recovery && keyRows.length) {
-          const keyFields = Array.from(
-            new Set(keyRows.flatMap((r) => Object.keys(r)))
-          );
-          keySheets.push({
-            name: `ANON__KEY_${sheet.name}`,
-            rows: keyRows,
-            fields: keyFields,
-          });
+          const keyFields = Array.from(new Set(keyRows.flatMap((r) => Object.keys(r))));
+          keySheets.push({ name: `ANON__KEY_${sheet.name}`, rows: keyRows, fields: keyFields });
         }
       }
 
-      // 워크북 생성(마스킹 시트 + (선택) 키 시트)
       const wb = XLSX.utils.book_new();
       for (const s of maskedSheets) {
         const ws = XLSX.utils.json_to_sheet(s.rows, { header: s.fields });
@@ -385,32 +316,35 @@ export default function RandomMaskPage() {
 
       const outName = fileName ? fileName.replace(/\.[^.]+$/, "") : "masked";
       XLSX.writeFile(wb, `${outName}__masked.xlsx`);
-    } catch (e: any) {
+    } catch (e) {
       console.error(e);
-      alert("눈가림 중 오류가 발생했습니다. 콘솔을 확인하세요.");
+      alert("눈가림 중 오류가 발생했습니다.");
     } finally {
       setBusy(false);
     }
   }, [sheets, fieldRules, recovery, fileName]);
 
-  // 필드 목록(시트별)를 화면에 출력
   const ui = useMemo(() => {
     if (!sheets.length)
-      return <p className="text-sm text-gray-500">파일을 업로드하면 필드 구성이 표시됩니다.</p>;
+      return <p className="text-sm opacity-80">파일을 업로드하면 필드 구성이 표시됩니다.</p>;
 
     return sheets.map((s) => (
-      <div key={s.name} className="border rounded-2xl p-4 mb-6 shadow-sm">
+      <div
+        key={s.name}
+        className="border rounded-2xl p-4 mb-6 shadow-sm border-gray-300 dark:border-gray-700"
+      >
         <h3 className="font-semibold text-lg mb-2">{s.name}</h3>
+
         {s.fields.length === 0 ? (
-          <p className="text-sm text-gray-500">데이터가 없습니다.</p>
+          <p className="text-sm opacity-80">데이터가 없습니다.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="border-b">
+              <thead className="border-b border-gray-200 dark:border-gray-700">
                 <tr>
-                  <th className="text-left py-2 pr-2">필드명</th>
-                  <th className="text-left py-2 pr-2">규칙</th>
-                  <th className="text-left py-2 pr-2">매개변수</th>
+                  <th className="text-left py-2 pr-2 font-medium opacity-80">필드명</th>
+                  <th className="text-left py-2 pr-2 font-medium opacity-80">규칙</th>
+                  <th className="text-left py-2 pr-2 font-medium opacity-80">매개변수</th>
                 </tr>
               </thead>
               <tbody>
@@ -418,13 +352,17 @@ export default function RandomMaskPage() {
                   const key = `${s.name}::${field}`;
                   const rule = fieldRules[key] || { field, kind: "none" };
                   return (
-                    <tr key={key} className="border-b last:border-b-0">
+                    <tr key={key} className="border-b last:border-b-0 border-gray-100 dark:border-gray-800">
                       <td className="py-2 pr-2 align-top">
-                        <code className="px-2 py-1 bg-gray-100 rounded">{field}</code>
+                        {/* 배경색 제거, 현재 텍스트 색을 그대로 사용 + 옅은 테두리만 */}
+                        <span className="px-2 py-0.5 rounded text-xs border border-current/30">
+                          {field}
+                        </span>
                       </td>
                       <td className="py-2 pr-2 align-top">
                         <select
-                          className="border rounded px-2 py-1"
+                          className="border rounded px-2 py-1 bg-transparent text-inherit
+                                     border-gray-400 dark:border-gray-600"
                           value={rule.kind}
                           onChange={(e) =>
                             setRule(s.name, field, { kind: e.target.value as RuleKind })
@@ -442,11 +380,11 @@ export default function RandomMaskPage() {
                         </select>
                       </td>
                       <td className="py-2 pr-2">
-                        {/* 규칙별 매개변수 UI */}
                         <div className="flex flex-wrap gap-2">
-                          {/* 공통: 커스텀 랜덤 목록 */}
                           <input
-                            className="border rounded px-2 py-1"
+                            className="border rounded px-2 py-1 bg-transparent text-inherit
+                                       placeholder:opacity-60
+                                       border-gray-400 dark:border-gray-600"
                             placeholder="(선택) 목록에서 랜덤: a,b,c"
                             value={rule.customList || ""}
                             onChange={(e) =>
@@ -457,7 +395,8 @@ export default function RandomMaskPage() {
                             <input
                               type="number"
                               min={1}
-                              className="border rounded px-2 py-1 w-28"
+                              className="border rounded px-2 py-1 w-28 bg-transparent text-inherit
+                                         border-gray-400 dark:border-gray-600"
                               placeholder="길이"
                               value={rule.strLen ?? 8}
                               onChange={(e) =>
@@ -471,7 +410,8 @@ export default function RandomMaskPage() {
                             <>
                               <input
                                 type="number"
-                                className="border rounded px-2 py-1 w-28"
+                                className="border rounded px-2 py-1 w-28 bg-transparent text-inherit
+                                           border-gray-400 dark:border-gray-600"
                                 placeholder="최소"
                                 value={rule.intMin ?? 0}
                                 onChange={(e) =>
@@ -480,7 +420,8 @@ export default function RandomMaskPage() {
                               />
                               <input
                                 type="number"
-                                className="border rounded px-2 py-1 w-28"
+                                className="border rounded px-2 py-1 w-28 bg-transparent text-inherit
+                                           border-gray-400 dark:border-gray-600"
                                 placeholder="최대"
                                 value={rule.intMax ?? 9999}
                                 onChange={(e) =>
@@ -493,16 +434,18 @@ export default function RandomMaskPage() {
                             <>
                               <input
                                 type="date"
-                                className="border rounded px-2 py-1"
+                                className="border rounded px-2 py-1 bg-transparent text-inherit
+                                           border-gray-400 dark:border-gray-600"
                                 value={rule.dateStart || ""}
                                 onChange={(e) =>
                                   setRule(s.name, field, { dateStart: e.target.value })
                                 }
                               />
-                              <span className="self-center">~</span>
+                              <span className="self-center opacity-70">~</span>
                               <input
                                 type="date"
-                                className="border rounded px-2 py-1"
+                                className="border rounded px-2 py-1 bg-transparent text-inherit
+                                           border-gray-400 dark:border-gray-600"
                                 value={rule.dateEnd || ""}
                                 onChange={(e) =>
                                   setRule(s.name, field, { dateEnd: e.target.value })
@@ -517,7 +460,7 @@ export default function RandomMaskPage() {
                 })}
               </tbody>
             </table>
-            <p className="text-xs text-gray-500 mt-2">
+            <p className="text-xs opacity-70 mt-2">
               * 규칙은 **시트 내부 범위**에서만 적용되며, 다른 시트 데이터와 교차하지 않습니다.
             </p>
           </div>
@@ -529,18 +472,18 @@ export default function RandomMaskPage() {
   return (
     <div className="p-6 space-y-6">
       <h1 className="text-2xl font-bold">Random 데이터 눈가림</h1>
-      <p className="text-sm text-gray-600">
+      <p className="text-sm opacity-80">
         엑셀/CSV/XML 파일 1개를 업로드하여 필드별 무작위 눈가림을 수행합니다. 결과는 한 개의 XLSX로 내려받습니다.
       </p>
 
-      {/* 업로드 박스 */}
+      {/* 업로드 박스: 배경 투명 + 테두리만 */}
       <div
         onDragOver={(e) => {
           e.preventDefault();
           e.stopPropagation();
         }}
         onDrop={onDrop}
-        className="border-2 border-dashed rounded-2xl p-8 text-center hover:bg-gray-50"
+        className="border-2 border-dashed rounded-2xl p-8 text-center border-gray-400 dark:border-gray-600"
       >
         <p className="mb-2">
           <span className="font-medium">여기에 파일을 드래그</span>하거나 아래 버튼으로 선택하세요.
@@ -554,11 +497,12 @@ export default function RandomMaskPage() {
         />
         <button
           onClick={() => inputRef.current?.click()}
-          className="px-4 py-2 rounded-xl border shadow-sm hover:shadow transition"
+          className="px-4 py-2 rounded-xl border shadow-sm transition
+                     border-gray-500 dark:border-gray-500"
         >
           파일 선택
         </button>
-        {fileName && <p className="text-sm text-gray-500 mt-2">선택됨: {fileName}</p>}
+        {fileName && <p className="text-sm opacity-70 mt-2">선택됨: {fileName}</p>}
       </div>
 
       {/* 복원 옵션 */}
@@ -575,24 +519,21 @@ export default function RandomMaskPage() {
         </label>
       </div>
 
-      {/* 필드 규칙 UI */}
       {ui}
 
-      {/* 실행/상태 */}
       <div className="flex items-center gap-3">
         <button
           disabled={!sheets.length || busy}
           onClick={runMasking}
-          className="px-4 py-2 rounded-xl bg-black text-white disabled:opacity-50"
+          className="px-4 py-2 rounded-xl disabled:opacity-50
+                     bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
         >
           {busy ? "처리 중..." : "눈가림 실행 & 다운로드"}
         </button>
-        {!sheets.length && (
-          <span className="text-sm text-gray-500">먼저 파일을 업로드하세요.</span>
-        )}
+        {!sheets.length && <span className="text-sm opacity-70">먼저 파일을 업로드하세요.</span>}
       </div>
 
-      <div className="text-xs text-gray-400">
+      <div className="text-xs opacity-70">
         - 해시(SHA-256)는 원복이 불가합니다. 복원이 필요하면 해시 대신 무작위/가짜 데이터를 사용하고
         복원 옵션을 켜서 키 시트를 보관하세요.
       </div>
@@ -600,7 +541,6 @@ export default function RandomMaskPage() {
   );
 }
 
-// 시트명 유효화(엑셀 제약)
 function safeSheetName(name: string) {
   const invalid = /[\\/?*\[\]:]/g;
   let n = name.replace(invalid, "_");
