@@ -3,19 +3,15 @@
 /**
  * 관리자 페이지
  * -----------------------------------------------------------------------------
- * 추가: [공지사항 관리] 섹션
- *  - 컬렉션: notice
- *  - 필드: title(string), content_md(string), pinned(boolean), published(boolean),
- *          createdAt(timestamp), updatedAt(timestamp)
- *  - 기능: 새 글 작성, 목록(최신 50개), 클릭 로드/수정, 삭제
+ * 변경 요약:
+ *  - [섹션 2] "유료화(구독 필요)" 체크박스를
+ *    ▶ 무료/Basic/Premium '라디오 단일선택' UI로 변경 (메뉴별 1개만 선택)
+ *  - Firestore uploadPolicy에 navigation.tiers 맵을 우선 사용
+ *    ▶ tiers가 없으면 기존 navigation.paid 배열을 basic으로 간주(하위 호환)
+ *  - 저장 시 navigation.tiers를 저장하고, paid 배열은 tiers에서 자동 생성해 함께 저장
  *
  * 기존 섹션:
- *  - 메뉴 비활성화/유료화 + 구독 버튼 전역토글
- *  - 사용자 관리(역할/구독)
- *
- * 주의:
- *  - Firestore Rules에 notice 컬렉션 관리자 쓰기 권한이 있어야 함.
- *  - createdAt은 생성 시 1회만 설정, 업데이트 시 변경 금지.
+ *  - 공지 관리 / 사용자 관리 / 비활성화 / 구독버튼 토글 등은 그대로 유지
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -158,6 +154,7 @@ function safeStringify(o: any) {
     return String(o);
   }
 }
+const norm = (v: string) => String(v || '').trim().toLowerCase();
 
 /* ========================= 컴포넌트 ========================= */
 
@@ -252,7 +249,6 @@ export default function AdminPage() {
     setNContent(row.content_md || '');
     setNPinned(!!row.pinned);
     setNPublished(row.published !== false);
-    // createdAt은 표시만 필요하면 여기서 별도 상태로 뽑아 표시 가능(지금은 생략)
   };
 
   /** 저장(새 글: addDoc / 수정: updateDoc) */
@@ -269,7 +265,6 @@ export default function AdminPage() {
     setNSaving(true);
     try {
       if (!noticeId) {
-        // 생성
         await addDoc(collection(db, 'notice'), {
           title: nTitle.trim(),
           content_md: nContent,
@@ -281,7 +276,6 @@ export default function AdminPage() {
         resetNoticeForm();
         alert('공지사항이 등록되었습니다.');
       } else {
-        // 업데이트(createdAt은 변경 금지)
         const ref = doc(db, 'notice', noticeId);
         await updateDoc(ref, {
           title: nTitle.trim(),
@@ -324,12 +318,16 @@ export default function AdminPage() {
     return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
   };
 
-  /* ========== [섹션 2] 메뉴 관리 + 전역 구독 버튼 + 유료화 ========== */
+  /* ========== [섹션 2] 메뉴 관리 + 전역 구독 버튼 + 유료화(라디오로 변경) ========== */
 
-  const [navDisabled, setNavDisabled] = useState<string[]>([]);  // 비활성 목록
-  const [navPaid, setNavPaid] = useState<string[]>([]);          // 유료화 목록
-  const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true); // 구독버튼 전역 토글
+  const [navDisabled, setNavDisabled] = useState<string[]>([]);          // 비활성 목록(기존)
+  const [navPaid, setNavPaid] = useState<string[]>([]);                  // 하위 호환(표시/디버그용)
+  const [subscribeEnabled, setSubscribeEnabled] = useState<boolean>(true); // 구독버튼 전역 토글(기존)
   const [savingNav, setSavingNav] = useState(false);
+
+  // ✅ 신규: 메뉴별 티어 맵 (free/basic/premium)
+  type Tier = 'free' | 'basic' | 'premium';
+  const [navTiers, setNavTiers] = useState<Record<string, Tier>>({});
 
   const [showDebug, setShowDebug] = useState(true);
   const [dbg, setDbg] = useState<{
@@ -347,8 +345,28 @@ export default function AdminPage() {
         const data = (snap.data() as any) || {};
         const arrDisabled = Array.isArray(data?.navigation?.disabled) ? data.navigation.disabled : [];
         const arrPaid = Array.isArray(data?.navigation?.paid) ? data.navigation.paid : [];
+        const tiersMap = (data?.navigation?.tiers ?? {}) as Record<string, Tier>;
+
+        // 기존 필드 반영
         setNavDisabled(sanitizeSlugArray(arrDisabled));
         setNavPaid(sanitizeSlugArray(arrPaid));
+
+        // ✅ tiers 우선 사용, 없으면 paid를 basic으로 간주하여 초기화
+        const next: Record<string, Tier> = {};
+        // 1) 모든 메뉴에 대해 기본값 free
+        ALL_MENUS.forEach(m => { next[m.slug] = 'free'; });
+        // 2) tiers 맵 반영
+        Object.keys(tiersMap).forEach((k) => {
+          const key = String(k).trim();
+          const v = String(tiersMap[k]).toLowerCase();
+          next[key] = (v === 'basic' || v === 'premium') ? (v as Tier) : 'free';
+        });
+        // 3) tiers 정보가 전혀 없을 때 paid 배열을 basic으로 간주(하위 호환)
+        if (!data?.navigation?.tiers) {
+          sanitizeSlugArray(arrPaid).forEach(slug => { next[slug] = 'basic'; });
+        }
+        setNavTiers(next);
+
         setSubscribeEnabled(
           data?.subscribeButtonEnabled === undefined
             ? true
@@ -363,12 +381,20 @@ export default function AdminPage() {
   }, [roleLoading, isAdminRole]);
 
   const disabledSet = useMemo(() => new Set(navDisabled), [navDisabled]);
-  const paidSet = useMemo(() => new Set(navPaid), [navPaid]);
 
-  /** 디버그 페이로드 */
+  /** 디버그 페이로드 (저장 직전 확인용) */
   const dumpPolicyPayload = () => {
+    // paid 배열은 tiers에서 재생성: free 제외
+    const paidFromTiers = Object.entries(navTiers)
+      .filter(([, t]) => t !== 'free')
+      .map(([slug]) => slug);
+
     const payload = pruneUndefined({
-      navigation: { disabled: sanitizeSlugArray(navDisabled), paid: sanitizeSlugArray(navPaid) },
+      navigation: {
+        disabled: sanitizeSlugArray(navDisabled),
+        paid: paidFromTiers,                 // ✅ 하위 호환용으로 함께 저장
+        tiers: navTiers,                     // ✅ 신규 저장 포맷
+      },
       subscribeButtonEnabled: subscribeEnabled,
       updatedAt: serverTimestamp(),
     });
@@ -385,12 +411,19 @@ export default function AdminPage() {
     dumpPolicyPayload();
     try {
       const ref = doc(db, 'settings', 'uploadPolicy');
+
+      // 저장용 paid 배열은 tiers에서 파생
+      const paidFromTiers = Object.entries(navTiers)
+        .filter(([, t]) => t !== 'free')
+        .map(([slug]) => slug);
+
       await setDoc(
         ref,
         {
           navigation: {
             disabled: sanitizeSlugArray(navDisabled),
-            paid: sanitizeSlugArray(navPaid),
+            paid: paidFromTiers,     // ✅ 하위 호환 유지
+            tiers: navTiers,         // ✅ 신규 포맷
           },
           subscribeButtonEnabled: subscribeEnabled,
           updatedAt: serverTimestamp(),
@@ -676,7 +709,7 @@ export default function AdminPage() {
         </div>
       </section>
 
-      {/* ───────────── [섹션 2] 메뉴 관리: 비활성 + 유료화 + 구독버튼 ───────────── */}
+      {/* ───────────── [섹션 2] 메뉴 관리: 비활성 + 유료화(라디오) + 구독버튼 ───────────── */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
         <h2 className="text-lg font-bold mb-2">메뉴 관리</h2>
 
@@ -694,14 +727,14 @@ export default function AdminPage() {
           </button>
         </div>
 
-        {/* A. 비활성화(OFF) */}
+        {/* A. 비활성화(OFF) — 기존 그대로 */}
         <h3 className="text-sm font-semibold mt-2 mb-2">비활성화(OFF)</h3>
         <p className="text-xs text-slate-600 mb-3">
           체크된 메뉴는 사이드바에서 <b>보여지되 클릭이 차단</b>됩니다. (<code>settings/uploadPolicy.navigation.disabled</code>)
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-6">
           {ALL_MENUS.map((m) => {
-            const checked = disabledSet.has(m.slug);
+            const checked = new Set(navDisabled).has(m.slug);
             return (
               <label
                 key={m.slug}
@@ -727,36 +760,62 @@ export default function AdminPage() {
           })}
         </div>
 
-        {/* B. 유료화(구독 필요) */}
+        {/* B. 유료화(단일 선택: 무료/Basic/Premium) — ✅ 변경된 부분 */}
         <h3 className="text-sm font-semibold mt-2 mb-2">유료화(구독 필요)</h3>
         <p className="text-xs text-slate-600 mb-3">
-          체크된 메뉴는 <b>유료화가 적용</b>되며, <b>구독자/관리자만 활성</b>됩니다. 비구독자는 <b>보이되 비활성</b> 처리됩니다.
-          (<code>settings/uploadPolicy.navigation.paid</code>)
+          메뉴별로 <b>무료/Basic/Premium</b> 중 하나를 선택합니다.
+          저장 시 <code>navigation.tiers</code>로 기록되며, 하위 호환을 위해 <code>navigation.paid</code>도 자동 생성됩니다.
         </p>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
           {ALL_MENUS.map((m) => {
-            const checked = paidSet.has(m.slug);
+            const curr = navTiers[m.slug] ?? 'free';
+            const set = (tier: Tier) => setNavTiers(prev => ({ ...prev, [m.slug]: tier }));
+
             return (
-              <label
+              <div
                 key={m.slug}
-                className="flex items-center gap-2 rounded-lg border border-amber-200 dark:border-amber-800 p-3 cursor-pointer"
-                title={checked ? '유료화 적용됨' : '무료'}
+                className="rounded-lg border border-amber-200 dark:border-amber-800 p-3"
               >
-                <input
-                  type="checkbox"
-                  className="h-4 w-4"
-                  checked={checked}
-                  onChange={() => setNavPaid((prev) => {
-                    const s = new Set(prev);
-                    s.has(m.slug) ? s.delete(m.slug) : s.add(m.slug);
-                    return Array.from(s);
-                  })}
-                />
-                <span className="text-sm">{m.label}</span>
-                <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30">
-                  {checked ? 'PAID' : 'FREE'}
-                </span>
-              </label>
+                <div className="text-sm font-medium mb-2 flex items-center gap-2">
+                  <span>{m.label}</span>
+                  {(curr !== 'free') && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30">
+                      {curr === 'premium' ? 'Premium' : 'Basic'}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <label className="inline-flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name={`tier-${m.slug}`}
+                      checked={curr === 'free'}
+                      onChange={() => set('free')}
+                    />
+                    무료
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name={`tier-${m.slug}`}
+                      checked={curr === 'basic'}
+                      onChange={() => set('basic')}
+                    />
+                    Basic
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name={`tier-${m.slug}`}
+                      checked={curr === 'premium'}
+                      onChange={() => set('premium')}
+                    />
+                    Premium
+                  </label>
+                </div>
+              </div>
             );
           })}
         </div>
@@ -877,7 +936,12 @@ export default function AdminPage() {
           <div className="mb-2 font-semibold">디버그 패널</div>
           <div className="overflow-auto max-h-56 whitespace-pre-wrap">
             <pre>{safeStringify(dbg.uploadPolicyPayload ?? {
-              navigation: { disabled: navDisabled, paid: navPaid },
+              navigation: {
+                disabled: navDisabled,
+                // paid는 tiers에서 파생되므로 여기선 표시만 유지
+                paid: Object.entries(navTiers).filter(([,t]) => t !== 'free').map(([slug]) => slug),
+                tiers: navTiers,
+              },
               subscribeButtonEnabled: subscribeEnabled,
               updatedAt: '(serverTimestamp)',
             })}</pre>
