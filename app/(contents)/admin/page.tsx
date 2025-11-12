@@ -1,14 +1,13 @@
 'use client';
 
 /**
- * Admin Page — role 저장 시 isSubscribed 자동 동기화 (Firestore 규칙 준수)
- * ------------------------------------------------------------------
- * • Firestore rules가 허용하는 4개 필드만 업데이트:
- *   ['role', 'isSubscribed', 'subscriptionStartAt', 'subscriptionEndAt']
- * • role = free → isSubscribed=false, 날짜 null
- *   role = basic|premium|admin → isSubscribed=true, 날짜 기본값(없을 때) 채움
- * • 날짜 보정: start>end면 end=start로 보정. 과거 종료일이면 free 취급
- * • 기존(공지/메뉴관리/테이블) UI/디자인/기능은 그대로 유지
+ * Admin Page — 전체 복구 + 확장
+ * 1) 공지 관리: 기존 기능 유지 (작성/수정/삭제/목록)
+ * 2) 메뉴 관리: OFF/유료화(단일 선택) + 'Admin' 티어 추가
+ * 3) 사용자 관리: 기존 표/정렬 유지
+ *    - role 저장 시 isSubscribed/기간 자동 동기화
+ *    - Firestore 규칙 허용 4필드만 업데이트:
+ *      ['role','isSubscribed','subscriptionStartAt','subscriptionEndAt']
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -21,7 +20,7 @@ import {
 import { db } from '@/lib/firebase/firebase';
 
 type Role = 'free' | 'basic' | 'premium' | 'admin';
-type Tier = 'free' | 'basic' | 'premium';
+type Tier  = 'free' | 'basic' | 'premium' | 'admin';
 
 interface UserRow {
   uid: string;
@@ -33,8 +32,7 @@ interface UserRow {
   subscriptionStartAt?: Timestamp | null;
   subscriptionEndAt?: Timestamp | null;
   remainingDays?: number | null;
-  // subscriptionTier는 읽기 전용(파생용) — 절대 쓰지 않음
-  subscriptionTier?: Tier;
+  subscriptionTier?: Tier; // 읽기 전용(파생)
 }
 
 type NoticeDoc = {
@@ -87,7 +85,7 @@ function calcRemainingDaysFromEnd(end: Timestamp | null | undefined) {
   return n < 0 ? 0 : n;
 }
 
-/* 메뉴 정의(기존 유지) */
+/* 메뉴 목록(기존 유지) */
 const ALL_MENUS = [
   { slug: 'convert',         label: 'Data Convert' },
   { slug: 'compare',         label: 'Compare' },
@@ -98,7 +96,7 @@ const ALL_MENUS = [
 ];
 
 export default function AdminPage() {
-  /* 내 계정 관리자 판별: users/{uid}.role == 'admin' */
+  /** 내 계정이 관리자(role == 'admin')인지 판단 */
   const [roleLoading, setRoleLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -201,7 +199,7 @@ export default function AdminPage() {
     return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
   };
 
-  /* ───────────── 메뉴 관리 (기존 유지: disabled + tiers + paid[호환]) ───────────── */
+  /* ───────────── 메뉴 관리 (OFF + 유료화 + Admin 티어) ───────────── */
 
   const [navDisabled, setNavDisabled] = useState<string[]>([]);
   const [navPaid, setNavPaid] = useState<string[]>([]);
@@ -217,13 +215,19 @@ export default function AdminPage() {
       const nav = data.navigation ?? {};
       setNavDisabled(Array.isArray(nav.disabled) ? nav.disabled : []);
       setNavPaid(Array.isArray(nav.paid) ? nav.paid : []);
+      // tiers 로드: free/basic/premium/admin
       const t = (nav.tiers ?? {}) as Record<string, Tier>;
       const next: Record<string, Tier> = {};
       ALL_MENUS.forEach(m => { next[m.slug] = 'free'; });
       Object.keys(t).forEach(k => {
         const v = norm(String(t[k]));
-        next[k] = v === 'premium' ? 'premium' : v === 'basic' ? 'basic' : 'free';
+        next[k] =
+          v === 'admin'   ? 'admin'   :
+          v === 'premium' ? 'premium' :
+          v === 'basic'   ? 'basic'   :
+          'free';
       });
+      // 하위호환: tiers가 없고 paid만 있으면 basic 처리
       if (!nav.tiers && Array.isArray(nav.paid)) {
         nav.paid.forEach((slug: string) => { next[slug] = 'basic'; });
       }
@@ -239,11 +243,19 @@ export default function AdminPage() {
     if (!isAdmin) return alert('권한이 없습니다.');
     setSavingNav(true);
     try {
-      const paidFromTiers = Object.entries(navTiers).filter(([,t]) => t !== 'free').map(([slug]) => slug);
+      // paid(하위호환)는 free가 아닌 메뉴 리스트
+      const paidFromTiers = Object.entries(navTiers)
+        .filter(([,t]) => t !== 'free')
+        .map(([slug]) => slug);
+
       await setDoc(
         doc(db, 'settings', 'uploadPolicy'),
         {
-          navigation: { disabled: navDisabled, paid: paidFromTiers, tiers: navTiers },
+          navigation: {
+            disabled: navDisabled,
+            paid: paidFromTiers,
+            tiers: navTiers, // 'admin' 값 포함 가능
+          },
           subscribeButtonEnabled: subscribeEnabled,
           updatedAt: serverTimestamp(),
         },
@@ -255,7 +267,7 @@ export default function AdminPage() {
     } finally { setSavingNav(false); }
   };
 
-  /* ───────────── 사용자 관리 (핵심: role 저장 시 isSubscribed 동기화) ───────────── */
+  /* ───────────── 사용자 관리 (복구) ───────────── */
 
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
@@ -290,12 +302,7 @@ export default function AdminPage() {
   const patchRow = (uid: string, patch: Partial<UserRow>) =>
     setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, ...patch } : r)));
 
-  /**
-   * role 기반 isSubscribed/기간 산출(저장 직전 사용)
-   * - free → 구독 해제
-   * - basic/premium/admin → 구독 활성(기존 날짜 없으면 기본값 채움)
-   * - 과거 종료일이면 free 취급(구독 해제)
-   */
+  /** role → 구독 상태/기간 산출 */
   function deriveSubscriptionByRole(row: UserRow, safeRole: Role) {
     const today = kstToday();
 
@@ -307,22 +314,18 @@ export default function AdminPage() {
       };
     }
 
-    // role이 유료/관리자
+    // 유료/관리자 → 구독 켜기, 기본 30일
     const startD = row.subscriptionStartAt?.toDate() ?? today;
     const endD0 = row.subscriptionEndAt?.toDate() ?? addDays(startD, 30);
     const endD = clampEndAfterStart(startD, endD0) ?? addDays(startD, 30);
 
-    // 종료일이 오늘보다 이전이면(과거) → 구독 해제 처리
+    // 만료(오늘보다 과거)면 해제
     const endUTC = new Date(Date.UTC(endD.getUTCFullYear(), endD.getUTCMonth(), endD.getUTCDate()));
     const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
     const expired = endUTC.getTime() < todayUTC.getTime();
 
     if (expired) {
-      return {
-        isSubscribed: false,
-        startTs: null,
-        endTs: null,
-      };
+      return { isSubscribed: false, startTs: null, endTs: null };
     }
 
     return {
@@ -332,7 +335,7 @@ export default function AdminPage() {
     };
   }
 
-  /** 드롭다운에서 role 바꿀 때, 화면에 즉시 예측 반영(저장은 버튼에서) */
+  /** 드롭다운 변경 시 화면 미리보기(저장은 버튼에서) */
   function previewRoleChange(uid: string, nextRole: Role) {
     const row = rows.find(r => r.uid === uid);
     if (!row) return;
@@ -346,7 +349,7 @@ export default function AdminPage() {
     });
   }
 
-  /** 저장 버튼: role + isSubscribed(+기간) 동시 반영 (규칙 허용 4필드만) */
+  /** 저장(규칙 허용 4필드만) */
   const handleSave = async (row: UserRow) => {
     setSaving(row.uid);
     try {
@@ -360,7 +363,6 @@ export default function AdminPage() {
         subscriptionEndAt: endTs,
       });
 
-      // 로컬 보정
       patchRow(row.uid, {
         role: safeRole,
         isSubscribed,
@@ -512,7 +514,7 @@ export default function AdminPage() {
         <h3 className="text-sm font-semibold mt-2 mb-2">비활성화(OFF)</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-6">
           {ALL_MENUS.map((m) => {
-            const checked = new Set(navDisabled).has(m.slug);
+            const checked = disabledSet.has(m.slug);
             return (
               <label key={m.slug} className="flex items-center gap-2 rounded-lg border p-3 cursor-pointer">
                 <input
@@ -535,7 +537,7 @@ export default function AdminPage() {
         </div>
 
         <h3 className="text-sm font-semibold mt-2 mb-2">유료화(단일 선택)</h3>
-        <p className="text-xs text-slate-600 mb-3">메뉴별로 무료/Basic/Premium 중 하나를 선택합니다.</p>
+        <p className="text-xs text-slate-600 mb-3">메뉴별로 무료/Basic/Premium/Admin 중 하나를 선택합니다.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
           {ALL_MENUS.map((m) => {
             const curr = navTiers[m.slug] ?? 'free';
@@ -546,11 +548,11 @@ export default function AdminPage() {
                   <span>{m.label}</span>
                   {curr !== 'free' && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30">
-                      {curr === 'premium' ? 'Premium' : 'Basic'}
+                      {curr === 'admin' ? 'Admin' : curr === 'premium' ? 'Premium' : 'Basic'}
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-4 flex-wrap">
                   <label className="inline-flex items-center gap-2 text-sm">
                     <input type="radio" name={`tier-${m.slug}`} checked={curr === 'free'} onChange={() => setTier('free')} />
                     무료
@@ -562,6 +564,10 @@ export default function AdminPage() {
                   <label className="inline-flex items-center gap-2 text-sm">
                     <input type="radio" name={`tier-${m.slug}`} checked={curr === 'premium'} onChange={() => setTier('premium')} />
                     Premium
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-sm">
+                    <input type="radio" name={`tier-${m.slug}`} checked={curr === 'admin'} onChange={() => setTier('admin')} />
+                    Admin
                   </label>
                 </div>
               </div>
@@ -606,8 +612,7 @@ export default function AdminPage() {
                     onChange={(e) => {
                       const v = norm(e.target.value) as Role;
                       const safe: Role = (['free','basic','premium','admin'].includes(v) ? v : 'free') as Role;
-                      // 화면 미리보기(저장 버튼에서 최종 반영)
-                      previewRoleChange(r.uid, safe);
+                      previewRoleChange(r.uid, safe); // 화면 미리보기
                     }}
                   >
                     <option value="free">free</option>
@@ -617,7 +622,7 @@ export default function AdminPage() {
                   </select>
                 </td>
                 <td className="py-2 pr-4 align-top">
-                  {/* 표시는 하되, role 저장 로직에서 최종 결정됨 */}
+                  {/* role 저장 시 최종 결정 — 편집은 role 기준 */}
                   <input type="checkbox" className="w-4 h-4" checked={!!r.isSubscribed} readOnly />
                 </td>
                 <td className="py-2 pr-4 align-top">
