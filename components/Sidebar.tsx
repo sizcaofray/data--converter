@@ -1,36 +1,22 @@
 'use client';
 
 /**
- * Sidebar — 티어 포함 규칙 + role(basic/premium) 우선 반영 + 배지 표기(Basic/Premium)
- * -----------------------------------------------------------------------------
- * 데이터 소스
- * - users/{uid}:
- *    · role: 'admin' | 'premium' | 'basic' | 'user' (basic/premium이면 최우선 티어로 인정)
- *    · isSubscribed: boolean (하위 호환 → true면 기본적으로 'basic')
- *    · subscriptionTier: 'premium' | 'basic' | 'free' (있으면 그대로 사용)
- *
- * - settings/uploadPolicy:
- *    · navigation.disabled: string[]  → 보이되 클릭 차단
- *    · navigation.paid: string[]      → 하위 호환(= basic 취급)
- *    · navigation.tiers: { [slug]: 'free'|'basic'|'premium' } → 우선 적용
- *
- * 규칙
- * - 포함 규칙: premium ⊃ basic ⊃ free
- * - 관리자(role==='admin')는 항상 premium로 취급(전 메뉴 활성)
- * - 배지: requiredTier가 'basic'이면 'Basic', 'premium'이면 'Premium'
- * - 초기 policy 로딩 동안 일반 유저는 임시 비활성(깜빡임/오동작 방지)
- * - 최종 권한 검증은 서버/미들웨어로 보강 권장(여긴 UX 차단)
+ * Sidebar — 규칙 준수(읽기만), 티어 포함 규칙, role 우선, 배지 표기
+ * - Firestore rules: users 문서는 읽기만, 쓰기 없음 → 본 컴포넌트는 읽기 전용
+ * - 티어 결정:
+ *   1) role이 'admin'이면 항상 premium
+ *   2) role이 'premium'|'basic'이면 그에 맞춰 티어 우선
+ *   3) 그 외 subscriptionTier(읽기만) → 없으면 isSubscribed=true면 basic, 아니면 free
+ * - 메뉴 정책: settings/uploadPolicy 를 구독 (navigation.disabled / navigation.tiers / paid[하위호환])
  */
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
-
-// ⚠ 프로젝트의 기존 Firebase 클라이언트 경로를 그대로 사용하세요.
-import { auth, db } from '@/lib/firebase/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase/firebase';
 
 type Tier = 'free' | 'basic' | 'premium';
 
@@ -38,7 +24,7 @@ type MenuItem = {
   slug: string;
   label: string;
   href: string;
-  adminOnly?: boolean; // 관리자 전용(일반 사용자에겐 숨김)
+  adminOnly?: boolean;
 };
 
 const MENUS: MenuItem[] = [
@@ -53,14 +39,14 @@ const MENUS: MenuItem[] = [
 type UploadPolicy = {
   navigation?: {
     disabled?: string[];
-    paid?: string[]; // 하위 호환(= basic 취급)
-    tiers?: Record<string, Tier>; // 우선 적용
+    paid?: string[]; // 하위 호환: basic 취급
+    tiers?: Record<string, Tier>;
   };
+  subscribeButtonEnabled?: boolean;
 };
 
 const norm = (v: string) => String(v || '').trim().toLowerCase();
 
-/** 과거 키 혼재 대응: 'pdf' → 'pdf-tool', 'pattern' → 'pattern-editor' */
 function normalizeToInternalSlug(input: string): string {
   const s = norm(input);
   if (s === 'pdf') return 'pdf-tool';
@@ -71,11 +57,9 @@ function normalizeToInternalSlug(input: string): string {
 export default function Sidebar() {
   const pathname = usePathname();
 
-  // ───────────────────────────────
-  // 1) 사용자 인증/역할/티어 파생
-  // ───────────────────────────────
+  // 사용자 역할/티어 파생 (읽기 전용)
   const [role, setRole] = useState<'admin' | 'user'>('user');
-  const [userTier, setUserTier] = useState<Tier>('free'); // 최종 파생된 사용자 티어
+  const [userTier, setUserTier] = useState<Tier>('free');
 
   useEffect(() => {
     let unsubUser: null | (() => void) = null;
@@ -95,31 +79,24 @@ export default function Sidebar() {
         (snap) => {
           const data = snap.exists() ? (snap.data() as any) : {};
 
-          // 1) 역할 판정(관리자/일반)
           const roleNorm = norm(data.role ?? 'user');
           const nextRole: 'admin' | 'user' = roleNorm === 'admin' ? 'admin' : 'user';
           setRole(nextRole);
 
-          // 2) 구독/티어 파생
-          const isSubscribed = !!data.isSubscribed;               // 하위 호환
-          const rawTier = norm(data.subscriptionTier ?? '');      // 'premium'|'basic'|'free'|''
+          const isSubscribed = !!data.isSubscribed;            // 규칙 허용 필드(읽기)
+          const rawTier = norm(data.subscriptionTier ?? '');   // 읽기만 (써선 안 됨)
 
-          // ✅ role이 'premium'|'basic'이면 최우선으로 티어 인정
-          const tierFromRole: Tier =
+          const tierFromRole: Tier | null =
             roleNorm === 'premium' ? 'premium' :
-            roleNorm === 'basic'   ? 'basic'   :
-            (null as unknown as Tier); // 역할에서 티어 안 주면 null 의미
+            roleNorm === 'basic'   ? 'basic'   : null;
 
-          // subscriptionTier가 유효하면 사용, 없으면 isSubscribed로 basic 폴백
           const tierFromSub: Tier =
             rawTier === 'premium' ? 'premium' :
             rawTier === 'basic'   ? 'basic'   :
             isSubscribed          ? 'basic'   :
             'free';
 
-          const derived: Tier = tierFromRole ?? tierFromSub;
-
-          // 관리자는 항상 premium 취급
+          const derived: Tier = (tierFromRole ?? tierFromSub);
           setUserTier(nextRole === 'admin' ? 'premium' : derived);
         },
         () => {
@@ -135,13 +112,11 @@ export default function Sidebar() {
     };
   }, []);
 
-  // ───────────────────────────────
-  // 2) 정책 문서 구독
-  // ───────────────────────────────
+  // 정책 구독
   const [policyLoading, setPolicyLoading] = useState(true);
   const [disabledSlugs, setDisabledSlugs] = useState<string[]>([]);
-  const [paidSlugs, setPaidSlugs] = useState<string[]>([]); // tiers 없을 때만 basic으로 간주
-  const [tiersMap, setTiersMap] = useState<Record<string, Tier>>({}); // 우선 적용
+  const [paidSlugs, setPaidSlugs] = useState<string[]>([]);
+  const [tiersMap, setTiersMap] = useState<Record<string, Tier>>({});
 
   useEffect(() => {
     setPolicyLoading(true);
@@ -179,36 +154,25 @@ export default function Sidebar() {
     return () => unsub();
   }, []);
 
-  // ───────────────────────────────
-  // 3) 메뉴 렌더 상태 계산(포함 규칙 + 배지 표기)
-  // ───────────────────────────────
+  // 메뉴 상태 계산
   const menuView = useMemo(() => {
     const isAdmin = role === 'admin';
     const effectiveUserTier: Tier = isAdmin ? 'premium' : userTier;
 
     return MENUS.map((m) => {
-      // (A) 관리자 전용 숨김
       const hidden = !!m.adminOnly && !isAdmin;
-
-      // (B) 관리자 임의 비활성
       const disabledByAdmin = disabledSlugs.includes(m.slug);
 
-      // (C) 요구 티어: tiers 우선, 없으면 paid → 'basic', 없다면 'free'
       const required: Tier =
         tiersMap[m.slug] ?? (paidSlugs.includes(m.slug) ? 'basic' : 'free');
 
-      // (D) 배지 문구(Basic/Premium)
       const isPaid = required !== 'free';
       const paidLabel = required === 'premium' ? 'Premium' : (required === 'basic' ? 'Basic' : '');
 
-      // (E) 포함 규칙:
-      //     premium ⊃ basic ⊃ free
       const disabledByTier =
         (required === 'premium' && effectiveUserTier !== 'premium' && !isAdmin) ||
         (required === 'basic'   && !['basic', 'premium'].includes(effectiveUserTier) && !isAdmin);
-      // free는 항상 활성
 
-      // (F) 정책 로딩 중 일반 유저 임시 차단
       const disabledByLoading = policyLoading && !isAdmin;
 
       return {
@@ -222,9 +186,7 @@ export default function Sidebar() {
     });
   }, [role, userTier, disabledSlugs, paidSlugs, tiersMap, policyLoading]);
 
-  // ───────────────────────────────
-  // 4) 렌더(기존 스타일 유지)
-  // ───────────────────────────────
+  // 렌더
   const path = pathname || '/';
   const base = 'group block rounded-md px-3 py-2 text-sm transition select-none';
   const enabled = (active: boolean) =>
@@ -241,7 +203,6 @@ export default function Sidebar() {
         <ul className="space-y-1">
           {menuView.filter((m) => !m.hidden).map((m) => {
             const active = path.startsWith(m.href);
-
             const label = (
               <span className="inline-flex items-center gap-2">
                 {m.label}
@@ -250,9 +211,7 @@ export default function Sidebar() {
                     {m.paidLabel}
                   </span>
                 )}
-                {policyLoading && (
-                  <span className="text-[10px] ml-1 opacity-60">로딩중</span>
-                )}
+                {policyLoading && <span className="text-[10px] ml-1 opacity-60">로딩중</span>}
               </span>
             );
 

@@ -1,37 +1,26 @@
 'use client';
 
 /**
- * 관리자 페이지 — 최소 변경: role 저장 반영 문제 수정
- * ---------------------------------------------------
- * 변경 포인트
- * 1) 사용자 목록: getDocs → onSnapshot 실시간 구독 (저장 직후 UI 갱신)
- * 2) handleSave 이후, 저장된 payload로 rows 내부도 패치(보정)
- * 3) role은 'free'|'basic'|'premium'|'admin' (소문자)만 허용
- * 4) 기존 공지/메뉴관리 UI/로직 유지
+ * Admin Page — Firestore 규칙에 맞춘 최소 변경
+ * ─────────────────────────────────────────────────────────────────
+ * ✔ users 업데이트(관리자): rules가 허용하는 4개 필드만 씁니다.
+ *    ['role','isSubscribed','subscriptionStartAt','subscriptionEndAt']
+ *    → subscriptionTier는 "절대" 쓰지 않음(읽기만, 파생용)
+ * ✔ settings/uploadPolicy: navigation.tiers/paid/disabled, subscribeButtonEnabled 저장 (규칙 허용)
+ * ✔ 기존 기능(공지, 메뉴 비활성/유료화, 사용자 테이블) 유지
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { db } from '@/lib/firebase/firebase';
-import {
-  collection,
-  getDocs,
-  updateDoc,
-  addDoc,
-  deleteDoc,
-  doc,
-  Timestamp,
-  onSnapshot,
-  setDoc,
-  serverTimestamp,
-  getDoc,
-  orderBy,
-  query,
-  limit,
-} from 'firebase/firestore';
-import { getAuth, getIdTokenResult, onAuthStateChanged } from 'firebase/auth';
 import Link from 'next/link';
+import { getAuth, getIdTokenResult, onAuthStateChanged } from 'firebase/auth';
+import {
+  collection, onSnapshot, getDocs, updateDoc, addDoc, deleteDoc, doc, Timestamp,
+  setDoc, serverTimestamp, getDoc, orderBy, query, limit,
+} from 'firebase/firestore';
+import { db } from '@/lib/firebase/firebase';
 
 type Role = 'free' | 'basic' | 'premium' | 'admin';
+type Tier = 'free' | 'basic' | 'premium';
 
 interface UserRow {
   uid: string;
@@ -43,7 +32,8 @@ interface UserRow {
   subscriptionStartAt?: Timestamp | null;
   subscriptionEndAt?: Timestamp | null;
   remainingDays?: number | null;
-  subscriptionTier?: 'free'|'basic'|'premium';
+  // subscriptionTier는 읽기만(파생용) — 쓰지 않음
+  subscriptionTier?: Tier;
 }
 
 type NoticeDoc = {
@@ -63,6 +53,11 @@ function kstToday(): Date {
   const k = new Date(now.getTime() + 9 * 3600 * 1000);
   return new Date(Date.UTC(k.getUTCFullYear(), k.getUTCMonth(), k.getUTCDate()));
 }
+function addDays(d: Date, n: number) { return new Date(d.getTime() + n * 86400000); }
+function clampEndAfterStart(start: Date | null, end: Date | null) {
+  if (!start || !end) return end;
+  return end.getTime() < start.getTime() ? start : end;
+}
 function dateToInput(d: Date | null) {
   if (!d) return '';
   const y = d.getUTCFullYear();
@@ -80,13 +75,6 @@ function inputDateToDate(s: string) {
   const d = new Date(s + 'T00:00:00Z');
   return isNaN(d.getTime()) ? null : d;
 }
-function addDays(d: Date, n: number) {
-  return new Date(d.getTime() + n * 86400000);
-}
-function clampEndAfterStart(start: Date | null, end: Date | null) {
-  if (!start || !end) return end;
-  return end.getTime() < start.getTime() ? start : end;
-}
 function calcRemainingDaysFromEnd(end: Timestamp | null | undefined) {
   if (!end) return null;
   const e = end.toDate();
@@ -98,18 +86,16 @@ function calcRemainingDaysFromEnd(end: Timestamp | null | undefined) {
 }
 
 const ALL_MENUS = [
-  { slug: 'convert',         label: 'Data Convert', href: '/convert' },
-  { slug: 'compare',         label: 'Compare',      href: '/compare' },
-  { slug: 'pdf-tool',        label: 'PDF Tool',     href: '/pdf-tool' },
-  { slug: 'pattern-editor',  label: 'Pattern Editor', href: '/pattern-editor' },
-  { slug: 'random',          label: 'Random',       href: '/random' },
-  { slug: 'admin',           label: 'Admin',        href: '/admin', adminOnly: true },
+  { slug: 'convert',         label: 'Data Convert' },
+  { slug: 'compare',         label: 'Compare' },
+  { slug: 'pdf-tool',        label: 'PDF Tool' },
+  { slug: 'pattern-editor',  label: 'Pattern Editor' },
+  { slug: 'random',          label: 'Random' },
+  { slug: 'admin',           label: 'Admin' },
 ];
 
-type Tier = 'free' | 'basic' | 'premium';
-
 export default function AdminPage() {
-  // 내 계정이 admin인지 판별
+  // 내 계정 관리자 판별: users/{uid}.role == 'admin' 또는 커스텀클레임/화이트리스트(규칙에 부합)
   const [roleLoading, setRoleLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -130,7 +116,7 @@ export default function AdminPage() {
     return () => unsub();
   }, []);
 
-  /* ───────────────── 공지 관리(기존 유지) ───────────────── */
+  /* ───────────── 공지 관리 (기존 유지) ───────────── */
 
   const [noticeId, setNoticeId] = useState<string | null>(null);
   const [nTitle, setNTitle] = useState('');
@@ -212,7 +198,7 @@ export default function AdminPage() {
     return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
   };
 
-  /* ───────────────── 메뉴 관리(기존 유지 + tiers 저장) ───────────────── */
+  /* ───────────── 메뉴 관리 (기존 유지: disabled + tiers + paid[호환]) ───────────── */
 
   const [navDisabled, setNavDisabled] = useState<string[]>([]);
   const [navPaid, setNavPaid] = useState<string[]>([]);
@@ -228,7 +214,6 @@ export default function AdminPage() {
       const nav = data.navigation ?? {};
       setNavDisabled(Array.isArray(nav.disabled) ? nav.disabled : []);
       setNavPaid(Array.isArray(nav.paid) ? nav.paid : []);
-      // tiers 우선
       const t = (nav.tiers ?? {}) as Record<string, Tier>;
       const next: Record<string, Tier> = {};
       ALL_MENUS.forEach(m => { next[m.slug] = 'free'; });
@@ -236,7 +221,6 @@ export default function AdminPage() {
         const v = norm(String(t[k]));
         next[k] = v === 'premium' ? 'premium' : v === 'basic' ? 'basic' : 'free';
       });
-      // tiers 없던 과거 데이터 보정: paid → basic
       if (!nav.tiers && Array.isArray(nav.paid)) {
         nav.paid.forEach((slug: string) => { next[slug] = 'basic'; });
       }
@@ -268,11 +252,13 @@ export default function AdminPage() {
     } finally { setSavingNav(false); }
   };
 
-  /* ───────────────── 사용자 관리(핵심: 실시간 구독 + 저장 후 패치) ───────────────── */
+  /* ───────────── 사용자 관리 (규칙에 맞춰: 4필드만 쓰기) ───────────── */
 
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
 
+  // 실시간 구독: 저장 직후 UI 반영
   useEffect(() => {
     if (roleLoading || !isAdmin) return;
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -290,10 +276,9 @@ export default function AdminPage() {
           subscriptionStartAt: data.subscriptionStartAt ?? null,
           subscriptionEndAt: endTs,
           remainingDays: calcRemainingDaysFromEnd(endTs),
-          subscriptionTier: (norm(data.subscriptionTier ?? 'free') as 'free'|'basic'|'premium'),
+          subscriptionTier: (norm(data.subscriptionTier ?? 'free') as Tier), // 읽기만
         });
       });
-      // 정렬 유지(이메일)
       list.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
       setRows(list);
     });
@@ -310,7 +295,7 @@ export default function AdminPage() {
         subscriptionStartAt: null,
         subscriptionEndAt: null,
         remainingDays: null,
-        subscriptionTier: 'free',
+        // subscriptionTier는 쓰지 않음(규칙 미허용)
       });
       return;
     }
@@ -322,7 +307,6 @@ export default function AdminPage() {
       subscriptionStartAt: Timestamp.fromDate(startDate),
       subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
       remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
-      subscriptionTier: (r.role === 'premium' || r.role === 'admin') ? 'premium' : 'basic',
     });
   };
 
@@ -352,45 +336,38 @@ export default function AdminPage() {
   const handleSave = async (row: UserRow) => {
     setSaving(row.uid);
     try {
-      // role 문자열 정규화(대문자 입력 방지)
       const safeRole = (['free','basic','premium','admin'].includes(row.role) ? row.role : 'free') as Role;
 
-      // 날짜 정합성
+      // 규칙 허용 필드 4개만 준비
       let startTs: Timestamp | null = row.subscriptionStartAt ?? null;
       let endTs: Timestamp | null = row.subscriptionEndAt ?? null;
       let isSubscribed = !!row.isSubscribed;
-      let tier: 'free'|'basic'|'premium' = row.subscriptionTier ?? 'free';
 
       if (!isSubscribed) {
         startTs = null;
         endTs = null;
-        tier = 'free';
       } else {
         const startD = startTs?.toDate() ?? kstToday();
         const endD = endTs?.toDate() ?? addDays(startD, 30);
         const clampedEnd = clampEndAfterStart(startD, endD);
         startTs = Timestamp.fromDate(startD);
         endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-        // role이 premium|admin이면 tier도 premium로 동기화, basic이면 basic
-        tier = (safeRole === 'premium' || safeRole === 'admin') ? 'premium' : 'basic';
       }
 
-      const ref = doc(db, 'users', row.uid);
-      await updateDoc(ref, {
+      // ⚠ 규칙상 허용된 필드만 업데이트
+      await updateDoc(doc(db, 'users', row.uid), {
         role: safeRole,
         isSubscribed,
         subscriptionStartAt: startTs,
         subscriptionEndAt: endTs,
-        subscriptionTier: tier,
       });
 
-      // 저장 성공 직후 로컬 반영(스냅샷 대기 없이 즉시 반영)
+      // 로컬 보정(스냅샷 오기 전 UI 일관성)
       patchRow(row.uid, {
         role: safeRole,
         isSubscribed,
         subscriptionStartAt: startTs,
         subscriptionEndAt: endTs,
-        subscriptionTier: tier,
       });
 
       alert('저장되었습니다.');
@@ -414,7 +391,7 @@ export default function AdminPage() {
 
   return (
     <main className="p-6 space-y-6">
-      {/* 공지 */}
+      {/* 공지 관리 */}
       <section className="rounded-xl border p-4">
         <h2 className="text-lg font-bold mb-2">공지사항 관리</h2>
 
@@ -517,7 +494,7 @@ export default function AdminPage() {
         </div>
       </section>
 
-      {/* 메뉴 관리(기존 유지) */}
+      {/* 메뉴 관리 */}
       <section className="rounded-xl border p-4">
         <h2 className="text-lg font-bold mb-2">메뉴 관리</h2>
 
@@ -536,7 +513,7 @@ export default function AdminPage() {
         <h3 className="text-sm font-semibold mt-2 mb-2">비활성화(OFF)</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-6">
           {ALL_MENUS.map((m) => {
-            const checked = disabledSet.has(m.slug);
+            const checked = new Set(navDisabled).has(m.slug);
             return (
               <label key={m.slug} className="flex items-center gap-2 rounded-lg border p-3 cursor-pointer">
                 <input
@@ -630,11 +607,7 @@ export default function AdminPage() {
                     onChange={(e) => {
                       const v = norm(e.target.value) as Role;
                       const safe: Role = (['free','basic','premium','admin'].includes(v) ? v : 'free') as Role;
-                      // role 변경 시 tier 힌트도 보정(표시만)
-                      const nextTier: 'free'|'basic'|'premium' =
-                        safe === 'premium' || safe === 'admin' ? 'premium' :
-                        safe === 'basic' ? 'basic' : 'free';
-                      patchRow(r.uid, { role: safe, subscriptionTier: nextTier });
+                      patchRow(r.uid, { role: safe });
                     }}
                   >
                     <option value="free">free</option>
@@ -655,7 +628,7 @@ export default function AdminPage() {
                           isSubscribed: false,
                           subscriptionStartAt: null,
                           subscriptionEndAt: null,
-                          subscriptionTier: 'free',
+                          remainingDays: null,
                         });
                       } else {
                         const startDate = r.subscriptionStartAt?.toDate() ?? kstToday();
@@ -665,7 +638,7 @@ export default function AdminPage() {
                           isSubscribed: true,
                           subscriptionStartAt: Timestamp.fromDate(startDate),
                           subscriptionEndAt: clamped ? Timestamp.fromDate(clamped) : null,
-                          subscriptionTier: (r.role === 'premium' || r.role === 'admin') ? 'premium' : 'basic',
+                          remainingDays: calcRemainingDaysFromEnd(clamped ? Timestamp.fromDate(clamped) : null),
                         });
                       }
                     }}
@@ -683,6 +656,7 @@ export default function AdminPage() {
                       patchRow(r.uid, {
                         subscriptionStartAt: newStart ? Timestamp.fromDate(newStart) : null,
                         subscriptionEndAt: clampedEnd ? Timestamp.fromDate(clampedEnd) : null,
+                        remainingDays: calcRemainingDaysFromEnd(clampedEnd ? Timestamp.fromDate(clampedEnd) : null),
                       });
                     }}
                     disabled={!r.isSubscribed}
@@ -699,6 +673,7 @@ export default function AdminPage() {
                       const clampedEnd = clampEndAfterStart(start, newEnd);
                       patchRow(r.uid, {
                         subscriptionEndAt: clampedEnd ? Timestamp.fromDate(clampedEnd) : null,
+                        remainingDays: calcRemainingDaysFromEnd(clampedEnd ? Timestamp.fromDate(clampedEnd) : null),
                       });
                     }}
                     disabled={!r.isSubscribed}
