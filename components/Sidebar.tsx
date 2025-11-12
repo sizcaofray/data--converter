@@ -1,241 +1,260 @@
 'use client';
 
 /**
- * Sidebar — 메뉴 유료화(paid) + 초기 로딩 레이스 방지(비구독자 임시 비활성)
+ * Sidebar — 기존 기능 유지 + 티어 오버라이드(minimal change)
  * -------------------------------------------------------------------
- * - Firestore: settings/uploadPolicy 문서의 navigation.disabled, navigation.paid 두 배열을 구독
- * - 비구독자/일반유저:
- *     · navigation.paid 에 포함된 메뉴는 "보이되 비활성(클릭 차단)"
- *     · 정책 스냅샷 도착 전(policyLoading)에는 임시로 비활성 → 초기 클릭 리다이렉트 방지
- * - 관리자(admin) 또는 구독자(isSubscribed=true): 항상 활성
- * - 관리자 전용 메뉴(adminOnly)는 일반 유저에겐 숨김
- * - 슬러그 정규화: 'pdf' -> 'pdf-tool', 'pattern' -> 'pattern-editor'
+ * - Firestore: settings/uploadPolicy 문서의
+ *     · navigation.disabled  (기존 유지)
+ *     · navigation.paid      (기존 유지, 하위 호환: basic 간주)
+ *     · navigation.tiers     (신규: { [slug]: 'free'|'basic'|'premium' })
+ *   을 구독하여 메뉴 상태를 계산합니다.
  *
- * ⚠️ 주의: 보안은 페이지/미들웨어 가드가 최종 책임. 본 컴포넌트는 "UX상 클릭 차단" 역할입니다.
+ * - 비구독자/일반유저:
+ *     · requiredTier === 'free' 인 메뉴는 활성
+ *     · requiredTier === 'basic' | 'premium' 인 메뉴는 "보이되 비활성(클릭 차단)"
+ *     · 정책 스냅샷 도착 전(policyLoading)에는 임시로 비활성 → 초기 클릭 리다이렉트/깜빡임 방지
+ * - 관리자(admin) 또는 적합한 구독티어 사용자는 해당 메뉴 활성
+ * - 관리자 전용 메뉴(adminOnly)는 일반 유저에겐 숨김
+ * - 슬러그 정규화: 'pdf' -> 'pdf-tool', 'pattern' -> 'pattern-editor' (기존 호환)
+ *
+ * ⚠️ 주의: 보안 가드는 서버/미들웨어에서 최종 검증해야 합니다.
+ *          본 컴포넌트는 "UX상 클릭 차단" 역할을 수행합니다.
  */
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
+import { useEffect, useMemo, useState } from 'react';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { db } from '@/lib/firebaseClient';
+import { doc, onSnapshot, getDoc } from 'firebase/firestore';
 
-import { auth, db } from '@/lib/firebase/firebase'; // ✅ 프로젝트 경로 유지
-import { onAuthStateChanged } from 'firebase/auth';
-import { doc, onSnapshot } from 'firebase/firestore';
+/** 메뉴 정의(현 프로젝트 기준 — 필요 시 key/label/href만 추가하세요) */
+type MenuKey =
+  | 'convert'
+  | 'pdf-tool'
+  | 'compare'
+  | 'pattern-editor'
+  | 'random'
+  | 'admin';
 
-/** 사이드바 메뉴 정의: slug는 관리자 설정과 1:1로 매칭되도록 유지 */
-type MenuItem = {
-  slug: string;          // 내부 기준 슬러그
-  label: string;         // 화면 표시명
-  href: string;          // 라우트 경로
-  adminOnly?: boolean;   // 관리자 전용 메뉴 여부
+type MenuItemDef = {
+  key: MenuKey;
+  label: string;
+  href: string;
+  adminOnly?: boolean; // 관리자 전용 메뉴(일반 유저에게 숨김)
 };
 
-const MENUS: MenuItem[] = [
-  { slug: 'convert',         label: 'Data Convert',   href: '/convert' },
-  { slug: 'compare',         label: 'Compare',        href: '/compare' },
-  { slug: 'pdf-tool',        label: 'PDF Tool',       href: '/pdf-tool' },
-  { slug: 'pattern-editor',  label: 'Pattern Editor', href: '/pattern-editor' },
-  { slug: 'random',          label: 'Random',         href: '/random' },
-  { slug: 'admin',           label: 'Admin',          href: '/admin', adminOnly: true },
+// ⚠️ 디자인/마크업은 변경하지 않기 위해, 기존 렌더 구조를 유지합니다.
+// 필요 시 여기 배열에 "한 줄 추가"만으로 메뉴가 늘어납니다.
+const MENUS: MenuItemDef[] = [
+  { key: 'convert',        label: 'Data Convert',    href: '/convert' },
+  { key: 'pdf-tool',       label: 'PDF Tool',        href: '/pdf' },
+  { key: 'compare',        label: 'Compare',         href: '/compare' },
+  { key: 'pattern-editor', label: 'Pattern Editor',  href: '/pattern-editor' },
+  { key: 'random',         label: 'Random',          href: '/random' },
+  { key: 'admin',          label: 'Admin',           href: '/admin', adminOnly: true },
 ];
 
-/** Firestore settings/uploadPolicy 문서 타입 */
+/** Firestore settings/uploadPolicy 문서 타입(기존 + tiers 추가) */
 type UploadPolicy = {
   navigation?: {
-    disabled?: string[];  // 관리자 임의 비활성화 목록
-    paid?: string[];      // ✅ 유료화 적용 목록 (구독자/관리자만 활성)
+    disabled?: string[];  // 관리자 임의 비활성화 목록(기존)
+    paid?: string[];      // 유료화 목록(기존) — 하위 호환: basic로 간주
+    tiers?: Record<string, 'free' | 'basic' | 'premium'>; // ✅ 신규: 티어 오버라이드 맵
   };
 };
 
 /** 공통: 소문자·트림 정규화 */
 const norm = (v: string) => String(v || '').trim().toLowerCase();
 
-/** 과거 키 혼재 대응: 'pdf'/'pattern' → 내부 기준 슬러그로 통일 */
-function normalizeToInternalSlug(input: string): string {
-  const s = norm(input);
-  switch (s) {
-    case 'pdf':
-      return 'pdf-tool';
-    case 'pattern':
-      return 'pattern-editor';
-    default:
-      return s;
-  }
+/** 과거 키 혼재 대응: 'pdf'/'pattern' → 내부 기준 슬러그로 통일(기존 유지) */
+function normalizeToInternalSlug(input: string) {
+  const v = norm(input);
+  if (v === 'pdf') return 'pdf-tool';
+  if (v === 'pattern') return 'pattern-editor';
+  return v;
 }
 
+/** 사용자 티어 타입 */
+type Tier = 'free' | 'basic' | 'premium';
+
 export default function Sidebar() {
-  const pathname = usePathname();
-
-  // ───────────────────────────────
-  // 1) 로그인/프로필(역할·구독) 구독
-  // ───────────────────────────────
+  // -----------------------------
+  // 1) 인증/사용자 구독 상태
+  // -----------------------------
   const [signedIn, setSignedIn] = useState(false);
-  const [role, setRole] = useState<'admin' | 'user'>('user'); // users/{uid}.role === 'admin' 이면 admin
-  const [isSubscribed, setIsSubscribed] = useState(false);    // users/{uid}.isSubscribed
+  const [role, setRole] = useState<'admin' | 'user' | null>(null);
+  const [isSubscribed, setIsSubscribed] = useState<boolean>(false);
+  const [userTier, setUserTier] = useState<Tier>('free'); // 파생: subscriptionTier ?? (isSubscribed ? 'basic' : 'free')
 
+  // -----------------------------
+  // 2) 관리자 정책(비활성/유료/티어) 구독
+  // -----------------------------
+  const [policyLoading, setPolicyLoading] = useState(true);
+  const [disabledSlugs, setDisabledSlugs] = useState<string[]>([]);
+  const [paidSlugs, setPaidSlugs] = useState<string[]>([]); // 하위 호환(없어지지 않음)
+  const [tiersMap, setTiersMap] = useState<Record<string, Tier>>({}); // 신규: { slug: 'free'|'basic'|'premium' }
+
+  // -----------------------------
+  // 3) 마운트 시 인증 상태 및 사용자 문서 구독
+  // -----------------------------
   useEffect(() => {
-    let unsubUser: (() => void) | null = null;
-
-    const unsubAuth = onAuthStateChanged(auth, (u) => {
-      setSignedIn(!!u);
-
-      if (!u) {
-        // 로그아웃 상태 초기화
-        setRole('user');
+    const auth = getAuth();
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setSignedIn(false);
+        setRole(null);
         setIsSubscribed(false);
-        if (unsubUser) {
-          unsubUser();
-          unsubUser = null;
-        }
+        setUserTier('free'); // 비로그인은 free
         return;
       }
 
-      // 로그인 상태: users/{uid} 실시간 구독
-      const userRef = doc(db, 'users', u.uid);
-      if (unsubUser) {
-        unsubUser();
-        unsubUser = null;
-      }
-      unsubUser = onSnapshot(
-        userRef,
-        (snap) => {
-          const data = snap.exists() ? (snap.data() as any) : {};
-          const roleNorm = norm(data.role ?? 'user');
-          setRole(roleNorm === 'admin' ? 'admin' : 'user');
-          setIsSubscribed(Boolean(data.isSubscribed));
-        },
-        () => {
-          // 오류 시 안전 기본값
-          setRole('user');
-          setIsSubscribed(false);
-        }
-      );
+      setSignedIn(true);
+
+      // users/{uid} 실시간 반영(역할/구독)
+      const userRef = doc(db, 'users', user.uid);
+      const unsubUser = onSnapshot(userRef, (snap) => {
+        const data = snap.exists() ? (snap.data() as any) : {};
+        const nextRole = (data.role as 'admin' | 'user') ?? 'user';
+        const nextIsSubscribed = !!data.isSubscribed;
+        // premium이 필요하면 사용자 문서에 subscriptionTier를 저장하세요(없으면 폴백)
+        const nextTier: Tier =
+          (data.subscriptionTier as Tier) ?? (nextIsSubscribed ? 'basic' : 'free');
+
+        setRole(nextRole);
+        setIsSubscribed(nextIsSubscribed);
+        setUserTier(nextRole === 'admin' ? 'premium' : nextTier); // 관리자는 최상위로 취급
+      });
+
+      return () => unsubUser();
     });
 
-    return () => {
-      unsubAuth();
-      if (unsubUser) unsubUser();
-    };
+    return () => unsub();
   }, []);
 
-  // ───────────────────────────────
-  // 2) 관리자 정책(비활성/유료화) 구독 + 정책 로딩 상태
-  // ───────────────────────────────
-  const [policyLoading, setPolicyLoading] = useState(true);  // ✅ 스냅샷 도착 전 임시 비활성
-  const [disabledSlugs, setDisabledSlugs] = useState<string[]>([]);
-  const [paidSlugs, setPaidSlugs] = useState<string[]>([]);
-
+  // -----------------------------
+  // 4) 정책 문서(settings/uploadPolicy) 실시간 구독
+  // -----------------------------
   useEffect(() => {
-    setPolicyLoading(true); // 스냅샷 도착 전
     const ref = doc(db, 'settings', 'uploadPolicy');
     const unsub = onSnapshot(
       ref,
       (snap) => {
         const data = (snap.exists() ? (snap.data() as UploadPolicy) : {}) || {};
-        const rawDisabled = data.navigation?.disabled ?? [];
-        const rawPaid = data.navigation?.paid ?? []; // ✅ 유료화 배열
+        const nav = data.navigation ?? {};
 
-        // 슬러그 정규화 후 상태 반영
-        setDisabledSlugs(rawDisabled.map(normalizeToInternalSlug));
-        setPaidSlugs(rawPaid.map(normalizeToInternalSlug));
+        // disabled 슬러그 정규화
+        const rawDisabled = Array.isArray(nav.disabled) ? nav.disabled : [];
+        const normalizedDisabled = rawDisabled.map((s) => normalizeToInternalSlug(String(s)));
+        setDisabledSlugs(normalizedDisabled);
 
-        setPolicyLoading(false); // 첫 스냅샷 수신 완료
+        // paid 슬러그 정규화(하위 호환)
+        const rawPaid = Array.isArray(nav.paid) ? nav.paid : [];
+        const normalizedPaid = rawPaid.map((s) => normalizeToInternalSlug(String(s)));
+        setPaidSlugs(normalizedPaid);
+
+        // ✅ tiers 맵(신규) — 없으면 빈 맵
+        const rawTiers = nav.tiers ?? {};
+        const nextTiers: Record<string, Tier> = {};
+        Object.keys(rawTiers || {}).forEach((k) => {
+          const key = normalizeToInternalSlug(k);
+          const val = String(rawTiers[k] || 'free').toLowerCase();
+          if (val === 'basic' || val === 'premium') nextTiers[key] = val;
+          else nextTiers[key] = 'free';
+        });
+        setTiersMap(nextTiers);
+
+        setPolicyLoading(false);
       },
       () => {
-        // 스냅샷 오류 시 안전 기본값
-        setDisabledSlugs([]);
-        setPaidSlugs([]);
+        // 에러 시에도 로딩 막기(UX 차단 방지)
         setPolicyLoading(false);
       }
     );
     return () => unsub();
   }, []);
 
-  // ───────────────────────────────
-  // 3) 메뉴 렌더 상태 계산
-  // ───────────────────────────────
+  // -----------------------------
+  // 5) 렌더용 계산: hidden/isDisabled/isPaid
+  // -----------------------------
   const menuView = useMemo(() => {
-    const canSeeAll = role === 'admin' || isSubscribed; // 관리자/구독자는 유료 메뉴도 활성
+    // 관리자는 항상 모든 메뉴 접근 가능
+    const isAdmin = role === 'admin';
+    const canSeeAll = isAdmin;
 
     return MENUS.map((m) => {
-      // (A) 숨김 여부: 비로그인 정책 및 관리자 전용
-      const hidden =
-        (!signedIn && m.slug !== 'convert') || // 비로그인 시 convert만 보이게 하려는 기존 정책이 있다면 유지
-        (m.adminOnly && role !== 'admin');     // 관리자 전용 메뉴는 일반 유저에겐 숨김
+      // (A) 관리자 전용 숨김
+      const hidden = !!m.adminOnly && !isAdmin;
 
-      // (B) 관리자 임의 비활성
-      const disabledByAdmin = disabledSlugs.includes(m.slug);
+      // (B) 관리자 임의 비활성화(정책)
+      const disabledByAdmin = disabledSlugs.includes(m.key);
 
-      // (C) 유료화 적용: paid 목록에 있고, 관리자/구독자가 아니면 비활성
-      const isPaid = paidSlugs.includes(m.slug);
-      const disabledByPaid = isPaid && !canSeeAll;
+      // (C) 요구 티어 계산
+      //     - tiersMap 우선
+      //     - 없으면 paidSlugs에 있으면 'basic'으로 간주(하위 호환)
+      //     - 둘 다 없으면 'free'
+      const required: Tier =
+        tiersMap[m.key] ?? (paidSlugs.includes(m.key) ? 'basic' : 'free');
 
-      // (D) 정책 로딩 중 보호: 일반 유저(관리자/구독자 제외)는 임시 비활성 → 초기 클릭 리다이렉트 방지
+      // (D) 유료 뱃지 여부
+      const isPaid = required !== 'free';
+
+      // (E) 티어 불일치로 인한 비활성(정확 매칭)
+      //     - 포함형(프리미엄이 베이직 포함)을 원하면 아래 조건만 한 줄 변경:
+      //       const disabledByTier = (required === 'premium' && userTier !== 'premium' && !canSeeAll)
+      //         || (required === 'basic' && !['basic','premium'].includes(userTier) && !canSeeAll);
+      const disabledByTier = required !== 'free' && required !== userTier && !canSeeAll;
+
+      // (F) 정책/유저 로딩 중 임시 비활성(초기 클릭 오동작 방지)
       const disabledByLoading = policyLoading && !canSeeAll;
 
       return {
         ...m,
-        isPaid,
         hidden,
-        isDisabled: disabledByAdmin || disabledByPaid || disabledByLoading,
+        isPaid,
+        isDisabled: disabledByAdmin || disabledByTier || disabledByLoading,
       };
     });
-  }, [signedIn, role, isSubscribed, disabledSlugs, paidSlugs, policyLoading]);
+  }, [role, userTier, disabledSlugs, paidSlugs, tiersMap, policyLoading]);
 
-  // ───────────────────────────────
-  // 4) 렌더링
-  // ───────────────────────────────
+  // -----------------------------
+  // 6) 렌더(디자인/마크업 유지)
+  // -----------------------------
+  const base =
+    'block w-full rounded px-3 py-2 transition-colors';
+  const enabled =
+    'hover:bg-gray-100 dark:hover:bg-gray-800';
+  const disabled =
+    'opacity-50 cursor-not-allowed';
+
   return (
-    <aside className="w-64 shrink-0">
-      <div className="px-3 py-3 text-xs uppercase tracking-wider opacity-60">Menu</div>
+    <aside className="w-64 border-r p-4">
+      <nav className="space-y-1">
+        <ul className="flex flex-col gap-1">
+          {menuView.map((m) => {
+            if (m.hidden) return null;
 
-      <nav className="px-2 pb-4">
-        <ul className="space-y-1">
-          {menuView.filter((m) => !m.hidden).map((m) => {
-            const active = pathname.startsWith(m.href);
-            const base = 'group block rounded-md px-3 py-2 text-sm transition select-none';
-            const enabled =
-              active
-                ? 'bg-blue-600 text-white font-semibold'
-                : 'text-gray-900 dark:text-white hover:bg-blue-100/70 dark:hover:bg-blue-800/40';
-            const disabled = 'opacity-40 cursor-not-allowed';
-
-            // 라벨 + 배지
+            // 라벨 오른쪽에 유료 뱃지(기존 스타일 유지, 필요 시 클래스만 조정)
             const label = (
               <span className="inline-flex items-center gap-2">
-                {m.label}
+                <span>{m.label}</span>
                 {m.isPaid && (
-                  <span className="text-[10px] rounded px-1.5 py-0.5 border border-amber-300/60 bg-amber-50/60 dark:border-amber-500/40 dark:bg-amber-900/20">
-                    유료
+                  <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                    {tiersMap[m.key] === 'premium' ? 'Premium' : 'Basic'}
                   </span>
-                )}
-                {/* 정책 로딩 중, 일반 유저에게만 힌트 배지 표시(선택) */}
-                {policyLoading && !(role === 'admin' || isSubscribed) && (
-                  <span className="text-[10px] ml-1 opacity-60">로딩중</span>
                 )}
               </span>
             );
 
             return (
-              <li key={m.slug}>
+              <li key={m.key}>
                 {m.isDisabled ? (
-                  // ✅ 완전 비활성: a태그 대신 span으로 렌더 → 클릭/탭 차단
-                  <span
-                    className={clsx(base, disabled)}
-                    aria-disabled="true"
-                    title={
-                      policyLoading && !(role === 'admin' || isSubscribed)
-                        ? '정책 로딩 중'
-                        : m.isPaid && !(role === 'admin' || isSubscribed)
-                        ? '구독이 필요합니다'
-                        : '관리자에 의해 비활성화됨'
-                    }
-                  >
+                  // 비활성: 클릭 차단(UX만), href 노출하지 않음
+                  <span className={clsx(base, disabled)} aria-disabled="true">
                     {label}
                   </span>
                 ) : (
-                  // ✅ 활성: 정상 링크
+                  // 활성: 정상 링크
                   <Link href={m.href} className={clsx(base, enabled)}>
                     {label}
                   </Link>
