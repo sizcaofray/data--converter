@@ -1,13 +1,9 @@
 'use client';
 
 /**
- * Sidebar — 규칙 준수(읽기만), 티어 포함 규칙, role 우선, 배지 표기
- * - Firestore rules: users 문서는 읽기만, 쓰기 없음 → 본 컴포넌트는 읽기 전용
- * - 티어 결정:
- *   1) role이 'admin'이면 항상 premium
- *   2) role이 'premium'|'basic'이면 그에 맞춰 티어 우선
- *   3) 그 외 subscriptionTier(읽기만) → 없으면 isSubscribed=true면 basic, 아니면 free
- * - 메뉴 정책: settings/uploadPolicy 를 구독 (navigation.disabled / navigation.tiers / paid[하위호환])
+ * Sidebar — 티어에 admin 추가
+ * - required: 'admin' 인 메뉴는 관리자만 표시(비관리자에게는 숨김)
+ * - 그 외 로직/디자인은 기존 유지
  */
 
 import Link from 'next/link';
@@ -18,13 +14,14 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase/firebase';
 
-type Tier = 'free' | 'basic' | 'premium';
+/** 티어: admin 추가 */
+type Tier = 'free' | 'basic' | 'premium' | 'admin';
 
 type MenuItem = {
   slug: string;
   label: string;
   href: string;
-  adminOnly?: boolean;
+  adminOnly?: boolean; // 기존 유지: Admin 메뉴 자체는 관리자 전용
 };
 
 const MENUS: MenuItem[] = [
@@ -40,13 +37,14 @@ type UploadPolicy = {
   navigation?: {
     disabled?: string[];
     paid?: string[]; // 하위 호환: basic 취급
-    tiers?: Record<string, Tier>;
+    tiers?: Record<string, Tier>; // 이제 'admin' 값도 올 수 있음
   };
   subscribeButtonEnabled?: boolean;
 };
 
 const norm = (v: string) => String(v || '').trim().toLowerCase();
 
+/** 외부/과거 키를 내부 slug로 정규화 */
 function normalizeToInternalSlug(input: string): string {
   const s = norm(input);
   if (s === 'pdf') return 'pdf-tool';
@@ -84,20 +82,24 @@ export default function Sidebar() {
           setRole(nextRole);
 
           const isSubscribed = !!data.isSubscribed;            // 규칙 허용 필드(읽기)
-          const rawTier = norm(data.subscriptionTier ?? '');   // 읽기만 (써선 안 됨)
+          const rawTier = norm(data.subscriptionTier ?? '');   // 읽기만
 
+          // role 기반 우선 티어 (admin, premium, basic만 영향)
           const tierFromRole: Tier | null =
+            roleNorm === 'admin'   ? 'admin'   :
             roleNorm === 'premium' ? 'premium' :
             roleNorm === 'basic'   ? 'basic'   : null;
 
+          // 구독 기반 파생(없으면 free)
           const tierFromSub: Tier =
+            rawTier === 'admin'   ? 'admin'   :
             rawTier === 'premium' ? 'premium' :
             rawTier === 'basic'   ? 'basic'   :
             isSubscribed          ? 'basic'   :
             'free';
 
           const derived: Tier = (tierFromRole ?? tierFromSub);
-          setUserTier(nextRole === 'admin' ? 'premium' : derived);
+          setUserTier(nextRole === 'admin' ? 'admin' : derived);
         },
         () => {
           setRole('user');
@@ -133,12 +135,17 @@ export default function Sidebar() {
         const rawPaid = Array.isArray(nav.paid) ? nav.paid : [];
         setPaidSlugs(rawPaid.map((s) => normalizeToInternalSlug(String(s))));
 
+        // tiers: free/basic/premium/admin 허용
         const rawTiers = nav.tiers ?? {};
         const nextTiers: Record<string, Tier> = {};
         Object.keys(rawTiers).forEach((k) => {
           const key = normalizeToInternalSlug(k);
           const v = norm(String(rawTiers[k] ?? 'free'));
-          nextTiers[key] = (v === 'premium' || v === 'basic') ? (v as Tier) : 'free';
+          nextTiers[key] =
+            v === 'admin'   ? 'admin'   :
+            v === 'premium' ? 'premium' :
+            v === 'basic'   ? 'basic'   :
+            'free';
         });
         setTiersMap(nextTiers);
 
@@ -157,31 +164,43 @@ export default function Sidebar() {
   // 메뉴 상태 계산
   const menuView = useMemo(() => {
     const isAdmin = role === 'admin';
-    const effectiveUserTier: Tier = isAdmin ? 'premium' : userTier;
+    const effectiveUserTier: Tier = isAdmin ? 'admin' : userTier;
 
     return MENUS.map((m) => {
-      const hidden = !!m.adminOnly && !isAdmin;
+      // 기존: Admin 메뉴 자체는 관리자 전용
+      const hiddenByAdminOnly = !!m.adminOnly && !isAdmin;
+
+      // 관리자 비활성화(OFF)
       const disabledByAdmin = disabledSlugs.includes(m.slug);
 
+      // 요구 티어: tiersMap > paid(=basic) > free
       const required: Tier =
-        tiersMap[m.slug] ?? (paidSlugs.includes(m.slug) ? 'basic' : 'free');
+        tiersMap[m.slug]
+          ?? (paidSlugs.includes(m.slug) ? 'basic' : 'free');
 
-      const isPaid = required !== 'free';
-      const paidLabel = required === 'premium' ? 'Premium' : (required === 'basic' ? 'Basic' : '');
+      // 배지 라벨
+      const paidLabel =
+        required === 'admin'   ? 'Admin'   :
+        required === 'premium' ? 'Premium' :
+        required === 'basic'   ? 'Basic'   :
+        '';
+
+      // 티어 미충족 여부 (admin 전용은 관리자만 표시)
+      const hiddenByTier =
+        required === 'admin' && !isAdmin;
 
       const disabledByTier =
-        (required === 'premium' && effectiveUserTier !== 'premium' && !isAdmin) ||
-        (required === 'basic'   && !['basic', 'premium'].includes(effectiveUserTier) && !isAdmin);
+        required === 'premium' && !['premium', 'admin'].includes(effectiveUserTier)
+        || required === 'basic'   && !['basic', 'premium', 'admin'].includes(effectiveUserTier);
 
       const disabledByLoading = policyLoading && !isAdmin;
 
       return {
         ...m,
         required,
-        isPaid,
         paidLabel,
-        hidden,
-        isDisabled: disabledByAdmin || disabledByTier || disabledByLoading,
+        hidden: hiddenByAdminOnly || hiddenByTier, // admin 전용은 비관리자에게 숨김
+        isDisabled: !hiddenByAdminOnly && !hiddenByTier && (disabledByAdmin || disabledByTier || disabledByLoading),
       };
     });
   }, [role, userTier, disabledSlugs, paidSlugs, tiersMap, policyLoading]);
@@ -206,7 +225,7 @@ export default function Sidebar() {
             const label = (
               <span className="inline-flex items-center gap-2">
                 {m.label}
-                {m.isPaid && m.paidLabel && (
+                {m.paidLabel && (
                   <span className="text-[10px] rounded px-1.5 py-0.5 border border-amber-300/60 bg-amber-50/60 dark:border-amber-500/40 dark:bg-amber-900/20">
                     {m.paidLabel}
                   </span>
@@ -224,7 +243,11 @@ export default function Sidebar() {
                     title={
                       policyLoading
                         ? '정책 로딩 중'
-                        : (m.isPaid ? '구독 등급이 필요합니다' : '관리자에 의해 비활성화됨')
+                        : (m.required === 'free'
+                            ? '관리자에 의해 비활성화됨'
+                            : m.required === 'admin'
+                              ? '관리자 전용 메뉴입니다'
+                              : '구독 등급이 필요합니다')
                     }
                   >
                     {label}
