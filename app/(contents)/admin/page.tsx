@@ -1,20 +1,21 @@
 'use client';
 
 /**
- * Admin Page — Firestore 규칙에 맞춘 최소 변경
- * ─────────────────────────────────────────────────────────────────
- * ✔ users 업데이트(관리자): rules가 허용하는 4개 필드만 씁니다.
- *    ['role','isSubscribed','subscriptionStartAt','subscriptionEndAt']
- *    → subscriptionTier는 "절대" 쓰지 않음(읽기만, 파생용)
- * ✔ settings/uploadPolicy: navigation.tiers/paid/disabled, subscribeButtonEnabled 저장 (규칙 허용)
- * ✔ 기존 기능(공지, 메뉴 비활성/유료화, 사용자 테이블) 유지
+ * Admin Page — role 저장 시 isSubscribed 자동 동기화 (Firestore 규칙 준수)
+ * ------------------------------------------------------------------
+ * • Firestore rules가 허용하는 4개 필드만 업데이트:
+ *   ['role', 'isSubscribed', 'subscriptionStartAt', 'subscriptionEndAt']
+ * • role = free → isSubscribed=false, 날짜 null
+ *   role = basic|premium|admin → isSubscribed=true, 날짜 기본값(없을 때) 채움
+ * • 날짜 보정: start>end면 end=start로 보정. 과거 종료일이면 free 취급
+ * • 기존(공지/메뉴관리/테이블) UI/디자인/기능은 그대로 유지
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { getAuth, getIdTokenResult, onAuthStateChanged } from 'firebase/auth';
 import {
-  collection, onSnapshot, getDocs, updateDoc, addDoc, deleteDoc, doc, Timestamp,
+  collection, onSnapshot, updateDoc, addDoc, deleteDoc, doc, Timestamp,
   setDoc, serverTimestamp, getDoc, orderBy, query, limit,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase/firebase';
@@ -32,7 +33,7 @@ interface UserRow {
   subscriptionStartAt?: Timestamp | null;
   subscriptionEndAt?: Timestamp | null;
   remainingDays?: number | null;
-  // subscriptionTier는 읽기만(파생용) — 쓰지 않음
+  // subscriptionTier는 읽기 전용(파생용) — 절대 쓰지 않음
   subscriptionTier?: Tier;
 }
 
@@ -48,6 +49,7 @@ type NoticeDoc = {
 
 const norm = (v: string) => String(v || '').trim().toLowerCase();
 
+/* 날짜 유틸 */
 function kstToday(): Date {
   const now = new Date();
   const k = new Date(now.getTime() + 9 * 3600 * 1000);
@@ -85,6 +87,7 @@ function calcRemainingDaysFromEnd(end: Timestamp | null | undefined) {
   return n < 0 ? 0 : n;
 }
 
+/* 메뉴 정의(기존 유지) */
 const ALL_MENUS = [
   { slug: 'convert',         label: 'Data Convert' },
   { slug: 'compare',         label: 'Compare' },
@@ -95,7 +98,7 @@ const ALL_MENUS = [
 ];
 
 export default function AdminPage() {
-  // 내 계정 관리자 판별: users/{uid}.role == 'admin' 또는 커스텀클레임/화이트리스트(규칙에 부합)
+  /* 내 계정 관리자 판별: users/{uid}.role == 'admin' */
   const [roleLoading, setRoleLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -252,11 +255,10 @@ export default function AdminPage() {
     } finally { setSavingNav(false); }
   };
 
-  /* ───────────── 사용자 관리 (규칙에 맞춰: 4필드만 쓰기) ───────────── */
+  /* ───────────── 사용자 관리 (핵심: role 저장 시 isSubscribed 동기화) ───────────── */
 
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
-  const [fetching, setFetching] = useState(false);
 
   // 실시간 구독: 저장 직후 UI 반영
   useEffect(() => {
@@ -276,7 +278,7 @@ export default function AdminPage() {
           subscriptionStartAt: data.subscriptionStartAt ?? null,
           subscriptionEndAt: endTs,
           remainingDays: calcRemainingDaysFromEnd(endTs),
-          subscriptionTier: (norm(data.subscriptionTier ?? 'free') as Tier), // 읽기만
+          subscriptionTier: (norm(data.subscriptionTier ?? 'free') as Tier), // 읽기 전용
         });
       });
       list.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
@@ -288,73 +290,69 @@ export default function AdminPage() {
   const patchRow = (uid: string, patch: Partial<UserRow>) =>
     setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, ...patch } : r)));
 
-  const toggleSubscribed = (r: UserRow, checked: boolean) => {
-    if (!checked) {
-      patchRow(r.uid, {
+  /**
+   * role 기반 isSubscribed/기간 산출(저장 직전 사용)
+   * - free → 구독 해제
+   * - basic/premium/admin → 구독 활성(기존 날짜 없으면 기본값 채움)
+   * - 과거 종료일이면 free 취급(구독 해제)
+   */
+  function deriveSubscriptionByRole(row: UserRow, safeRole: Role) {
+    const today = kstToday();
+
+    if (safeRole === 'free') {
+      return {
         isSubscribed: false,
-        subscriptionStartAt: null,
-        subscriptionEndAt: null,
-        remainingDays: null,
-        // subscriptionTier는 쓰지 않음(규칙 미허용)
-      });
-      return;
+        startTs: null as Timestamp | null,
+        endTs: null as Timestamp | null,
+      };
     }
-    const startDate = r.subscriptionStartAt?.toDate() ?? kstToday();
-    const endDate = r.subscriptionEndAt?.toDate() ?? addDays(startDate, 30);
-    const endTs = clampEndAfterStart(startDate, endDate);
-    patchRow(r.uid, {
+
+    // role이 유료/관리자
+    const startD = row.subscriptionStartAt?.toDate() ?? today;
+    const endD0 = row.subscriptionEndAt?.toDate() ?? addDays(startD, 30);
+    const endD = clampEndAfterStart(startD, endD0) ?? addDays(startD, 30);
+
+    // 종료일이 오늘보다 이전이면(과거) → 구독 해제 처리
+    const endUTC = new Date(Date.UTC(endD.getUTCFullYear(), endD.getUTCMonth(), endD.getUTCDate()));
+    const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    const expired = endUTC.getTime() < todayUTC.getTime();
+
+    if (expired) {
+      return {
+        isSubscribed: false,
+        startTs: null,
+        endTs: null,
+      };
+    }
+
+    return {
       isSubscribed: true,
-      subscriptionStartAt: Timestamp.fromDate(startDate),
-      subscriptionEndAt: endTs ? Timestamp.fromDate(endTs) : null,
-      remainingDays: calcRemainingDaysFromEnd(endTs ? Timestamp.fromDate(endTs) : null),
-    });
-  };
+      startTs: Timestamp.fromDate(startD),
+      endTs: Timestamp.fromDate(endD),
+    };
+  }
 
-  const changeStartDate = (r: UserRow, input: string) => {
-    const newStart = inputDateToDate(input);
-    const currEnd = r.subscriptionEndAt?.toDate() ?? null;
-    const clampedEnd = clampEndAfterStart(newStart, currEnd);
-    const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-    patchRow(r.uid, {
-      subscriptionStartAt: newStart ? Timestamp.fromDate(newStart) : null,
+  /** 드롭다운에서 role 바꿀 때, 화면에 즉시 예측 반영(저장은 버튼에서) */
+  function previewRoleChange(uid: string, nextRole: Role) {
+    const row = rows.find(r => r.uid === uid);
+    if (!row) return;
+    const { isSubscribed, startTs, endTs } = deriveSubscriptionByRole(row, nextRole);
+    patchRow(uid, {
+      role: nextRole,
+      isSubscribed,
+      subscriptionStartAt: startTs,
       subscriptionEndAt: endTs,
       remainingDays: calcRemainingDaysFromEnd(endTs),
     });
-  };
+  }
 
-  const changeEndDate = (r: UserRow, input: string) => {
-    const newEnd = inputDateToDate(input);
-    const start = r.subscriptionStartAt?.toDate() ?? null;
-    const clampedEnd = clampEndAfterStart(start, newEnd);
-    const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-    patchRow(r.uid, {
-      subscriptionEndAt: endTs,
-      remainingDays: calcRemainingDaysFromEnd(endTs),
-    });
-  };
-
+  /** 저장 버튼: role + isSubscribed(+기간) 동시 반영 (규칙 허용 4필드만) */
   const handleSave = async (row: UserRow) => {
     setSaving(row.uid);
     try {
       const safeRole = (['free','basic','premium','admin'].includes(row.role) ? row.role : 'free') as Role;
+      const { isSubscribed, startTs, endTs } = deriveSubscriptionByRole(row, safeRole);
 
-      // 규칙 허용 필드 4개만 준비
-      let startTs: Timestamp | null = row.subscriptionStartAt ?? null;
-      let endTs: Timestamp | null = row.subscriptionEndAt ?? null;
-      let isSubscribed = !!row.isSubscribed;
-
-      if (!isSubscribed) {
-        startTs = null;
-        endTs = null;
-      } else {
-        const startD = startTs?.toDate() ?? kstToday();
-        const endD = endTs?.toDate() ?? addDays(startD, 30);
-        const clampedEnd = clampEndAfterStart(startD, endD);
-        startTs = Timestamp.fromDate(startD);
-        endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
-      }
-
-      // ⚠ 규칙상 허용된 필드만 업데이트
       await updateDoc(doc(db, 'users', row.uid), {
         role: safeRole,
         isSubscribed,
@@ -362,12 +360,13 @@ export default function AdminPage() {
         subscriptionEndAt: endTs,
       });
 
-      // 로컬 보정(스냅샷 오기 전 UI 일관성)
+      // 로컬 보정
       patchRow(row.uid, {
         role: safeRole,
         isSubscribed,
         subscriptionStartAt: startTs,
         subscriptionEndAt: endTs,
+        remainingDays: calcRemainingDaysFromEnd(endTs),
       });
 
       alert('저장되었습니다.');
@@ -607,7 +606,8 @@ export default function AdminPage() {
                     onChange={(e) => {
                       const v = norm(e.target.value) as Role;
                       const safe: Role = (['free','basic','premium','admin'].includes(v) ? v : 'free') as Role;
-                      patchRow(r.uid, { role: safe });
+                      // 화면 미리보기(저장 버튼에서 최종 반영)
+                      previewRoleChange(r.uid, safe);
                     }}
                   >
                     <option value="free">free</option>
@@ -617,32 +617,8 @@ export default function AdminPage() {
                   </select>
                 </td>
                 <td className="py-2 pr-4 align-top">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4"
-                    checked={!!r.isSubscribed}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      if (!checked) {
-                        patchRow(r.uid, {
-                          isSubscribed: false,
-                          subscriptionStartAt: null,
-                          subscriptionEndAt: null,
-                          remainingDays: null,
-                        });
-                      } else {
-                        const startDate = r.subscriptionStartAt?.toDate() ?? kstToday();
-                        const endDate = r.subscriptionEndAt?.toDate() ?? addDays(startDate, 30);
-                        const clamped = clampEndAfterStart(startDate, endDate);
-                        patchRow(r.uid, {
-                          isSubscribed: true,
-                          subscriptionStartAt: Timestamp.fromDate(startDate),
-                          subscriptionEndAt: clamped ? Timestamp.fromDate(clamped) : null,
-                          remainingDays: calcRemainingDaysFromEnd(clamped ? Timestamp.fromDate(clamped) : null),
-                        });
-                      }
-                    }}
-                  />
+                  {/* 표시는 하되, role 저장 로직에서 최종 결정됨 */}
+                  <input type="checkbox" className="w-4 h-4" checked={!!r.isSubscribed} readOnly />
                 </td>
                 <td className="py-2 pr-4 align-top">
                   <input
@@ -659,7 +635,7 @@ export default function AdminPage() {
                         remainingDays: calcRemainingDaysFromEnd(clampedEnd ? Timestamp.fromDate(clampedEnd) : null),
                       });
                     }}
-                    disabled={!r.isSubscribed}
+                    disabled={r.role === 'free' || !r.isSubscribed}
                   />
                 </td>
                 <td className="py-2 pr-4 align-top">
@@ -676,7 +652,7 @@ export default function AdminPage() {
                         remainingDays: calcRemainingDaysFromEnd(clampedEnd ? Timestamp.fromDate(clampedEnd) : null),
                       });
                     }}
-                    disabled={!r.isSubscribed}
+                    disabled={r.role === 'free' || !r.isSubscribed}
                   />
                 </td>
                 <td className="py-2 pr-4 align-top">
