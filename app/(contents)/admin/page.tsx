@@ -1,13 +1,13 @@
 'use client';
 
 /**
- * Admin Page — 전체 복구 + 확장
- * 1) 공지 관리: 기존 기능 유지 (작성/수정/삭제/목록)
- * 2) 메뉴 관리: OFF/유료화(단일 선택) + 'Admin' 티어 추가
- * 3) 사용자 관리: 기존 표/정렬 유지
- *    - role 저장 시 isSubscribed/기간 자동 동기화
- *    - Firestore 규칙 허용 4필드만 업데이트:
- *      ['role','isSubscribed','subscriptionStartAt','subscriptionEndAt']
+ * Admin Page — 기존 기능 유지 + '남은 일자(Days)' 업데이트 복원
+ * 1) 공지 관리: 작성/수정/삭제/목록 (변경 없음)
+ * 2) 메뉴 관리: OFF/유료화(단일선택) + Admin 티어 (변경 없음)
+ * 3) 사용자 관리:
+ *    - role 저장 시 isSubscribed/기간 자동 동기화 (규칙 허용 4필드만)
+ *    - 남은 일자(Days) 표시/수정 + +7/+30/+90 빠른 설정
+ *    - remainingDays는 DB에 쓰지 않고, 화면 계산 후 end일자를 저장
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -31,8 +31,8 @@ interface UserRow {
   isSubscribed?: boolean;
   subscriptionStartAt?: Timestamp | null;
   subscriptionEndAt?: Timestamp | null;
-  remainingDays?: number | null;
-  subscriptionTier?: Tier; // 읽기 전용(파생)
+  remainingDays?: number | null;     // 화면 계산용(읽기/편집), DB에 쓰지 않음
+  subscriptionTier?: Tier;           // 읽기 전용(파생)
 }
 
 type NoticeDoc = {
@@ -51,6 +51,7 @@ const norm = (v: string) => String(v || '').trim().toLowerCase();
 function kstToday(): Date {
   const now = new Date();
   const k = new Date(now.getTime() + 9 * 3600 * 1000);
+  // 자정 기준(UTC)로 맞춰 보관
   return new Date(Date.UTC(k.getUTCFullYear(), k.getUTCMonth(), k.getUTCDate()));
 }
 function addDays(d: Date, n: number) { return new Date(d.getTime() + n * 86400000); }
@@ -75,17 +76,27 @@ function inputDateToDate(s: string) {
   const d = new Date(s + 'T00:00:00Z');
   return isNaN(d.getTime()) ? null : d;
 }
+
+/** 종료일→남은일자(오늘 포함) */
 function calcRemainingDaysFromEnd(end: Timestamp | null | undefined) {
   if (!end) return null;
   const e = end.toDate();
   const eu = new Date(Date.UTC(e.getFullYear(), e.getMonth(), e.getDate()));
   const base = kstToday();
   const diff = eu.getTime() - base.getTime();
-  const n = Math.ceil(diff / 86400000);
-  return n < 0 ? 0 : n;
+  // 오늘 포함: 같으면 1일, 내일이면 2일...
+  const days = Math.floor(diff / 86400000) + 1;
+  return days < 0 ? 0 : days;
 }
 
-/* 메뉴 목록(기존 유지) */
+/** 남은일자→종료일(오늘 포함) : n<=0이면 오늘로 고정 */
+function endFromRemainingDays(n: number): Date {
+  const base = kstToday();
+  const d = (isFinite(n) ? Math.max(1, Math.floor(n)) : 1) - 1; // n=1 → +0일(오늘)
+  return addDays(base, d);
+}
+
+/* 메뉴 */
 const ALL_MENUS = [
   { slug: 'convert',         label: 'Data Convert' },
   { slug: 'compare',         label: 'Compare' },
@@ -96,7 +107,7 @@ const ALL_MENUS = [
 ];
 
 export default function AdminPage() {
-  /** 내 계정이 관리자(role == 'admin')인지 판단 */
+  /** 내 계정 관리자 판별 */
   const [roleLoading, setRoleLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -117,7 +128,7 @@ export default function AdminPage() {
     return () => unsub();
   }, []);
 
-  /* ───────────── 공지 관리 (기존 유지) ───────────── */
+  /* ───────────── 공지 관리 (변경 없음) ───────────── */
 
   const [noticeId, setNoticeId] = useState<string | null>(null);
   const [nTitle, setNTitle] = useState('');
@@ -199,7 +210,7 @@ export default function AdminPage() {
     return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
   };
 
-  /* ───────────── 메뉴 관리 (OFF + 유료화 + Admin 티어) ───────────── */
+  /* ───────────── 메뉴 관리 (변경 없음) ───────────── */
 
   const [navDisabled, setNavDisabled] = useState<string[]>([]);
   const [navPaid, setNavPaid] = useState<string[]>([]);
@@ -215,7 +226,6 @@ export default function AdminPage() {
       const nav = data.navigation ?? {};
       setNavDisabled(Array.isArray(nav.disabled) ? nav.disabled : []);
       setNavPaid(Array.isArray(nav.paid) ? nav.paid : []);
-      // tiers 로드: free/basic/premium/admin
       const t = (nav.tiers ?? {}) as Record<string, Tier>;
       const next: Record<string, Tier> = {};
       ALL_MENUS.forEach(m => { next[m.slug] = 'free'; });
@@ -224,10 +234,8 @@ export default function AdminPage() {
         next[k] =
           v === 'admin'   ? 'admin'   :
           v === 'premium' ? 'premium' :
-          v === 'basic'   ? 'basic'   :
-          'free';
+          v === 'basic'   ? 'basic'   : 'free';
       });
-      // 하위호환: tiers가 없고 paid만 있으면 basic 처리
       if (!nav.tiers && Array.isArray(nav.paid)) {
         nav.paid.forEach((slug: string) => { next[slug] = 'basic'; });
       }
@@ -243,7 +251,6 @@ export default function AdminPage() {
     if (!isAdmin) return alert('권한이 없습니다.');
     setSavingNav(true);
     try {
-      // paid(하위호환)는 free가 아닌 메뉴 리스트
       const paidFromTiers = Object.entries(navTiers)
         .filter(([,t]) => t !== 'free')
         .map(([slug]) => slug);
@@ -254,7 +261,7 @@ export default function AdminPage() {
           navigation: {
             disabled: navDisabled,
             paid: paidFromTiers,
-            tiers: navTiers, // 'admin' 값 포함 가능
+            tiers: navTiers,
           },
           subscribeButtonEnabled: subscribeEnabled,
           updatedAt: serverTimestamp(),
@@ -267,12 +274,11 @@ export default function AdminPage() {
     } finally { setSavingNav(false); }
   };
 
-  /* ───────────── 사용자 관리 (복구) ───────────── */
+  /* ───────────── 사용자 관리 (남은 일자 복원) ───────────── */
 
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
 
-  // 실시간 구독: 저장 직후 UI 반영
   useEffect(() => {
     if (roleLoading || !isAdmin) return;
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -289,8 +295,8 @@ export default function AdminPage() {
           isSubscribed: data.isSubscribed ?? false,
           subscriptionStartAt: data.subscriptionStartAt ?? null,
           subscriptionEndAt: endTs,
-          remainingDays: calcRemainingDaysFromEnd(endTs),
-          subscriptionTier: (norm(data.subscriptionTier ?? 'free') as Tier), // 읽기 전용
+          remainingDays: calcRemainingDaysFromEnd(endTs), // 화면 계산값
+          subscriptionTier: (norm(data.subscriptionTier ?? 'free') as Tier),
         });
       });
       list.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
@@ -307,35 +313,24 @@ export default function AdminPage() {
     const today = kstToday();
 
     if (safeRole === 'free') {
-      return {
-        isSubscribed: false,
-        startTs: null as Timestamp | null,
-        endTs: null as Timestamp | null,
-      };
+      return { isSubscribed: false, startTs: null as Timestamp | null, endTs: null as Timestamp | null };
     }
 
-    // 유료/관리자 → 구독 켜기, 기본 30일
+    // 유료/관리자 → 구독 ON, 기본 30일
     const startD = row.subscriptionStartAt?.toDate() ?? today;
     const endD0 = row.subscriptionEndAt?.toDate() ?? addDays(startD, 30);
     const endD = clampEndAfterStart(startD, endD0) ?? addDays(startD, 30);
 
-    // 만료(오늘보다 과거)면 해제
+    // 과거 종료일이면 해제
     const endUTC = new Date(Date.UTC(endD.getUTCFullYear(), endD.getUTCMonth(), endD.getUTCDate()));
     const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
     const expired = endUTC.getTime() < todayUTC.getTime();
+    if (expired) return { isSubscribed: false, startTs: null, endTs: null };
 
-    if (expired) {
-      return { isSubscribed: false, startTs: null, endTs: null };
-    }
-
-    return {
-      isSubscribed: true,
-      startTs: Timestamp.fromDate(startD),
-      endTs: Timestamp.fromDate(endD),
-    };
+    return { isSubscribed: true, startTs: Timestamp.fromDate(startD), endTs: Timestamp.fromDate(endD) };
   }
 
-  /** 드롭다운 변경 시 화면 미리보기(저장은 버튼에서) */
+  /** 드롭다운 변경 → 화면 미리보기 */
   function previewRoleChange(uid: string, nextRole: Role) {
     const row = rows.find(r => r.uid === uid);
     if (!row) return;
@@ -354,7 +349,15 @@ export default function AdminPage() {
     setSaving(row.uid);
     try {
       const safeRole = (['free','basic','premium','admin'].includes(row.role) ? row.role : 'free') as Role;
-      const { isSubscribed, startTs, endTs } = deriveSubscriptionByRole(row, safeRole);
+
+      // role 기준 보정 1차
+      let { isSubscribed, startTs, endTs } = deriveSubscriptionByRole(row, safeRole);
+
+      // 남은 일자 입력이 있으면 → 종료일 재계산(오늘 포함)
+      if (row.isSubscribed && row.remainingDays && row.remainingDays > 0) {
+        const end = endFromRemainingDays(row.remainingDays);
+        endTs = Timestamp.fromDate(clampEndAfterStart(startTs ? startTs.toDate() : kstToday(), end) || end);
+      }
 
       await updateDoc(doc(db, 'users', row.uid), {
         role: safeRole,
@@ -363,6 +366,7 @@ export default function AdminPage() {
         subscriptionEndAt: endTs,
       });
 
+      // 로컬 보정
       patchRow(row.uid, {
         role: safeRole,
         isSubscribed,
@@ -598,21 +602,29 @@ export default function AdminPage() {
               <th className="py-2 pr-4">Subscribed</th>
               <th className="py-2 pr-4">Start</th>
               <th className="py-2 pr-4">End</th>
+              <th className="py-2 pr-4">Days</th>
               <th className="py-2 pr-4">Action</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.uid} className="border-b">
-                <td className="py-2 pr-4 align-top">{r.email}</td>
-                <td className="py-2 pr-4 align-top">
+              <tr key={r.uid} className="border-b align-top">
+                <td className="py-2 pr-4">{r.email}</td>
+                <td className="py-2 pr-4">
                   <select
                     className="border rounded px-2 py-1 bg-white dark:bg-transparent"
                     value={r.role}
                     onChange={(e) => {
                       const v = norm(e.target.value) as Role;
                       const safe: Role = (['free','basic','premium','admin'].includes(v) ? v : 'free') as Role;
-                      previewRoleChange(r.uid, safe); // 화면 미리보기
+                      const { isSubscribed, startTs, endTs } = deriveSubscriptionByRole(r, safe);
+                      patchRow(r.uid, {
+                        role: safe,
+                        isSubscribed,
+                        subscriptionStartAt: startTs,
+                        subscriptionEndAt: endTs,
+                        remainingDays: calcRemainingDaysFromEnd(endTs),
+                      });
                     }}
                   >
                     <option value="free">free</option>
@@ -621,11 +633,10 @@ export default function AdminPage() {
                     <option value="admin">admin</option>
                   </select>
                 </td>
-                <td className="py-2 pr-4 align-top">
-                  {/* role 저장 시 최종 결정 — 편집은 role 기준 */}
+                <td className="py-2 pr-4">
                   <input type="checkbox" className="w-4 h-4" checked={!!r.isSubscribed} readOnly />
                 </td>
-                <td className="py-2 pr-4 align-top">
+                <td className="py-2 pr-4">
                   <input
                     type="date"
                     className="border rounded px-2 py-1 bg-transparent"
@@ -643,7 +654,7 @@ export default function AdminPage() {
                     disabled={r.role === 'free' || !r.isSubscribed}
                   />
                 </td>
-                <td className="py-2 pr-4 align-top">
+                <td className="py-2 pr-4">
                   <input
                     type="date"
                     className="border rounded px-2 py-1 bg-transparent"
@@ -652,15 +663,65 @@ export default function AdminPage() {
                       const newEnd = inputDateToDate(e.target.value);
                       const start = r.subscriptionStartAt?.toDate() ?? null;
                       const clampedEnd = clampEndAfterStart(start, newEnd);
+                      const endTs = clampedEnd ? Timestamp.fromDate(clampedEnd) : null;
                       patchRow(r.uid, {
-                        subscriptionEndAt: clampedEnd ? Timestamp.fromDate(clampedEnd) : null,
-                        remainingDays: calcRemainingDaysFromEnd(clampedEnd ? Timestamp.fromDate(clampedEnd) : null),
+                        subscriptionEndAt: endTs,
+                        remainingDays: calcRemainingDaysFromEnd(endTs),
                       });
                     }}
                     disabled={r.role === 'free' || !r.isSubscribed}
                   />
                 </td>
-                <td className="py-2 pr-4 align-top">
+                <td className="py-2 pr-4">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      className="w-20 border rounded px-2 py-1 bg-transparent"
+                      value={r.remainingDays ?? ''}
+                      onChange={(e) => {
+                        const n = parseInt(e.target.value || '0', 10);
+                        if (!r.isSubscribed || r.role === 'free') return;
+                        const end = endFromRemainingDays(n);
+                        const start = r.subscriptionStartAt?.toDate() ?? kstToday();
+                        const clamped = clampEndAfterStart(start, end) || end;
+                        const endTs = Timestamp.fromDate(clamped);
+                        patchRow(r.uid, {
+                          remainingDays: isFinite(n) && n > 0 ? n : 1,
+                          subscriptionEndAt: endTs,
+                        });
+                      }}
+                      disabled={r.role === 'free' || !r.isSubscribed}
+                      placeholder="ex) 30"
+                    />
+                    <div className="flex gap-1">
+                      {[7,30,90].map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          className="px-2 py-1 text-xs rounded border hover:bg-slate-50 dark:hover:bg-slate-800"
+                          disabled={r.role === 'free' || !r.isSubscribed}
+                          onClick={() => {
+                            const end = endFromRemainingDays(d);
+                            const start = r.subscriptionStartAt?.toDate() ?? kstToday();
+                            const clamped = clampEndAfterStart(start, end) || end;
+                            const endTs = Timestamp.fromDate(clamped);
+                            patchRow(r.uid, {
+                              remainingDays: d,
+                              subscriptionEndAt: endTs,
+                            });
+                          }}
+                        >
+                          +{d}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    오늘 포함 기준. 예) 30 → 오늘부터 30일
+                  </p>
+                </td>
+                <td className="py-2 pr-4">
                   <button
                     onClick={() => handleSave(r)}
                     className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
