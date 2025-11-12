@@ -1,11 +1,14 @@
 'use client';
 
 /**
- * Admin Page — 메뉴 유료화 라디오에 'Admin' 옵션 추가
- * - tiers: 'free' | 'basic' | 'premium' | 'admin'
- * - 저장 시 navigation.tiers[slug] 에 'admin' 저장 가능
- * - 사이드바는 'admin' 요구 메뉴를 비관리자에게 숨김
- * - 나머지(공지/유저관리/디자인) 그대로 유지
+ * Admin Page — role 저장 시 isSubscribed 자동 동기화 (Firestore 규칙 준수)
+ * ------------------------------------------------------------------
+ * • Firestore rules가 허용하는 4개 필드만 업데이트:
+ *   ['role', 'isSubscribed', 'subscriptionStartAt', 'subscriptionEndAt']
+ * • role = free → isSubscribed=false, 날짜 null
+ *   role = basic|premium|admin → isSubscribed=true, 날짜 기본값(없을 때) 채움
+ * • 날짜 보정: start>end면 end=start로 보정. 과거 종료일이면 free 취급
+ * • 기존(공지/메뉴관리/테이블) UI/디자인/기능은 그대로 유지
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -18,8 +21,7 @@ import {
 import { db } from '@/lib/firebase/firebase';
 
 type Role = 'free' | 'basic' | 'premium' | 'admin';
-/** 티어: admin 추가 */
-type Tier = 'free' | 'basic' | 'premium' | 'admin';
+type Tier = 'free' | 'basic' | 'premium';
 
 interface UserRow {
   uid: string;
@@ -31,7 +33,8 @@ interface UserRow {
   subscriptionStartAt?: Timestamp | null;
   subscriptionEndAt?: Timestamp | null;
   remainingDays?: number | null;
-  subscriptionTier?: Tier; // 읽기 전용(파생)
+  // subscriptionTier는 읽기 전용(파생용) — 절대 쓰지 않음
+  subscriptionTier?: Tier;
 }
 
 type NoticeDoc = {
@@ -46,7 +49,7 @@ type NoticeDoc = {
 
 const norm = (v: string) => String(v || '').trim().toLowerCase();
 
-/* 날짜 유틸(기존 유지) */
+/* 날짜 유틸 */
 function kstToday(): Date {
   const now = new Date();
   const k = new Date(now.getTime() + 9 * 3600 * 1000);
@@ -77,7 +80,7 @@ function inputDateToDate(s: string) {
 function calcRemainingDaysFromEnd(end: Timestamp | null | undefined) {
   if (!end) return null;
   const e = end.toDate();
-  const eu = new Date(Date.UTC(e.getFullYear(), e.getUTCMonth(), e.getUTCDate()));
+  const eu = new Date(Date.UTC(e.getFullYear(), e.getMonth(), e.getDate()));
   const base = kstToday();
   const diff = eu.getTime() - base.getTime();
   const n = Math.ceil(diff / 86400000);
@@ -95,7 +98,7 @@ const ALL_MENUS = [
 ];
 
 export default function AdminPage() {
-  /** 내 계정이 관리자(role == 'admin')인지 확인 */
+  /* 내 계정 관리자 판별: users/{uid}.role == 'admin' */
   const [roleLoading, setRoleLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -116,7 +119,7 @@ export default function AdminPage() {
     return () => unsub();
   }, []);
 
-  /* ───────────── 공지(기존 유지) ───────────── */
+  /* ───────────── 공지 관리 (기존 유지) ───────────── */
 
   const [noticeId, setNoticeId] = useState<string | null>(null);
   const [nTitle, setNTitle] = useState('');
@@ -198,7 +201,7 @@ export default function AdminPage() {
     return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
   };
 
-  /* ───────────── 메뉴 관리(OFF/티어 라디오) ───────────── */
+  /* ───────────── 메뉴 관리 (기존 유지: disabled + tiers + paid[호환]) ───────────── */
 
   const [navDisabled, setNavDisabled] = useState<string[]>([]);
   const [navPaid, setNavPaid] = useState<string[]>([]);
@@ -214,19 +217,13 @@ export default function AdminPage() {
       const nav = data.navigation ?? {};
       setNavDisabled(Array.isArray(nav.disabled) ? nav.disabled : []);
       setNavPaid(Array.isArray(nav.paid) ? nav.paid : []);
-      // tiers 로드: free/basic/premium/admin
       const t = (nav.tiers ?? {}) as Record<string, Tier>;
       const next: Record<string, Tier> = {};
       ALL_MENUS.forEach(m => { next[m.slug] = 'free'; });
       Object.keys(t).forEach(k => {
         const v = norm(String(t[k]));
-        next[k] =
-          v === 'admin'   ? 'admin'   :
-          v === 'premium' ? 'premium' :
-          v === 'basic'   ? 'basic'   :
-          'free';
+        next[k] = v === 'premium' ? 'premium' : v === 'basic' ? 'basic' : 'free';
       });
-      // 하위호환: tiers가 없고 paid만 있으면 basic 처리
       if (!nav.tiers && Array.isArray(nav.paid)) {
         nav.paid.forEach((slug: string) => { next[slug] = 'basic'; });
       }
@@ -242,19 +239,11 @@ export default function AdminPage() {
     if (!isAdmin) return alert('권한이 없습니다.');
     setSavingNav(true);
     try {
-      // paid 필드는 하위호환용으로 유지(= free가 아닌 메뉴 목록)
-      const paidFromTiers = Object.entries(navTiers)
-        .filter(([,t]) => t !== 'free')
-        .map(([slug]) => slug);
-
+      const paidFromTiers = Object.entries(navTiers).filter(([,t]) => t !== 'free').map(([slug]) => slug);
       await setDoc(
         doc(db, 'settings', 'uploadPolicy'),
         {
-          navigation: {
-            disabled: navDisabled,
-            paid: paidFromTiers,
-            tiers: navTiers, // 'admin' 값 포함 가능
-          },
+          navigation: { disabled: navDisabled, paid: paidFromTiers, tiers: navTiers },
           subscribeButtonEnabled: subscribeEnabled,
           updatedAt: serverTimestamp(),
         },
@@ -266,11 +255,12 @@ export default function AdminPage() {
     } finally { setSavingNav(false); }
   };
 
-  /* ───────────── 사용자 관리(기존 유지) ───────────── */
+  /* ───────────── 사용자 관리 (핵심: role 저장 시 isSubscribed 동기화) ───────────── */
 
   const [rows, setRows] = useState<UserRow[]>([]);
   const [saving, setSaving] = useState<string | null>(null);
 
+  // 실시간 구독: 저장 직후 UI 반영
   useEffect(() => {
     if (roleLoading || !isAdmin) return;
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -297,7 +287,97 @@ export default function AdminPage() {
     return () => unsub();
   }, [roleLoading, isAdmin]);
 
-  /* 렌더 */
+  const patchRow = (uid: string, patch: Partial<UserRow>) =>
+    setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, ...patch } : r)));
+
+  /**
+   * role 기반 isSubscribed/기간 산출(저장 직전 사용)
+   * - free → 구독 해제
+   * - basic/premium/admin → 구독 활성(기존 날짜 없으면 기본값 채움)
+   * - 과거 종료일이면 free 취급(구독 해제)
+   */
+  function deriveSubscriptionByRole(row: UserRow, safeRole: Role) {
+    const today = kstToday();
+
+    if (safeRole === 'free') {
+      return {
+        isSubscribed: false,
+        startTs: null as Timestamp | null,
+        endTs: null as Timestamp | null,
+      };
+    }
+
+    // role이 유료/관리자
+    const startD = row.subscriptionStartAt?.toDate() ?? today;
+    const endD0 = row.subscriptionEndAt?.toDate() ?? addDays(startD, 30);
+    const endD = clampEndAfterStart(startD, endD0) ?? addDays(startD, 30);
+
+    // 종료일이 오늘보다 이전이면(과거) → 구독 해제 처리
+    const endUTC = new Date(Date.UTC(endD.getUTCFullYear(), endD.getUTCMonth(), endD.getUTCDate()));
+    const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    const expired = endUTC.getTime() < todayUTC.getTime();
+
+    if (expired) {
+      return {
+        isSubscribed: false,
+        startTs: null,
+        endTs: null,
+      };
+    }
+
+    return {
+      isSubscribed: true,
+      startTs: Timestamp.fromDate(startD),
+      endTs: Timestamp.fromDate(endD),
+    };
+  }
+
+  /** 드롭다운에서 role 바꿀 때, 화면에 즉시 예측 반영(저장은 버튼에서) */
+  function previewRoleChange(uid: string, nextRole: Role) {
+    const row = rows.find(r => r.uid === uid);
+    if (!row) return;
+    const { isSubscribed, startTs, endTs } = deriveSubscriptionByRole(row, nextRole);
+    patchRow(uid, {
+      role: nextRole,
+      isSubscribed,
+      subscriptionStartAt: startTs,
+      subscriptionEndAt: endTs,
+      remainingDays: calcRemainingDaysFromEnd(endTs),
+    });
+  }
+
+  /** 저장 버튼: role + isSubscribed(+기간) 동시 반영 (규칙 허용 4필드만) */
+  const handleSave = async (row: UserRow) => {
+    setSaving(row.uid);
+    try {
+      const safeRole = (['free','basic','premium','admin'].includes(row.role) ? row.role : 'free') as Role;
+      const { isSubscribed, startTs, endTs } = deriveSubscriptionByRole(row, safeRole);
+
+      await updateDoc(doc(db, 'users', row.uid), {
+        role: safeRole,
+        isSubscribed,
+        subscriptionStartAt: startTs,
+        subscriptionEndAt: endTs,
+      });
+
+      // 로컬 보정
+      patchRow(row.uid, {
+        role: safeRole,
+        isSubscribed,
+        subscriptionStartAt: startTs,
+        subscriptionEndAt: endTs,
+        remainingDays: calcRemainingDaysFromEnd(endTs),
+      });
+
+      alert('저장되었습니다.');
+    } catch (e:any) {
+      alert(`저장 중 오류: ${e?.code || e?.message || '알 수 없는 오류'}`);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  /* ───────────── 렌더 ───────────── */
 
   if (roleLoading) return <main className="p-6 text-sm text-gray-500">로딩 중...</main>;
   if (!isAdmin)
@@ -310,33 +390,110 @@ export default function AdminPage() {
 
   return (
     <main className="p-6 space-y-6">
-      {/* ───────── 공지 관리 ───────── */}
+      {/* 공지 관리 */}
       <section className="rounded-xl border p-4">
         <h2 className="text-lg font-bold mb-2">공지사항 관리</h2>
 
         <div className="grid grid-cols-1 gap-3">
           <div className="flex items-center gap-2">
             <label className="w-24 text-sm">상태</label>
-            <span className="text-xs px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800">{/* 신규/수정 */}폼</span>
+            <span className="text-xs px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800">{noticeId ? '수정' : '새 글'}</span>
+            {noticeId && (
+              <button className="ml-2 text-xs px-2 py-1 rounded border" onClick={resetNoticeForm} type="button">
+                새 글
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
             <label className="w-24 text-sm">제목</label>
             <input
               className="flex-1 border rounded px-2 py-1 bg-white dark:bg-transparent"
-              value={''}
-              onChange={() => {}}
-              placeholder="(기존 로직 유지: 실제 코드에서는 state 사용)"
-              readOnly
+              value={nTitle}
+              onChange={(e) => setNTitle(e.target.value)}
+              placeholder="공지 제목"
             />
           </div>
 
-          {/* 실제 공지 폼/목록 로직은 위 useEffect/useState 그대로 유지 — 생략 없이 기존 파일 그대로 사용하세요 */}
-          <p className="text-xs text-slate-500">※ 공지 섹션은 기존 코드 그대로 사용하세요. (여기선 간략 표기)</p>
+          <div>
+            <label className="block text-sm mb-1">본문(마크다운)</label>
+            <textarea
+              className="w-full min-h-[160px] border rounded px-2 py-2 bg-white dark:bg-transparent"
+              value={nContent}
+              onChange={(e) => setNContent(e.target.value)}
+              placeholder="내용"
+            />
+          </div>
+
+          <div className="flex items-center gap-6">
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={nPinned} onChange={(e) => setNPinned(e.target.checked)} />
+              상단 고정
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={nPublished} onChange={(e) => setNPublished(e.target.checked)} />
+              게시
+            </label>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={saveNotice}
+              disabled={nSaving}
+              className={`rounded px-4 py-2 text-sm font-semibold ${nSaving ? 'bg-slate-300' : 'bg-black text-white hover:opacity-90'}`}
+            >
+              {noticeId ? '수정 저장' : '등록'}
+            </button>
+
+            {noticeId && (
+              <button
+                onClick={deleteNotice}
+                type="button"
+                className="rounded px-4 py-2 text-sm font-semibold border border-red-500 text-red-600"
+              >
+                삭제
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-semibold">최근 공지(최대 50)</h3>
+            {nLoading && <span className="text-xs text-slate-500">불러오는 중…</span>}
+          </div>
+          {nError && <p className="text-xs text-red-600">{nError}</p>}
+          <div className="border rounded overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-900/40 text-left">
+                  <th className="py-2 px-3 w-14">고정</th>
+                  <th className="py-2 px-3">제목</th>
+                  <th className="py-2 px-3 w-24">게시</th>
+                  <th className="py-2 px-3 w-40">작성일</th>
+                  <th className="py-2 px-3 w-40">수정일</th>
+                </tr>
+              </thead>
+              <tbody>
+                {noticeRows.map((n) => (
+                  <tr key={n.id} className="border-t hover:bg-slate-50/60 dark:hover:bg-slate-900/30 cursor-pointer" onClick={() => loadNoticeToForm(n)}>
+                    <td className="py-2 px-3">{n.pinned ? '📌' : ''}</td>
+                    <td className="py-2 px-3 truncate">{n.title}</td>
+                    <td className="py-2 px-3">{n.published === false ? '숨김' : '게시'}</td>
+                    <td className="py-2 px-3 text-xs">{fmtDate(n.createdAt)}</td>
+                    <td className="py-2 px-3 text-xs">{fmtDate(n.updatedAt)}</td>
+                  </tr>
+                ))}
+                {noticeRows.length === 0 && !nLoading && (
+                  <tr><td className="py-4 px-3 text-center text-xs text-slate-500" colSpan={5}>등록된 공지가 없습니다.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
 
-      {/* ───────── 메뉴 관리 ───────── */}
+      {/* 메뉴 관리 */}
       <section className="rounded-xl border p-4">
         <h2 className="text-lg font-bold mb-2">메뉴 관리</h2>
 
@@ -355,7 +512,7 @@ export default function AdminPage() {
         <h3 className="text-sm font-semibold mt-2 mb-2">비활성화(OFF)</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-6">
           {ALL_MENUS.map((m) => {
-            const checked = disabledSet.has(m.slug);
+            const checked = new Set(navDisabled).has(m.slug);
             return (
               <label key={m.slug} className="flex items-center gap-2 rounded-lg border p-3 cursor-pointer">
                 <input
@@ -378,7 +535,7 @@ export default function AdminPage() {
         </div>
 
         <h3 className="text-sm font-semibold mt-2 mb-2">유료화(단일 선택)</h3>
-        <p className="text-xs text-slate-600 mb-3">메뉴별로 무료/Basic/Premium/Admin 중 하나를 선택합니다.</p>
+        <p className="text-xs text-slate-600 mb-3">메뉴별로 무료/Basic/Premium 중 하나를 선택합니다.</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
           {ALL_MENUS.map((m) => {
             const curr = navTiers[m.slug] ?? 'free';
@@ -389,11 +546,11 @@ export default function AdminPage() {
                   <span>{m.label}</span>
                   {curr !== 'free' && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30">
-                      {curr === 'admin' ? 'Admin' : curr === 'premium' ? 'Premium' : 'Basic'}
+                      {curr === 'premium' ? 'Premium' : 'Basic'}
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-4 flex-wrap">
+                <div className="flex items-center gap-4">
                   <label className="inline-flex items-center gap-2 text-sm">
                     <input type="radio" name={`tier-${m.slug}`} checked={curr === 'free'} onChange={() => setTier('free')} />
                     무료
@@ -405,10 +562,6 @@ export default function AdminPage() {
                   <label className="inline-flex items-center gap-2 text-sm">
                     <input type="radio" name={`tier-${m.slug}`} checked={curr === 'premium'} onChange={() => setTier('premium')} />
                     Premium
-                  </label>
-                  <label className="inline-flex items-center gap-2 text-sm">
-                    <input type="radio" name={`tier-${m.slug}`} checked={curr === 'admin'} onChange={() => setTier('admin')} />
-                    Admin
                   </label>
                 </div>
               </div>
@@ -428,10 +581,93 @@ export default function AdminPage() {
         </div>
       </section>
 
-      {/* 사용자 관리 섹션은 기존 로직 유지 (role ↔ 구독 동기화 등) */}
+      {/* 사용자 관리 */}
       <section>
         <h1 className="text-xl font-semibold mb-4">사용자 관리</h1>
-        <p className="text-xs text-slate-500">※ 기존 사용자 테이블/저장 로직 그대로 사용하세요.</p>
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="text-left border-b">
+              <th className="py-2 pr-4">Email</th>
+              <th className="py-2 pr-4">Role</th>
+              <th className="py-2 pr-4">Subscribed</th>
+              <th className="py-2 pr-4">Start</th>
+              <th className="py-2 pr-4">End</th>
+              <th className="py-2 pr-4">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.uid} className="border-b">
+                <td className="py-2 pr-4 align-top">{r.email}</td>
+                <td className="py-2 pr-4 align-top">
+                  <select
+                    className="border rounded px-2 py-1 bg-white dark:bg-transparent"
+                    value={r.role}
+                    onChange={(e) => {
+                      const v = norm(e.target.value) as Role;
+                      const safe: Role = (['free','basic','premium','admin'].includes(v) ? v : 'free') as Role;
+                      // 화면 미리보기(저장 버튼에서 최종 반영)
+                      previewRoleChange(r.uid, safe);
+                    }}
+                  >
+                    <option value="free">free</option>
+                    <option value="basic">basic</option>
+                    <option value="premium">premium</option>
+                    <option value="admin">admin</option>
+                  </select>
+                </td>
+                <td className="py-2 pr-4 align-top">
+                  {/* 표시는 하되, role 저장 로직에서 최종 결정됨 */}
+                  <input type="checkbox" className="w-4 h-4" checked={!!r.isSubscribed} readOnly />
+                </td>
+                <td className="py-2 pr-4 align-top">
+                  <input
+                    type="date"
+                    className="border rounded px-2 py-1 bg-transparent"
+                    value={tsToInputDate(r.subscriptionStartAt)}
+                    onChange={(e) => {
+                      const newStart = inputDateToDate(e.target.value);
+                      const currEnd = r.subscriptionEndAt?.toDate() ?? null;
+                      const clampedEnd = clampEndAfterStart(newStart, currEnd);
+                      patchRow(r.uid, {
+                        subscriptionStartAt: newStart ? Timestamp.fromDate(newStart) : null,
+                        subscriptionEndAt: clampedEnd ? Timestamp.fromDate(clampedEnd) : null,
+                        remainingDays: calcRemainingDaysFromEnd(clampedEnd ? Timestamp.fromDate(clampedEnd) : null),
+                      });
+                    }}
+                    disabled={r.role === 'free' || !r.isSubscribed}
+                  />
+                </td>
+                <td className="py-2 pr-4 align-top">
+                  <input
+                    type="date"
+                    className="border rounded px-2 py-1 bg-transparent"
+                    value={tsToInputDate(r.subscriptionEndAt)}
+                    onChange={(e) => {
+                      const newEnd = inputDateToDate(e.target.value);
+                      const start = r.subscriptionStartAt?.toDate() ?? null;
+                      const clampedEnd = clampEndAfterStart(start, newEnd);
+                      patchRow(r.uid, {
+                        subscriptionEndAt: clampedEnd ? Timestamp.fromDate(clampedEnd) : null,
+                        remainingDays: calcRemainingDaysFromEnd(clampedEnd ? Timestamp.fromDate(clampedEnd) : null),
+                      });
+                    }}
+                    disabled={r.role === 'free' || !r.isSubscribed}
+                  />
+                </td>
+                <td className="py-2 pr-4 align-top">
+                  <button
+                    onClick={() => handleSave(r)}
+                    className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
+                    disabled={saving === r.uid}
+                  >
+                    {saving === r.uid ? '저장 중…' : '저장'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </section>
     </main>
   );
