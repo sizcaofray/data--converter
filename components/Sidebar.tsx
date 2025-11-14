@@ -11,15 +11,16 @@
  *  - settings/uploadPolicy 의 navigation.disabled / navigation.paid / navigation.tiers 로직 유지.
  *
  * 주의:
- *  - Firestore 규칙에 맞춰 DB는 읽기만 하며, 상태 판정은 클라이언트에서 수행합니다.
+ *  - Firestore 규칙에 맞춰 DB는 읽기 위주지만,
+ *    ✅ 이번에 추가한 부분에서 "만료된 일반 유저"는
+ *       role을 free, isSubscribed를 false로 DB에 1회 보정합니다.
  */
 
+import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
-import clsx from 'clsx';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase/firebase';
 
 /** 구독 티어 정의 */
@@ -34,34 +35,26 @@ type MenuItem = {
 
 /** 실제 노출 메뉴(기존 유지) */
 const MENUS: MenuItem[] = [
-  { slug: 'convert',         label: 'Data Convert',   href: '/convert' },
-  { slug: 'compare',         label: 'Compare',        href: '/compare' },
-  { slug: 'pdf-tool',        label: 'PDF Tool',       href: '/pdf-tool' },
-  { slug: 'pattern-editor',  label: 'Pattern Editor', href: '/pattern-editor' },
-  { slug: 'random',          label: 'Random',         href: '/random' },
-  { slug: 'admin',           label: 'Admin',          href: '/admin', adminOnly: true },
+  { slug: 'cover', label: 'Cover', href: '/' },
+  { slug: 'convert', label: 'Data Convert', href: '/convert' },
+  { slug: 'compare', label: 'Data Compare', href: '/compare' },
+  { slug: 'pattern-editor', label: 'Pattern Editor', href: '/pattern-editor' },
+  { slug: 'randomizer', label: 'Randomizer', href: '/randomizer' },
+  { slug: 'pdf-tool', label: 'PDF Tool', href: '/pdf' },
+  { slug: 'admin', label: 'Admin', href: '/admin', adminOnly: true },
 ];
 
-/** 업로드 정책 스키마 */
+/** 문자열 정규화(소문자 + trim) */
+const norm = (v: any): string => String(v ?? '').trim().toLowerCase();
+
+/** settings/uploadPolicy 문서 구조 중, navigation 관련 부분만 정의 */
 type UploadPolicy = {
   navigation?: {
-    disabled?: string[];                 // 강제 OFF 목록
-    paid?: string[];                     // (하위호환) 유료 목록 → 기본 basic 취급
-    tiers?: Record<string, Tier>;        // slug별 요구 티어: 'free'|'basic'|'premium'|'admin'
+    disabled?: string[]; // 강제 OFF 슬러그 목록
+    paid?: string[];     // 유료(=basic) 메뉴 슬러그 목록(하위호환)
+    tiers?: Record<string, Tier>; // slug → required tier
   };
-  subscribeButtonEnabled?: boolean;
 };
-
-/** 문자열 정규화 */
-const norm = (v: string) => String(v || '').trim().toLowerCase();
-
-/** 과거 키 → 내부 slug로 정규화 */
-function normalizeToInternalSlug(input: string): string {
-  const s = norm(input);
-  if (s === 'pdf') return 'pdf-tool';
-  if (s === 'pattern') return 'pattern-editor';
-  return s;
-}
 
 /* ───────────── 날짜 유틸: KST 자정 기준 ───────────── */
 
@@ -91,12 +84,18 @@ export default function Sidebar() {
       if (!u) {
         setRole('user');
         setUserTier('free');
-        if (unsubUser) { unsubUser(); unsubUser = null; }
+        if (unsubUser) {
+          unsubUser();
+          unsubUser = null;
+        }
         return;
       }
 
       const userRef = doc(db, 'users', u.uid);
-      if (unsubUser) { unsubUser(); unsubUser = null; }
+      if (unsubUser) {
+        unsubUser();
+        unsubUser = null;
+      }
       unsubUser = onSnapshot(
         userRef,
         (snap) => {
@@ -108,13 +107,15 @@ export default function Sidebar() {
           setRole(isAdmin ? 'admin' : 'user');
 
           // 2) 구독/만료 판정
-          const rawTier = norm(data.subscriptionTier ?? '');  // 읽기 전용(표기용)
+          const rawTier = norm(data.subscriptionTier ?? ''); // 읽기 전용(표기용)
           const isSubscribed = !!data.isSubscribed;
 
           // Firestore Timestamp → Date
           const endTs = data.subscriptionEndAt || null;
           const endDate: Date | null = endTs
-            ? (typeof endTs.toDate === 'function' ? endTs.toDate() : new Date(endTs))
+            ? typeof endTs.toDate === 'function'
+              ? endTs.toDate()
+              : new Date(endTs)
             : null;
 
           // 만료 판단 (마지막 날 당일 포함)
@@ -123,6 +124,23 @@ export default function Sidebar() {
           const today = kstToday();
           const endOnly = endDate ? toUTCDateOnly(endDate) : null;
           const expired = !!endOnly && endOnly.getTime() < today.getTime();
+
+          // 2-1) 만료된 유저의 DB 자동 보정
+          //  - Admin이 아닌데 구독이 만료된 경우:
+          //    · role              → 'free'
+          //    · isSubscribed      → false
+          //    · subscriptionStartAt / subscriptionEndAt → null
+          //  - Firestore 규칙에서 허용된 범위 내에서만 동작(실패해도 UI 동작에는 영향 없음)
+          if (expired && !isAdmin && (isSubscribed || roleNorm !== 'free')) {
+            updateDoc(userRef, {
+              role: 'free',
+              isSubscribed: false,
+              subscriptionStartAt: null,
+              subscriptionEndAt: null,
+            }).catch((e) => {
+              console.error('만료 구독 자동 보정 실패:', e);
+            });
+          }
 
           // 3) Admin은 항상 Admin 티어(만료 무시)
           if (isAdmin) {
@@ -135,10 +153,17 @@ export default function Sidebar() {
 
           // 5) 최종 사용자 티어 결정(표기 없는 유료는 basic로 취급)
           const tierFromSub: Tier =
-            rawTier === 'premium' ? (activeSub ? 'premium' : 'free')
-          : rawTier === 'basic'   ? (activeSub ? 'basic'   : 'free')
-          : activeSub             ? 'basic'
-                                  : 'free';
+            rawTier === 'premium'
+              ? activeSub
+                ? 'premium'
+                : 'free'
+              : rawTier === 'basic'
+              ? activeSub
+                ? 'basic'
+                : 'free'
+              : activeSub
+              ? 'basic'
+              : 'free';
 
           setUserTier(tierFromSub);
         },
@@ -180,16 +205,19 @@ export default function Sidebar() {
 
         // tiers: free/basic/premium/admin
         const rawTiers = nav.tiers ?? {};
-        const nextTiers: Record<string, Tier> = {};
-        Object.keys(rawTiers).forEach((k) => {
-          const key = normalizeToInternalSlug(k);
-          const v = norm(String(rawTiers[k] ?? 'free'));
-          nextTiers[key] =
-            v === 'admin'   ? 'admin'   :
-            v === 'premium' ? 'premium' :
-            v === 'basic'   ? 'basic'   : 'free';
-        });
-        setTiersMap(nextTiers);
+        const normTiers: Record<string, Tier> = {};
+        for (const [k, v] of Object.entries(rawTiers)) {
+          const slug = normalizeToInternalSlug(String(k));
+          const tierNorm = norm(v);
+          const valid =
+            tierNorm === 'free' ||
+            tierNorm === 'basic' ||
+            tierNorm === 'premium' ||
+            tierNorm === 'admin';
+          if (!slug || !valid) continue;
+          normTiers[slug] = tierNorm as Tier;
+        }
+        setTiersMap(normTiers);
 
         setPolicyLoading(false);
       },
@@ -203,57 +231,65 @@ export default function Sidebar() {
     return () => unsub();
   }, []);
 
-  /* ───────── 메뉴 표시/활성화 상태 계산 ───────── */
+  /* ───────── 메뉴 뷰 모델 ───────── */
   const menuView = useMemo(() => {
-    const isAdmin = role === 'admin';
-    const effectiveUserTier: Tier = isAdmin ? 'admin' : userTier;
+    const path = pathname ?? '';
 
     return MENUS.map((m) => {
-      // Admin 메뉴 자체는 관리자 전용
-      const hiddenByAdminOnly = !!m.adminOnly && !isAdmin;
+      const slug = normalizeToInternalSlug(m.slug);
+      const isAdmin = role === 'admin';
+
+      // Admin 전용 메뉴는 관리자만 보이게
+      if (m.adminOnly && !isAdmin) {
+        return { ...m, hidden: true, required: 'admin' as Tier, paidLabel: 'Admin' };
+      }
+
+      // 정책 로딩 중에는 기본 free로 취급 (플리커 방지)
+      const requiredTier: Tier = tiersMap[slug] ?? (paidSlugs.includes(slug) ? 'basic' : 'free');
 
       // 강제 OFF
-      const disabledByAdmin = disabledSlugs.includes(m.slug);
-
-      // 요구 티어: tiersMap > paid(=basic) > free
-      const required: Tier =
-        tiersMap[m.slug]
-          ?? (paidSlugs.includes(m.slug) ? 'basic' : 'free');
+      const disabledByAdmin = disabledSlugs.includes(slug);
 
       // 배지 라벨
       const paidLabel =
-        required === 'admin'   ? 'Admin'   :
-        required === 'premium' ? 'Premium' :
-        required === 'basic'   ? 'Basic'   : '';
+        requiredTier === 'admin'
+          ? 'Admin'
+          : requiredTier === 'premium'
+          ? 'Premium'
+          : requiredTier === 'basic'
+          ? 'Basic'
+          : '';
 
-      // Admin 전용은 비관리자에게 숨김
-      const hiddenByTier = (required === 'admin') && !isAdmin;
+      // 사용자 티어가 요구 티어를 만족하는지
+      const tierRank = (t: Tier) =>
+        t === 'free' ? 0 : t === 'basic' ? 1 : t === 'premium' ? 2 : 3;
+      const canUse = tierRank(userTier) >= tierRank(requiredTier);
 
-      // 등급 미충족 시 비활성화(표시는 하되 클릭 불가)
-      const disabledByTier =
-        (required === 'premium' && !['premium', 'admin'].includes(effectiveUserTier)) ||
-        (required === 'basic'   && !['basic', 'premium', 'admin'].includes(effectiveUserTier));
-
-      const disabledByLoading = policyLoading && !isAdmin;
+      // 최종 hidden/disabled
+      const hidden = false; // Admin 전용 처리만 위에서 함
+      const disabled = disabledByAdmin || !canUse;
 
       return {
         ...m,
-        required,
+        required: requiredTier,
         paidLabel,
-        hidden: hiddenByAdminOnly || hiddenByTier,
-        isDisabled: !hiddenByAdminOnly && !hiddenByTier && (disabledByAdmin || disabledByTier || disabledByLoading),
+        hidden,
+        disabled,
+        active: path.startsWith(m.href),
       };
     });
-  }, [role, userTier, disabledSlugs, paidSlugs, tiersMap, policyLoading]);
+  }, [pathname, role, userTier, disabledSlugs, paidSlugs, tiersMap]);
 
   /* ───────── 렌더 ───────── */
-  const path = pathname || '/';
-  const base = 'group block rounded-md px-3 py-2 text-sm transition select-none';
+  const path = pathname ?? '';
+
+  const base =
+    'w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors';
   const enabled = (active: boolean) =>
     active
-      ? 'bg-blue-600 text-white font-semibold'
+      ? 'bg-blue-600 text-white'
       : 'text-gray-900 dark:text-white hover:bg-blue-100/70 dark:hover:bg-blue-800/40';
-  const disabled = 'opacity-40 cursor-not-allowed';
+  const disabledCls = 'opacity-40 cursor-not-allowed';
 
   return (
     <aside className="w-64 shrink-0">
@@ -261,48 +297,48 @@ export default function Sidebar() {
 
       <nav className="px-2 pb-4">
         <ul className="space-y-1">
-          {menuView.filter((m) => !m.hidden).map((m) => {
-            const active = path.startsWith(m.href);
-            const label = (
-              <span className="inline-flex items-center gap-2">
-                {m.label}
-                {m.paidLabel && (
-                  <span className="text-[10px] rounded px-1.5 py-0.5 border border-amber-300/60 bg-amber-50/60 dark:border-amber-500/40 dark:bg-amber-900/20">
-                    {m.paidLabel}
-                  </span>
-                )}
-                {policyLoading && <span className="text-[10px] ml-1 opacity-60">로딩중</span>}
-              </span>
-            );
+          {menuView
+            .filter((m) => !m.hidden)
+            .map((m) => {
+              const label = (
+                <span className="inline-flex items-center gap-2">
+                  {m.label}
+                  {m.paidLabel && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-blue-500 text-blue-600 dark:text-blue-300">
+                      {m.paidLabel}
+                    </span>
+                  )}
+                </span>
+              );
 
-            return (
-              <li key={m.slug}>
-                {m.isDisabled ? (
-                  <span
-                    className={clsx(base, disabled)}
-                    aria-disabled="true"
-                    title={
-                      policyLoading
-                        ? '정책 로딩 중'
-                        : (m.required === 'free'
-                            ? '관리자에 의해 비활성화됨'
-                            : m.required === 'admin'
-                              ? '관리자 전용 메뉴입니다'
-                              : '구독 등급이 필요합니다')
-                    }
-                  >
-                    {label}
-                  </span>
-                ) : (
-                  <Link href={m.href} className={clsx(base, enabled(active))}>
+              if (m.disabled) {
+                return (
+                  <li key={m.slug}>
+                    <button className={`${base} ${disabledCls}`} disabled>
+                      {label}
+                    </button>
+                  </li>
+                );
+              }
+
+              return (
+                <li key={m.slug}>
+                  <Link href={m.href} className={`${base} ${enabled(path.startsWith(m.href))}`}>
                     {label}
                   </Link>
-                )}
-              </li>
-            );
-          })}
+                </li>
+              );
+            })}
         </ul>
       </nav>
     </aside>
   );
+}
+
+/** slug를 내부 슬러그로 정규화 */
+function normalizeToInternalSlug(s: string): string {
+  const v = norm(s);
+  if (v === 'pdf') return 'pdf-tool';
+  if (v === 'pattern') return 'pattern-editor';
+  return v;
 }
