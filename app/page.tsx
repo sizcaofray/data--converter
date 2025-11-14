@@ -38,29 +38,14 @@ import {
   updateDoc,
 } from 'firebase/firestore'
 
-// 공지 본문 마크다운 렌더
-import ReactMarkdown from 'react-markdown'
-
-// 로그인 시 이동 경로(정책 유지)
-const DEFAULT_AFTER_LOGIN = '/convert'
-
-// 우측 기능 카드(표시만; 링크 없음) — ✅ Admin 항목 제거
-const FEATURE_CARDS = [
-  { title: 'Data Convert', desc: '엑셀 · CSV · TXT · JSON 변환', emoji: '🔁' },
-  { title: 'Compare', desc: '두 파일 비교 · 결과 내보내기', emoji: '🧮' },
-  { title: 'PDF Tool', desc: 'PDF 분할 · 병합 · 암호화', emoji: '📄' },
-  { title: 'Pattern Editor', desc: '텍스트 치환 · 정규식 편집', emoji: '✍️' },
-  { title: 'Random', desc: '랜덤 데이터 · 샘플 생성', emoji: '🎲' },
-]
-
-// KST 기준 오늘(연-월-일만) Date
+// 🔧 KST 기준 오늘(연-월-일만) Date
 const kstTodayDateOnly = () => {
   const now = new Date()
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000) // UTC+9
   return new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()))
 }
 
-// 종료일 Timestamp가 오늘(KST) 기준으로 지났는지 여부
+// 🔧 종료일 Timestamp가 오늘(KST) 기준으로 지났는지 여부
 // - 예: end=11/12, 오늘=11/12 → 사용 가능 (만료 아님)
 //       end=11/12, 오늘=11/13 → 만료(true)
 const isExpired = (endTs?: Timestamp | null): boolean => {
@@ -71,11 +56,10 @@ const isExpired = (endTs?: Timestamp | null): boolean => {
   return endOnly.getTime() < todayOnly.getTime()
 }
 
-// 문자열 정규화
+// 🔧 문자열 정규화
 const norm = (v: any) => String(v ?? '').trim().toLowerCase()
 
-// 로그인 직후 / 세션 감지 시, 해당 사용자의 만료 상태를 확인하고
-// 필요하면 free 계정으로 자동 다운그레이드
+// 🔑 로그인/세션 감지 시, 구독 만료 계정을 free 로 자동 다운그레이드
 const normalizeUserSubscriptionOnLogin = async (user: User) => {
   const userRef = doc(db, 'users', user.uid)
   const snap = await getDoc(userRef)
@@ -84,7 +68,7 @@ const normalizeUserSubscriptionOnLogin = async (user: User) => {
   const data = snap.data() as any
   const roleRaw = norm(data.role ?? 'free')
   const isAdmin = roleRaw === 'admin'
-  if (isAdmin) return // 관리자는 건드리지 않음
+  if (isAdmin) return // 관리자는 제외
 
   const isSubscribed = !!data.isSubscribed
   const endTs = (data.subscriptionEndAt ?? null) as Timestamp | null
@@ -101,6 +85,21 @@ const normalizeUserSubscriptionOnLogin = async (user: User) => {
     subscriptionEndAt: null,
   })
 }
+
+// 공지 본문 마크다운 렌더
+import ReactMarkdown from 'react-markdown'
+
+// 로그인 시 이동 경로(정책 유지)
+const DEFAULT_AFTER_LOGIN = '/convert'
+
+// 우측 기능 카드(표시만; 링크 없음) — ✅ Admin 항목 제거
+const FEATURE_CARDS = [
+  { title: 'Data Convert', desc: '엑셀 · CSV · TXT · JSON 변환', emoji: '🔁' },
+  { title: 'Compare', desc: '두 파일 비교 · 결과 내보내기', emoji: '🧮' },
+  { title: 'PDF Tool', desc: 'PDF 분할 · 병합 · 암호화', emoji: '📄' },
+  { title: 'Pattern Editor', desc: '텍스트 치환 · 정규식 편집', emoji: '✍️' },
+  { title: 'Random', desc: '랜덤 데이터 · 샘플 생성', emoji: '🎲' },
+]
 
 // 공지 타입
 type Notice = {
@@ -139,16 +138,15 @@ export default function HomePage() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
-      if (u) {
-        // 세션 감지 시에도 만료 상태를 한 번 더 보정
-        normalizeUserSubscriptionOnLogin(u)
-          .catch((err) => {
-            console.error('로그인 세션 만료 보정 오류:', err)
-          })
-          .finally(() => {
-            router.replace(DEFAULT_AFTER_LOGIN)
-          })
-      }
+      if (!u) return
+      // ✅ 로그인 세션 감지 시 만료 계정 자동 다운그레이드 후 메인 기능 페이지로 이동
+      normalizeUserSubscriptionOnLogin(u)
+        .catch((err) => {
+          console.error('로그인 세션 만료 보정 오류:', err)
+        })
+        .finally(() => {
+          router.replace(DEFAULT_AFTER_LOGIN)
+        })
     })
     return () => unsub()
   }, [router])
@@ -202,9 +200,10 @@ export default function HomePage() {
   const handleLogin = async () => {
     try {
       setAuthBusy(true)
+      // 🔐 Google 로그인 수행
       const result = await signInWithPopup(auth, new GoogleAuthProvider())
       const user = result.user
-      // 로그인 직후, 본인 계정의 만료 상태를 확인하고 필요 시 free 계정으로 다운그레이드
+      // ✅ 로그인 직후에도 만료 계정이면 free 로 자동 다운그레이드
       await normalizeUserSubscriptionOnLogin(user)
       router.replace(DEFAULT_AFTER_LOGIN)
     } finally {
