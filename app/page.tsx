@@ -33,6 +33,9 @@ import {
   query,
   where,
   Timestamp,
+  doc,
+  getDoc,
+  updateDoc,
 } from 'firebase/firestore'
 
 // 공지 본문 마크다운 렌더
@@ -50,21 +53,78 @@ const FEATURE_CARDS = [
   { title: 'Random', desc: '랜덤 데이터 · 샘플 생성', emoji: '🎲' },
 ]
 
+// KST 기준 오늘(연-월-일만) Date
+const kstTodayDateOnly = () => {
+  const now = new Date()
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000) // UTC+9
+  return new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()))
+}
+
+// 종료일 Timestamp가 오늘(KST) 기준으로 지났는지 여부
+// - 예: end=11/12, 오늘=11/12 → 사용 가능 (만료 아님)
+//       end=11/12, 오늘=11/13 → 만료(true)
+const isExpired = (endTs?: Timestamp | null): boolean => {
+  if (!endTs) return false
+  const end = endTs.toDate()
+  const endOnly = new Date(Date.UTC(end.getFullYear(), end.getMonth(), end.getDate()))
+  const todayOnly = kstTodayDateOnly()
+  return endOnly.getTime() < todayOnly.getTime()
+}
+
+// 문자열 정규화
+const norm = (v: any) => String(v ?? '').trim().toLowerCase()
+
+// 로그인 직후 / 세션 감지 시, 해당 사용자의 만료 상태를 확인하고
+// 필요하면 free 계정으로 자동 다운그레이드
+const normalizeUserSubscriptionOnLogin = async (user: User) => {
+  const userRef = doc(db, 'users', user.uid)
+  const snap = await getDoc(userRef)
+  if (!snap.exists()) return
+
+  const data = snap.data() as any
+  const roleRaw = norm(data.role ?? 'free')
+  const isAdmin = roleRaw === 'admin'
+  if (isAdmin) return // 관리자는 건드리지 않음
+
+  const isSubscribed = !!data.isSubscribed
+  const endTs = (data.subscriptionEndAt ?? null) as Timestamp | null
+
+  const expired = isExpired(endTs)
+
+  // 이미 free + 미구독이면 변화 없음
+  if (!expired || (!isSubscribed && roleRaw === 'free')) return
+
+  await updateDoc(userRef, {
+    role: 'free',
+    isSubscribed: false,
+    subscriptionStartAt: null,
+    subscriptionEndAt: null,
+  })
+}
+
 // 공지 타입
 type Notice = {
   id: string
   title: string
+  summary: string
   content_md?: string
   pinned?: boolean
-  published?: boolean
   createdAt?: Timestamp
-  updatedAt?: Timestamp
 }
+
+// 좌측 공지 스켈레톤용
+const NoticeSkeleton = () => (
+  <div className="animate-pulse space-y-2">
+    <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-2/3" />
+    <div className="h-3 bg-slate-200 dark:bg-slate-700 rounded w-5/6" />
+    <div className="h-3 bg-slate-200 dark:bg-slate-700 rounded w-4/6" />
+  </div>
+)
 
 export default function HomePage() {
   const router = useRouter()
 
-  // 인증 상태
+  // 로그인 상태
   const [user, setUser] = useState<User | null>(null)
   const [authBusy, setAuthBusy] = useState(false)
 
@@ -79,7 +139,16 @@ export default function HomePage() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u)
-      if (u) router.replace(DEFAULT_AFTER_LOGIN)
+      if (u) {
+        // 세션 감지 시에도 만료 상태를 한 번 더 보정
+        normalizeUserSubscriptionOnLogin(u)
+          .catch((err) => {
+            console.error('로그인 세션 만료 보정 오류:', err)
+          })
+          .finally(() => {
+            router.replace(DEFAULT_AFTER_LOGIN)
+          })
+      }
     })
     return () => unsub()
   }, [router])
@@ -96,34 +165,35 @@ export default function HomePage() {
         qy,
         (snap) => {
           const rows: Notice[] = []
-          snap.forEach((doc) => rows.push({ id: doc.id, ...(doc.data() as Omit<Notice, 'id'>) }))
+          snap.forEach((doc) =>
+            rows.push({ id: doc.id, ...(doc.data() as Omit<Notice, 'id'>) }),
+          )
           setRawNotices(rows)
           setLoadingNotices(false)
         },
         (err) => {
-          console.error('[notice] query error:', err?.code, err?.message)
-          setRawNotices([])
+          console.error('공지 구독 오류:', err)
           setLoadingNotices(false)
-        }
+        },
       )
       return () => unsub()
-    } catch (e: any) {
-      console.error('[notice] query exception:', e?.message || e)
-      setRawNotices([])
+    } catch (e) {
+      console.error('공지 구독 설정 오류:', e)
       setLoadingNotices(false)
     }
   }, [])
 
-  /* 클라 정렬: pinned(true) 우선 → createdAt desc */
+  // pinned 우선 → createdAt 내림차순 정렬
   const notices = useMemo(() => {
     const arr = [...rawNotices]
     arr.sort((a, b) => {
       const ap = a.pinned ? 1 : 0
       const bp = b.pinned ? 1 : 0
-      if (ap !== bp) return bp - ap
+      if (ap !== bp) return bp - ap // pinned 먼저
+
       const at = a.createdAt?.toMillis?.() ?? 0
       const bt = b.createdAt?.toMillis?.() ?? 0
-      return bt - at
+      return bt - at // 최신순
     })
     return arr
   }, [rawNotices])
@@ -132,7 +202,10 @@ export default function HomePage() {
   const handleLogin = async () => {
     try {
       setAuthBusy(true)
-      await signInWithPopup(auth, new GoogleAuthProvider())
+      const result = await signInWithPopup(auth, new GoogleAuthProvider())
+      const user = result.user
+      // 로그인 직후, 본인 계정의 만료 상태를 확인하고 필요 시 free 계정으로 다운그레이드
+      await normalizeUserSubscriptionOnLogin(user)
       router.replace(DEFAULT_AFTER_LOGIN)
     } finally {
       setAuthBusy(false)
@@ -160,142 +233,221 @@ export default function HomePage() {
   const hasNotices = notices.length > 0
 
   return (
-    <main className="relative flex-1 flex flex-col items-center justify-start px-4">
-      {/* 상단 우측: 로그인 박스 */}
-      <div className="absolute right-6 top-14 z-40">
-        <div className="rounded-xl border border-white/15 bg-black/30 dark:bg-white/10 backdrop-blur px-4 py-3 shadow-md">
-          {user ? (
-            <div className="flex items-center gap-3">
-              <span className="text-sm opacity-90">{user.email}</span>
-              <button
-                onClick={handleLogout}
-                disabled={authBusy}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-sm text-white hover:opacity-90 disabled:opacity-60"
-              >
-                로그아웃
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={handleLogin}
-              disabled={authBusy}
-              className="rounded-md border border-white/20 bg-black/30 px-4 py-2 text-sm text-white hover:bg-black/40 disabled:opacity-60"
-            >
-              Google 계정으로 로그인
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* 히어로 */}
-      <section className="w-full max-w-6xl mx-auto pt-16 text-center">
-        <h1 className="text-4xl md:text-5xl font-extrabold mb-3">Data Converter</h1>
-        <p className="text-gray-300 dark:text-gray-300 max-w-xl mx-auto leading-relaxed">
-          다양한 포맷을 빠르게 변환하고 비교·편집·PDF 도구까지 한 곳에서 이용하세요.
-        </p>
-      </section>
-
-      {/* 본문 2열: 좌(공지) / 우(기능 카드) */}
-      <section className="w-full max-w-6xl mx-auto mt-10 mb-16">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* 좌: 공지 */}
-          <div className="rounded-2xl border border-white/10 bg-white/5 dark:bg-white/5 backdrop-blur p-5 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold">공지사항</h2>
-            </div>
-
-            <div className="max-h-72 overflow-auto pr-1">
-              {loadingNotices && <p className="text-sm opacity-70">불러오는 중…</p>}
-
-              {!loadingNotices && !hasNotices && (
-                <p className="text-sm opacity-70">등록된 공지가 없습니다.</p>
-              )}
-
-              {hasNotices && (
-                <ul className="divide-y divide-white/10">
-                  {notices.map((n) => (
-                    <li key={n.id} className="py-3">
-                      <button
-                        onClick={() => setActiveNotice(n)}
-                        className="group flex items-start justify-between gap-3 w-full text-left"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate group-hover:underline">
-                            {n.pinned ? '📌 ' : ''}
-                            {n.title}
-                          </p>
-                          <p className="text-xs opacity-60 mt-1">{formatDate(n.createdAt)}</p>
-                        </div>
-                        <span className="text-sm opacity-60 shrink-0">열기 ›</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <p className="text-xs opacity-60 mt-4">
-              ※ 공지 작성/수정은 관리자 전용 화면에서 진행하세요(마크다운 지원).
-            </p>
+    <main
+      className="relative flex-1 flex
+                 min-h-screen
+                 bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200
+                 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950"
+    >
+      {/* 좌측: 공지 / 안내 */}
+      <section className="flex-1 flex flex-col px-10 py-10 max-w-3xl">
+        <header className="mb-6">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/70 dark:bg-slate-900/60 shadow-sm border border-slate-200 dark:border-slate-700">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="text-xs text-slate-600 dark:text-slate-300">
+              데이터 변환 &amp; 비교를 한 번에
+            </span>
           </div>
 
-          {/* 우: 기능 카드(표시만, Admin 제거됨) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {FEATURE_CARDS.map((f) => (
-              <div
-                key={f.title}
-                className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/5 to-white/[0.03] p-5 shadow-sm flex flex-col select-none"
-              >
-                <div className="text-3xl mb-3">{f.emoji}</div>
-                <h3 className="text-lg font-semibold">{f.title}</h3>
-                <p className="text-sm opacity-80 mt-1">{f.desc}</p>
+          <h1 className="mt-4 text-4xl font-bold tracking-tight text-slate-900 dark:text-white">
+            Data Converter
+          </h1>
+          <p className="mt-2 text-base text-slate-600 dark:text-slate-300">
+            엑셀, CSV, JSON, 텍스트 파일을 손쉽게 변환하고,
+            <br />
+            데이터 비교 · 패턴 편집 · 랜덤 데이터 생성까지 한 번에 처리하세요.
+          </p>
+        </header>
+
+        {/* 공지 영역 */}
+        <div className="mt-4 flex-1 flex flex-col rounded-2xl bg-white/80 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                공지사항
+              </span>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-100 dark:bg-amber-900/40 dark:text-amber-200 dark:border-amber-900/60">
+                Notice
+              </span>
+            </div>
+            {hasNotices && (
+              <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                최신 {Math.min(notices.length, 3)}건 표시
+              </span>
+            )}
+          </div>
+
+          <div className="flex-1 p-4 space-y-3 overflow-y-auto">
+            {loadingNotices && (
+              <>
+                <NoticeSkeleton />
+                <NoticeSkeleton />
+              </>
+            )}
+
+            {!loadingNotices && !hasNotices && (
+              <div className="text-xs text-slate-400 dark:text-slate-500">
+                등록된 공지사항이 없습니다.
               </div>
-            ))}
+            )}
+
+            {!loadingNotices &&
+              hasNotices &&
+              notices.slice(0, 5).map((n) => (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() => setActiveNotice(n)}
+                  className="w-full text-left px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50/80 dark:hover:bg-slate-800/70 transition-colors"
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    {n.pinned && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-100 dark:bg-rose-900/40 dark:text-rose-200 dark:border-rose-900/60">
+                        중요
+                      </span>
+                    )}
+                    <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                      {n.title}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2">
+                    {n.summary}
+                  </p>
+                  {n.createdAt && (
+                    <p className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+                      {formatDate(n.createdAt)}
+                    </p>
+                  )}
+                </button>
+              ))}
           </div>
         </div>
       </section>
 
-      {/* 공지 상세 모달 */}
-      {activeNotice && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => setActiveNotice(null)}
-        >
-          <div
-            className="w-[92vw] max-w-2xl max-h-[80vh] overflow-auto rounded-2xl border border-white/15 bg-neutral-900 p-6 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-4">
-              <h3 className="text-xl font-semibold">
-                {activeNotice.pinned ? '📌 ' : ''}
-                {activeNotice.title}
-              </h3>
-              <button
-                onClick={() => setActiveNotice(null)}
-                className="text-sm opacity-70 hover:opacity-100"
-              >
-                닫기 ✕
-              </button>
+      {/* 우측: 기능 카드 / 로그인 패널 */}
+      <section className="w-full max-w-md border-l border-slate-200/70 dark:border-slate-800/80 bg-white/80 dark:bg-slate-950/90 backdrop-blur-sm flex flex-col">
+        <div className="flex-1 px-8 py-8 flex flex-col gap-6">
+          {/* 로그인 박스 */}
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/70 px-4 py-4 shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  Account
+                </div>
+                <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                  {user ? user.email ?? user.displayName ?? '로그인됨' : '로그인이 필요합니다'}
+                </div>
+              </div>
             </div>
 
-            <div className="text-xs opacity-60 mt-1">
-              {formatDate(activeNotice.createdAt)}
-            </div>
+            <div className="flex items-center justify-between mt-2">
+              {user ? (
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  disabled={authBusy}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-60"
+                >
+                  로그아웃
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleLogin}
+                  disabled={authBusy}
+                  className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold bg-blue-600 text-white shadow hover:bg-blue-700 disabled:opacity-60"
+                >
+                  <span className="w-4 h-4 rounded-full bg-white text-blue-600 flex items-center justify-center text-[10px] font-bold">
+                    G
+                  </span>
+                  <span>Google 계정으로 시작하기</span>
+                </button>
+              )}
 
-            <div className="prose prose-invert mt-4">
-              <ReactMarkdown
-                components={{
-                  a: ({ node, ...props }) => (
-                    <a {...props} target="_blank" rel="noopener noreferrer" />
-                  ),
-                }}
-              >
-                {activeNotice.content_md || '_내용이 없습니다._'}
-              </ReactMarkdown>
+              {authBusy && (
+                <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                  처리 중…
+                </span>
+              )}
             </div>
           </div>
+
+          {/* 기능 카드 목록 */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Tools
+              </span>
+              <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                실제 메뉴 이동은 좌측 Sidebar에서 진행됩니다.
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {FEATURE_CARDS.map((tool) => (
+                <div
+                  key={tool.title}
+                  className="flex items-center gap-3 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/60 shadow-sm"
+                >
+                  <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-lg">
+                    <span>{tool.emoji}</span>
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                      {tool.title}
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {tool.desc}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 간단 안내 */}
+          <div className="mt-auto text-[11px] text-slate-400 dark:text-slate-500">
+            로그인 후, 좌측 사이드바에서 원하는 기능(Data Convert, Compare, PDF Tool 등)을
+            선택하여 사용하실 수 있습니다.
+          </div>
         </div>
-      )}
+
+        {/* 공지 모달 */}
+        {activeNotice && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="w-full max-w-lg max-h-[80vh] bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 flex flex-col">
+              <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                    공지사항
+                  </div>
+                  <div className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                    {activeNotice.title}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveNotice(null)}
+                  className="text-xs px-2 py-1 rounded-full border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  닫기
+                </button>
+              </div>
+              <div className="flex-1 p-4 overflow-y-auto text-sm text-slate-800 dark:text-slate-100 prose prose-sm max-w-none dark:prose-invert">
+                <ReactMarkdown
+                  components={{
+                    a: ({ node, ...props }) => (
+                      <a {...props} target="_blank" rel="noopener noreferrer" />
+                    ),
+                  }}
+                >
+                  {activeNotice.content_md || '_내용이 없습니다._'}
+                </ReactMarkdown>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
     </main>
   )
 }
