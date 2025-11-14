@@ -12,7 +12,7 @@
  *
  * 주의:
  *  - Firestore 규칙에 맞춰 DB는 읽기 위주지만,
- *    ✅ 이번에 추가한 부분에서 "만료된 일반 유저"는
+ *    ✅ "만료된 일반 유저"는
  *       role을 free, isSubscribed를 false로 DB에 1회 보정합니다.
  */
 
@@ -126,11 +126,6 @@ export default function Sidebar() {
           const expired = !!endOnly && endOnly.getTime() < today.getTime();
 
           // 2-1) 만료된 유저의 DB 자동 보정
-          //  - Admin이 아닌데 구독이 만료된 경우:
-          //    · role              → 'free'
-          //    · isSubscribed      → false
-          //    · subscriptionStartAt / subscriptionEndAt → null
-          //  - Firestore 규칙에서 허용된 범위 내에서만 동작(실패해도 UI 동작에는 영향 없음)
           if (expired && !isAdmin && (isSubscribed || roleNorm !== 'free')) {
             updateDoc(userRef, {
               role: 'free',
@@ -241,7 +236,14 @@ export default function Sidebar() {
 
       // Admin 전용 메뉴는 관리자만 보이게
       if (m.adminOnly && !isAdmin) {
-        return { ...m, hidden: true, required: 'admin' as Tier, paidLabel: 'Admin' };
+        return {
+          ...m,
+          hidden: true,
+          required: 'admin' as Tier,
+          paidLabel: 'Admin',
+          disabled: true,
+          active: false,
+        };
       }
 
       // 정책 로딩 중에는 기본 free로 취급 (플리커 방지)
